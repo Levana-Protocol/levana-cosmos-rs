@@ -10,7 +10,6 @@ tonic = { version = "0.7", features = ["channel", "tls", "tls-roots"], default-f
 cosmos-sdk-proto = { version = "0.13.0", features = ["cosmwasm"] }
 prost = "0.10.4"
 bech32 = "0.9.0"
-tiny-bip39 = { version = "1.0.0", default-features = false }
 bitcoin = "0.28.1"
 hkd32 = { version = "0.7.0", features = ["bip39"] }
 once_cell = "1.13.0"
