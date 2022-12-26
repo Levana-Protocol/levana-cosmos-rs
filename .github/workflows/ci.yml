@@ -19,3 +19,16 @@ jobs:
       build_version_location: "packages/build-version.txt"
     secrets:
       git_credential: "N/A"
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [cosmos-bin]
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: cosmos
+          path: .
+      - uses: ncipollo/release-action@v1
+        with:
+          artifacts: cosmos
+          tag: ${{ github.ref_name }}
