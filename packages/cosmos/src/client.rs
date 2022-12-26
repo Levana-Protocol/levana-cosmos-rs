@@ -69,6 +69,7 @@ pub enum CosmosNetwork {
     JunoLocal,
     OsmosisMainnet,
     OsmosisTestnet,
+    OsmosisLocal,
     Dragonfire,
 }
 
@@ -131,6 +132,7 @@ impl CosmosNetwork {
             CosmosNetwork::JunoLocal => "juno-local",
             CosmosNetwork::OsmosisMainnet => "osmosis-mainnet",
             CosmosNetwork::OsmosisTestnet => "osmosis-testnet",
+            CosmosNetwork::OsmosisLocal => "osmosis-local",
             CosmosNetwork::Dragonfire => "dragonfire",
         }
     }
@@ -152,6 +154,7 @@ impl FromStr for CosmosNetwork {
             "juno-local" => Ok(CosmosNetwork::JunoLocal),
             "osmosis-mainnet" => Ok(CosmosNetwork::OsmosisMainnet),
             "osmosis-testnet" => Ok(CosmosNetwork::OsmosisTestnet),
+            "osmosis-local" => Ok(CosmosNetwork::OsmosisLocal),
             "dragonfire" => Ok(CosmosNetwork::Dragonfire),
             _ => Err(anyhow::anyhow!("Unknown network: {s}")),
         }
@@ -170,6 +173,7 @@ impl CosmosNetwork {
             CosmosNetwork::JunoLocal => Cosmos::new_juno_local(),
             CosmosNetwork::OsmosisMainnet => Cosmos::new_osmosis_mainnet(),
             CosmosNetwork::OsmosisTestnet => Cosmos::new_osmosis_testnet(),
+            CosmosNetwork::OsmosisLocal => Cosmos::new_osmosis_local(),
             CosmosNetwork::Dragonfire => Cosmos::new_dragonfire(),
         }
     }
@@ -181,6 +185,7 @@ impl CosmosNetwork {
             CosmosNetwork::JunoLocal => AddressType::Juno,
             CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
             CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
+            CosmosNetwork::OsmosisLocal => AddressType::Osmo,
             CosmosNetwork::Dragonfire => AddressType::Levana,
         }
     }
@@ -297,6 +302,17 @@ impl Cosmos {
         CosmosBuilder {
             grpc_url: "https://grpc-testnet.osmosis.sandbox.levana.finance:443".to_owned(),
             chain_id: "osmo-test-4".to_owned(),
+            gas_coin: "uosmo".to_owned(),
+            address_type: AddressType::Osmo,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    pub fn new_osmosis_local() -> CosmosBuilder {
+        CosmosBuilder {
+            grpc_url: "http://localhost:9090".to_owned(),
+            chain_id: "localosmosis".to_owned(),
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,

@@ -30,8 +30,10 @@ impl FromStr for SeedPhrase {
     type Err = anyhow::Error;
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
-        if s == "juno-local" {
-            s = JUNO_LOCAL_PHRASE;
+        match s {
+            "juno-local" => s = JUNO_LOCAL_PHRASE,
+            "osmosis-local" | "osmo-local" => s = OSMO_LOCAL_PHRASE,
+            _ => (),
         }
 
         // Create mnemonic and generate seed from it
@@ -88,6 +90,7 @@ impl FromStr for RawWallet {
 
 const DEFAULT_DERIVATION_PATH: &str = "m/44'/118'/0'/0/0";
 const JUNO_LOCAL_PHRASE: &str = "clip hire initial neck maid actor venue client foam budget lock catalog sweet steak waste crater broccoli pipe steak sister coyote moment obvious choose";
+const OSMO_LOCAL_PHRASE: &str = "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius";
 
 impl RawWallet {
     /// Generate the special Juno Local wallet
