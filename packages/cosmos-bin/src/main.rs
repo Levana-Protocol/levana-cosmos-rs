@@ -12,8 +12,8 @@ use cosmos::{
             QueryContractHistoryResponse,
         },
     },
-    Address, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress, RawWallet, TxBuilder,
-    Wallet,
+    Address, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress, RawAddress,
+    RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -206,6 +206,13 @@ enum Subcommand {
     ShowBlock {
         /// Height of the block to show
         height: i64,
+    },
+    /// Print the address for a different chain
+    ChangeAddressType {
+        /// Original address
+        orig: RawAddress,
+        /// Destination address type
+        address_type: AddressType,
     },
 }
 
@@ -442,6 +449,9 @@ impl Subcommand {
                 for (idx, txhash) in txhashes.into_iter().enumerate() {
                     println!("Transaction #{}: {txhash}", idx + 1);
                 }
+            }
+            Subcommand::ChangeAddressType { orig, address_type } => {
+                println!("{}", orig.for_chain(address_type));
             }
         }
 
