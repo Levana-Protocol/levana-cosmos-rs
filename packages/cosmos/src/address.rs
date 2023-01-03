@@ -177,9 +177,24 @@ impl FromStr for AddressType {
 
 impl Display for Address {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        AddressAnyHrp {
+            raw_address: self.raw_address,
+            hrp: self.type_.hrp(),
+        }
+        .fmt(fmt)
+    }
+}
+
+pub struct AddressAnyHrp<'a> {
+    pub raw_address: RawAddress,
+    pub hrp: &'a str,
+}
+
+impl<'a> Display for AddressAnyHrp<'a> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
         bech32::encode_to_fmt(
             fmt,
-            self.type_.hrp(),
+            self.hrp,
             self.raw_address.to_base32(),
             bech32::Variant::Bech32,
         )

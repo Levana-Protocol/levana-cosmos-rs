@@ -1,5 +1,6 @@
 pub use address::{
-    parse_raw_address, Address, AddressType, HasAddress, HasAddressType, JunoAddress, RawAddress,
+    parse_raw_address, Address, AddressAnyHrp, AddressType, HasAddress, HasAddressType,
+    JunoAddress, RawAddress,
 };
 pub use client::{BlockInfo, Cosmos, CosmosNetwork, HasCosmos, TxBuilder, TypedMessage};
 pub use codeid::CodeId;

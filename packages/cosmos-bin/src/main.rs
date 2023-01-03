@@ -12,8 +12,8 @@ use cosmos::{
             QueryContractHistoryResponse,
         },
     },
-    Address, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress, HasAddressType,
-    RawAddress, RawWallet, TxBuilder, Wallet,
+    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress,
+    HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -156,8 +156,8 @@ enum Subcommand {
     },
     /// Generate wallet
     GenWallet {
-        /// Address type: One of cosmos, juno, osmo or levana
-        address_type: AddressType,
+        /// Address type, supports any valid Human Readable Part like cosmos, osmo, or juno
+        address_type: String,
     },
     /// Print the address for the given phrase
     PrintAddress {
@@ -314,7 +314,7 @@ impl Subcommand {
                 println!("Raw log: {}", tx.raw_log);
                 log::debug!("{tx:?}");
             }
-            Subcommand::GenWallet { address_type } => gen_wallet(address_type)?,
+            Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
             Subcommand::PrintAddress {
                 address_type,
                 phrase,
@@ -459,10 +459,14 @@ impl Subcommand {
     }
 }
 
-fn gen_wallet(address_type: AddressType) -> Result<()> {
+fn gen_wallet(address_type: &str) -> Result<()> {
     let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(&phrase, address_type)?;
+    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressType::Cosmos)?;
     println!("Mnemonic: {phrase}");
-    println!("Address: {wallet}");
+    let address = AddressAnyHrp {
+        raw_address: *wallet.address().raw(),
+        hrp: &address_type,
+    };
+    println!("Address: {address}");
     Ok(())
 }
