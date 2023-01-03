@@ -12,8 +12,8 @@ use cosmos::{
             QueryContractHistoryResponse,
         },
     },
-    Address, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress, RawAddress,
-    RawWallet, TxBuilder, Wallet,
+    Address, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress, HasAddressType,
+    RawAddress, RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -222,7 +222,7 @@ impl Subcommand {
         if let Some(grpc) = opt.cosmos_grpc {
             builder.grpc_url = grpc;
         }
-        let cosmos = builder.build().await?;
+        let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
 
         match self {

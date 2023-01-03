@@ -12,6 +12,7 @@ use cosmos_sdk_proto::{
     },
 };
 
+use crate::address::HasAddressType;
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
 /// A Cosmos smart contract

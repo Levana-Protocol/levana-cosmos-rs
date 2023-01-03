@@ -23,7 +23,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use serde::de::Visitor;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::{address::HasAddressType, Address, AddressType};
@@ -32,19 +32,35 @@ use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    inner: Arc<CosmosInner>,
+    builder: Arc<CosmosBuilder>,
+    inner: Arc<RwLock<Option<Arc<CosmosInner>>>>,
+}
+
+impl Cosmos {
+    async fn inner(&self) -> Result<Arc<CosmosInner>> {
+        if let Some(inner) = &*self.inner.read().await {
+            return Ok(inner.clone());
+        }
+
+        let mut guard = self.inner.write().await;
+
+        if let Some(inner) = &*guard {
+            return Ok(inner.clone());
+        }
+
+        let inner = Arc::new(self.builder.build_inner().await?);
+        *guard = Some(inner.clone());
+        Ok(inner)
+    }
 }
 
 impl HasAddressType for Cosmos {
     fn get_address_type(&self) -> AddressType {
-        self.inner.address_type
+        self.builder.address_type
     }
 }
 
 struct CosmosInner {
-    chain_id: String,
-    gas_coin: String,
-    address_type: AddressType,
     auth_query_client:
         Mutex<cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<Channel>>,
     bank_query_client:
@@ -56,10 +72,6 @@ struct CosmosInner {
     tendermint_client: Mutex<
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<Channel>,
     >,
-    /// Coins used per 1000 gas
-    coins_per_kgas: u64,
-    /// How many attempts to give a transaction before giving up
-    transaction_attempts: usize,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -79,13 +91,25 @@ pub struct CosmosBuilder {
     pub chain_id: String,
     pub gas_coin: String,
     pub address_type: AddressType,
-    pub coins_per_kgas: u64,
-    pub transaction_attempts: usize,
+    /// Coins used per 1000 gas
+    coins_per_kgas: u64,
+    /// How many attempts to give a transaction before giving up
+    transaction_attempts: usize,
 }
 
 impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
-        Cosmos::new(self).await
+        let cosmos = self.build_lazy();
+        // Force strict connection
+        cosmos.inner().await?;
+        Ok(cosmos)
+    }
+
+    pub fn build_lazy(self) -> Cosmos {
+        Cosmos {
+            builder: Arc::new(self),
+            inner: Arc::new(RwLock::new(None)),
+        }
     }
 }
 
@@ -168,40 +192,20 @@ impl CosmosNetwork {
 
     pub fn builder(self) -> CosmosBuilder {
         match self {
-            CosmosNetwork::JunoTestnet => Cosmos::new_juno_testnet(),
-            CosmosNetwork::JunoMainnet => Cosmos::new_juno_mainnet(),
-            CosmosNetwork::JunoLocal => Cosmos::new_juno_local(),
-            CosmosNetwork::OsmosisMainnet => Cosmos::new_osmosis_mainnet(),
-            CosmosNetwork::OsmosisTestnet => Cosmos::new_osmosis_testnet(),
-            CosmosNetwork::OsmosisLocal => Cosmos::new_osmosis_local(),
-            CosmosNetwork::Dragonfire => Cosmos::new_dragonfire(),
-        }
-    }
-
-    pub fn address_type(self) -> AddressType {
-        match self {
-            CosmosNetwork::JunoTestnet => AddressType::Juno,
-            CosmosNetwork::JunoMainnet => AddressType::Juno,
-            CosmosNetwork::JunoLocal => AddressType::Juno,
-            CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
-            CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
-            CosmosNetwork::OsmosisLocal => AddressType::Osmo,
-            CosmosNetwork::Dragonfire => AddressType::Levana,
+            CosmosNetwork::JunoTestnet => CosmosBuilder::new_juno_testnet(),
+            CosmosNetwork::JunoMainnet => CosmosBuilder::new_juno_mainnet(),
+            CosmosNetwork::JunoLocal => CosmosBuilder::new_juno_local(),
+            CosmosNetwork::OsmosisMainnet => CosmosBuilder::new_osmosis_mainnet(),
+            CosmosNetwork::OsmosisTestnet => CosmosBuilder::new_osmosis_testnet(),
+            CosmosNetwork::OsmosisLocal => CosmosBuilder::new_osmosis_local(),
+            CosmosNetwork::Dragonfire => CosmosBuilder::new_dragonfire(),
         }
     }
 }
 
-impl Cosmos {
-    pub async fn new(
-        CosmosBuilder {
-            grpc_url,
-            chain_id,
-            gas_coin,
-            address_type,
-            coins_per_kgas,
-            transaction_attempts,
-        }: CosmosBuilder,
-    ) -> Result<Self> {
+impl CosmosBuilder {
+    async fn build_inner(&self) -> Result<CosmosInner> {
+        let grpc_url = &self.grpc_url;
         let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
             grpc_endpoint.tls_config(ClientTlsConfig::new())?
@@ -218,9 +222,7 @@ impl Cosmos {
                 .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
-        let inner = Arc::new(CosmosInner {
-            chain_id,
-            gas_coin,
+        Ok(CosmosInner {
             auth_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
                     grpc_channel.clone(),
@@ -242,99 +244,15 @@ impl Cosmos {
             tendermint_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel)
             ),
-            address_type,
-            coins_per_kgas,
-            transaction_attempts,
-        });
-        Ok(Cosmos { inner })
+        })
     }
+}
 
-    pub fn new_juno_testnet() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "https://grpc-testnet.juno.sandbox.levana.finance:443".to_owned(),
-            // Backup choice:
-            // "http://juno-testnet-grpc.polkachu.com:12690",
-            chain_id: "uni-5".to_owned(),
-            gas_coin: "ujunox".to_owned(),
-            address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
-    pub fn new_juno_local() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://localhost:9090".to_owned(),
-            chain_id: "testing".to_owned(),
-            gas_coin: "ujunox".to_owned(),
-            address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 3, // fail faster during testing
-        }
-    }
-
-    pub fn new_juno_mainnet() -> CosmosBuilder {
-        // Found at: https://cosmos.directory/juno/nodes
-        CosmosBuilder {
-            grpc_url: "https://grpc.juno.chaintools.tech:443".to_owned(),
-            chain_id: "juno-1".to_owned(),
-            gas_coin: "ujuno".to_owned(),
-            address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
-    pub fn new_osmosis_mainnet() -> CosmosBuilder {
-        // Found at: https://docs.osmosis.zone/networks/
-        CosmosBuilder {
-            grpc_url: "http://grpc.osmosis.zone:9090".to_owned(),
-            chain_id: "osmosis-1".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
-    pub fn new_osmosis_testnet() -> CosmosBuilder {
-        // Found at: https://docs.osmosis.zone/networks/
-        CosmosBuilder {
-            grpc_url: "https://grpc-testnet.osmosis.sandbox.levana.finance:443".to_owned(),
-            chain_id: "osmo-test-4".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
-    pub fn new_osmosis_local() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://localhost:9090".to_owned(),
-            chain_id: "localosmosis".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
-    pub fn new_dragonfire() -> CosmosBuilder {
-        // Found at: https://docs.osmosis.zone/networks/
-        CosmosBuilder {
-            grpc_url: "https://grpc-v3-udb8dydv.dragonfire.sandbox.levana.finance:443".to_owned(),
-            chain_id: "dragonfire-3".to_owned(),
-            gas_coin: "udragonfire".to_owned(),
-            address_type: AddressType::Levana,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-        }
-    }
-
+impl Cosmos {
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
         let res = self
-            .inner
+            .inner()
+            .await?
             .auth_query_client
             .lock()
             .await
@@ -355,7 +273,8 @@ impl Cosmos {
         let mut pagination = None;
         loop {
             let mut res = self
-                .inner
+                .inner()
+                .await?
                 .bank_query_client
                 .lock()
                 .await
@@ -387,7 +306,8 @@ impl Cosmos {
         query_data: impl Into<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         Ok(self
-            .inner
+            .inner()
+            .await?
             .wasm_query_client
             .lock()
             .await
@@ -406,7 +326,8 @@ impl Cosmos {
         key: impl Into<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         Ok(self
-            .inner
+            .inner()
+            .await?
             .wasm_query_client
             .lock()
             .await
@@ -429,8 +350,9 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse)> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        for attempt in 1..=self.inner.transaction_attempts {
-            let mut client = self.inner.tx_service_client.lock().await;
+        let inner = self.inner().await?;
+        for attempt in 1..=self.builder.transaction_attempts {
+            let mut client = inner.tx_service_client.lock().await;
             let txres = client
                 .get_tx(GetTxRequest {
                     hash: txhash.clone(),
@@ -455,7 +377,7 @@ impl Cosmos {
                     if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
                         log::debug!(
                             "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                            self.inner.transaction_attempts
+                            self.builder.transaction_attempts
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                     } else {
@@ -476,7 +398,8 @@ impl Cosmos {
         offset: Option<u64>,
     ) -> Result<Vec<String>> {
         let x = self
-            .inner
+            .inner()
+            .await?
             .tx_service_client
             .lock()
             .await
@@ -499,20 +422,17 @@ impl Cosmos {
             .collect())
     }
 
-    pub fn get_address_type(&self) -> AddressType {
-        self.inner.address_type
-    }
-
     pub fn get_gas_coin(&self) -> &String {
-        &self.inner.gas_coin
+        &self.builder.gas_coin
     }
 
     fn gas_to_coins(&self, gas: u64) -> u64 {
-        gas * self.inner.coins_per_kgas / 1000
+        gas * self.builder.coins_per_kgas / 1000
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
-        self.inner
+        self.inner()
+            .await?
             .wasm_query_client
             .lock()
             .await
@@ -530,7 +450,8 @@ impl Cosmos {
         address: impl Into<String>,
     ) -> Result<QueryContractHistoryResponse> {
         Ok(self
-            .inner
+            .inner()
+            .await?
             .wasm_query_client
             .lock()
             .await
@@ -544,7 +465,8 @@ impl Cosmos {
 
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .inner
+            .inner()
+            .await?
             .tendermint_client
             .lock()
             .await
@@ -575,6 +497,91 @@ impl Cosmos {
             timestamp: Utc.timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
             txhashes,
         })
+    }
+}
+
+impl CosmosBuilder {
+    fn new_juno_testnet() -> CosmosBuilder {
+        CosmosBuilder {
+            grpc_url: "https://grpc-testnet.juno.sandbox.levana.finance:443".to_owned(),
+            // Backup choice:
+            // "http://juno-testnet-grpc.polkachu.com:12690",
+            chain_id: "uni-5".to_owned(),
+            gas_coin: "ujunox".to_owned(),
+            address_type: AddressType::Juno,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_juno_local() -> CosmosBuilder {
+        CosmosBuilder {
+            grpc_url: "http://localhost:9090".to_owned(),
+            chain_id: "testing".to_owned(),
+            gas_coin: "ujunox".to_owned(),
+            address_type: AddressType::Juno,
+            coins_per_kgas: 30,
+            transaction_attempts: 3, // fail faster during testing
+        }
+    }
+
+    fn new_juno_mainnet() -> CosmosBuilder {
+        // Found at: https://cosmos.directory/juno/nodes
+        CosmosBuilder {
+            grpc_url: "https://grpc.juno.chaintools.tech:443".to_owned(),
+            chain_id: "juno-1".to_owned(),
+            gas_coin: "ujuno".to_owned(),
+            address_type: AddressType::Juno,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_osmosis_mainnet() -> CosmosBuilder {
+        // Found at: https://docs.osmosis.zone/networks/
+        CosmosBuilder {
+            grpc_url: "http://grpc.osmosis.zone:9090".to_owned(),
+            chain_id: "osmosis-1".to_owned(),
+            gas_coin: "uosmo".to_owned(),
+            address_type: AddressType::Osmo,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_osmosis_testnet() -> CosmosBuilder {
+        // Found at: https://docs.osmosis.zone/networks/
+        CosmosBuilder {
+            grpc_url: "https://grpc-testnet.osmosis.sandbox.levana.finance:443".to_owned(),
+            chain_id: "osmo-test-4".to_owned(),
+            gas_coin: "uosmo".to_owned(),
+            address_type: AddressType::Osmo,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_osmosis_local() -> CosmosBuilder {
+        CosmosBuilder {
+            grpc_url: "http://localhost:9090".to_owned(),
+            chain_id: "localosmosis".to_owned(),
+            gas_coin: "uosmo".to_owned(),
+            address_type: AddressType::Osmo,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_dragonfire() -> CosmosBuilder {
+        // Found at: https://docs.osmosis.zone/networks/
+        CosmosBuilder {
+            grpc_url: "https://grpc-v3-udb8dydv.dragonfire.sandbox.levana.finance:443".to_owned(),
+            chain_id: "dragonfire-3".to_owned(),
+            gas_coin: "udragonfire".to_owned(),
+            address_type: AddressType::Levana,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
     }
 }
 
@@ -760,7 +767,8 @@ impl TxBuilder {
         };
 
         let simres = cosmos
-            .inner
+            .inner()
+            .await?
             .tx_service_client
             .lock()
             .await
@@ -805,7 +813,7 @@ impl TxBuilder {
             signer_infos: self.make_signer_infos(wallet, sequence),
             fee: Some(Fee {
                 amount: vec![Coin {
-                    denom: cosmos.inner.gas_coin.clone(),
+                    denom: cosmos.builder.gas_coin.clone(),
                     amount: cosmos.gas_to_coins(gas_to_request).to_string(),
                 }],
                 gas_limit: gas_to_request,
@@ -817,7 +825,7 @@ impl TxBuilder {
         let sign_doc = SignDoc {
             body_bytes: body.encode_to_vec(),
             auth_info_bytes: auth_info.encode_to_vec(),
-            chain_id: cosmos.inner.chain_id.clone(),
+            chain_id: cosmos.builder.chain_id.clone(),
             account_number,
         };
         let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -830,7 +838,8 @@ impl TxBuilder {
         };
 
         let res = cosmos
-            .inner
+            .inner()
+            .await?
             .tx_service_client
             .lock()
             .await

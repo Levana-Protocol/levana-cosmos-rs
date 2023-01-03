@@ -247,7 +247,15 @@ impl HasAddressType for AddressType {
 
 impl HasAddressType for CosmosNetwork {
     fn get_address_type(&self) -> AddressType {
-        self.address_type()
+        match self {
+            CosmosNetwork::JunoTestnet => AddressType::Juno,
+            CosmosNetwork::JunoMainnet => AddressType::Juno,
+            CosmosNetwork::JunoLocal => AddressType::Juno,
+            CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
+            CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
+            CosmosNetwork::OsmosisLocal => AddressType::Osmo,
+            CosmosNetwork::Dragonfire => AddressType::Levana,
+        }
     }
 }
 
