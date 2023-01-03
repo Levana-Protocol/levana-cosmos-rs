@@ -465,7 +465,7 @@ fn gen_wallet(address_type: &str) -> Result<()> {
     println!("Mnemonic: {phrase}");
     let address = AddressAnyHrp {
         raw_address: *wallet.address().raw(),
-        hrp: &address_type,
+        hrp: address_type,
     };
     println!("Address: {address}");
     Ok(())
