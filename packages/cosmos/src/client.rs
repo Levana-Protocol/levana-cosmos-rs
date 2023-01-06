@@ -69,6 +69,7 @@ pub enum CosmosNetwork {
     JunoLocal,
     OsmosisMainnet,
     OsmosisTestnet,
+    OsmosisLocal,
     Dragonfire,
 }
 
@@ -132,6 +133,7 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => "osmosis-mainnet",
             CosmosNetwork::OsmosisTestnet => "osmosis-testnet",
             CosmosNetwork::Dragonfire => "dragonfire",
+            CosmosNetwork::OsmosisLocal => "osmosis-local",
         }
     }
 }
@@ -153,6 +155,7 @@ impl FromStr for CosmosNetwork {
             "osmosis-mainnet" => Ok(CosmosNetwork::OsmosisMainnet),
             "osmosis-testnet" => Ok(CosmosNetwork::OsmosisTestnet),
             "dragonfire" => Ok(CosmosNetwork::Dragonfire),
+            "osmosis-local" => Ok(CosmosNetwork::OsmosisLocal),
             _ => Err(anyhow::anyhow!("Unknown network: {s}")),
         }
     }
@@ -171,6 +174,7 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => Cosmos::new_osmosis_mainnet(),
             CosmosNetwork::OsmosisTestnet => Cosmos::new_osmosis_testnet(),
             CosmosNetwork::Dragonfire => Cosmos::new_dragonfire(),
+            CosmosNetwork::OsmosisLocal => Cosmos::new_osmosis_local(),
         }
     }
 
@@ -182,6 +186,7 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
             CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
             CosmosNetwork::Dragonfire => AddressType::Levana,
+            CosmosNetwork::OsmosisLocal => AddressType::Osmo,
         }
     }
 }
@@ -301,6 +306,17 @@ impl Cosmos {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+        }
+    }
+
+    pub fn new_osmosis_local() -> CosmosBuilder {
+        CosmosBuilder {
+            grpc_url: "http://localhost:9090".to_owned(),
+            chain_id: "localosmosis".to_owned(),
+            gas_coin: "uosmo".to_owned(),
+            address_type: AddressType::Osmo,
+            coins_per_kgas: 30,
+            transaction_attempts: 3,
         }
     }
 
