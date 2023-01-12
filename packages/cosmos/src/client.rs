@@ -1,6 +1,6 @@
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -212,16 +212,41 @@ impl CosmosBuilder {
         } else {
             grpc_endpoint
         };
-        let grpc_channel = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            grpc_endpoint.connect(),
-        )
-        .await
-        {
-            Ok(grpc_channel) => grpc_channel
-                .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
-            Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
+
+        let mut counter = 0u8;
+        let mut channel = None;
+        loop {
+            if counter == 5 {
+                break;
+            }
+            let new_grpc_channel =
+                tokio::time::timeout(tokio::time::Duration::from_secs(5), grpc_endpoint.connect())
+                    .await;
+            match &new_grpc_channel {
+                Ok(Ok(_)) => {
+                    channel = Some(new_grpc_channel);
+                    break;
+                }
+                _ => {
+                    // We sleep for 1 seconds because without this,
+                    // the entire loop finishes within a second since
+                    // the connect function is instantaneous.
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    channel = Some(new_grpc_channel);
+                    counter += 1;
+                }
+            }
+        }
+
+        let grpc_channel = match channel {
+            Some(channel) => match channel {
+                Ok(mchannel) => mchannel
+                    .with_context(|| format!("Error establishing connection to {grpc_url}"))?,
+                Err(_) => bail!("Timed out while connecting to {grpc_url}"),
+            },
+            None => bail!("No connection initiated with {grpc_url}"),
         };
+
         Ok(CosmosInner {
             auth_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
