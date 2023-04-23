@@ -177,6 +177,7 @@ impl FromStr for AddressType {
             "osmo" => Ok(AddressType::Osmo),
             "levana" => Ok(AddressType::Levana),
             "wasm" => Ok(AddressType::Wasm),
+            "sei" => Ok(AddressType::Sei),
             _ => Err(anyhow::anyhow!("Invalid address type {s:?}")),
         }
     }
