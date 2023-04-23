@@ -575,7 +575,7 @@ impl Cosmos {
         if let Some(height) = err.downcast_ref::<tonic::Status>().and_then(|status| {
             let per_needle = |needle: &str| {
                 let trimmed = status.message().split(needle).nth(1)?.trim();
-                let stripped = trimmed.strip_suffix(")").unwrap_or(trimmed);
+                let stripped = trimmed.strip_suffix(')').unwrap_or(trimmed);
                 stripped.parse().ok()
             };
             for needle in ["lowest height is", "base height: "] {
