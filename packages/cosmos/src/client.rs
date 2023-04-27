@@ -93,6 +93,8 @@ pub enum CosmosNetwork {
     Dragonfire,
     WasmdLocal,
     SeiTestnet,
+    StargazeTestnet,
+    StargazeMainnet,
 }
 
 /// Build a connection
@@ -171,6 +173,8 @@ impl CosmosNetwork {
             CosmosNetwork::Dragonfire => "dragonfire",
             CosmosNetwork::WasmdLocal => "wasmd-local",
             CosmosNetwork::SeiTestnet => "sei-testnet",
+            CosmosNetwork::StargazeTestnet => "stargaze-testnet",
+            CosmosNetwork::StargazeMainnet => "stargaze-mainnet",
         }
     }
 }
@@ -195,6 +199,8 @@ impl FromStr for CosmosNetwork {
             "dragonfire" => Ok(CosmosNetwork::Dragonfire),
             "wasmd-local" => Ok(CosmosNetwork::WasmdLocal),
             "sei-testnet" => Ok(CosmosNetwork::SeiTestnet),
+            "stargaze-testnet" => Ok(CosmosNetwork::StargazeTestnet),
+            "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
             _ => Err(anyhow::anyhow!("Unknown network: {s}")),
         }
     }
@@ -216,6 +222,8 @@ impl CosmosNetwork {
             CosmosNetwork::Dragonfire => CosmosBuilder::new_dragonfire(),
             CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
             CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet(),
+            CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
+            CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
         }
     }
 }
@@ -720,6 +728,32 @@ impl CosmosBuilder {
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_stargaze_testnet() -> CosmosBuilder {
+        // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/chain.json
+        CosmosBuilder {
+            grpc_url: "http://grpc-1.elgafar-1.stargaze-apis.com:26660".to_owned(),
+            chain_id: "elgafar-1".to_owned(),
+            // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/assetlist.json
+            gas_coin: "ustars".to_owned(),
+            address_type: AddressType::Stargaze,
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
+
+    fn new_stargaze_mainnet() -> CosmosBuilder {
+        // https://github.com/cosmos/chain-registry/blob/master/stargaze/chain.json
+        CosmosBuilder {
+            grpc_url: "http://stargaze-grpc.polkachu.com:13790".to_owned(),
+            chain_id: "stargaze-1".to_owned(),
+            // https://github.com/cosmos/chain-registry/blob/master/stargaze/assetlist.json
+            gas_coin: "ustars".to_owned(),
+            address_type: AddressType::Stargaze,
             coins_per_kgas: 30,
             transaction_attempts: 30,
         }
