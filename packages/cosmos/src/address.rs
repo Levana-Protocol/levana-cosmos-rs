@@ -141,10 +141,11 @@ pub enum AddressType {
     Levana,
     Wasm,
     Sei,
+    Stargaze,
 }
 
 impl AddressType {
-    pub fn all() -> [AddressType; 6] {
+    pub fn all() -> [AddressType; 7] {
         [
             AddressType::Cosmos,
             AddressType::Juno,
@@ -152,6 +153,7 @@ impl AddressType {
             AddressType::Levana,
             AddressType::Wasm,
             AddressType::Sei,
+            AddressType::Stargaze,
         ]
     }
 
@@ -163,6 +165,8 @@ impl AddressType {
             AddressType::Levana => "levana",
             AddressType::Wasm => "wasm",
             AddressType::Sei => "sei",
+            // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
+            AddressType::Stargaze => "stars",
         }
     }
 }
@@ -178,6 +182,8 @@ impl FromStr for AddressType {
             "levana" => Ok(AddressType::Levana),
             "wasm" => Ok(AddressType::Wasm),
             "sei" => Ok(AddressType::Sei),
+            // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
+            "stars" => Ok(AddressType::Stargaze),
             _ => Err(anyhow::anyhow!("Invalid address type {s:?}")),
         }
     }
@@ -280,6 +286,8 @@ impl HasAddressType for CosmosNetwork {
             CosmosNetwork::Dragonfire => AddressType::Levana,
             CosmosNetwork::WasmdLocal => AddressType::Wasm,
             CosmosNetwork::SeiTestnet => AddressType::Sei,
+            CosmosNetwork::StargazeTestnet => AddressType::Stargaze,
+            CosmosNetwork::StargazeMainnet => AddressType::Stargaze,
         }
     }
 }
