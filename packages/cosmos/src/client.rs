@@ -681,8 +681,8 @@ impl CosmosBuilder {
     fn new_osmosis_testnet() -> CosmosBuilder {
         // Others available at: https://docs.osmosis.zone/networks/
         CosmosBuilder {
-            grpc_url: "https://grpc-testnet.osmosis.sandbox.levana.finance:443".to_owned(),
-            chain_id: "osmo-test-4".to_owned(),
+            grpc_url: "https://grpc.osmotest5.osmosis.zone".to_owned(),
+            chain_id: "osmo-test-5".to_owned(),
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
