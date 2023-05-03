@@ -30,16 +30,15 @@ impl FromStr for ParsedCoin {
             let (amount, denom) = s.split_at(idx);
             anyhow::ensure!(!amount.is_empty(), "Must not have an empty amount");
             anyhow::ensure!(!denom.is_empty(), "Must not have an empty denom");
-            anyhow::ensure!(
-                denom.bytes().all(|b| b.is_ascii_lowercase()),
-                "Denom must be ASCII lowercase"
-            );
+            if let Some(b) = denom.bytes().find(|b| !b.is_ascii_lowercase() && !b.is_ascii_digit() && *b != b'/') {
+                anyhow::bail!("Denom must be ASCII lowercase, got: {}", b);
+            }
             Ok(ParsedCoin {
                 denom: denom.to_owned(),
                 amount: amount.parse()?,
             })
         })()
-        .with_context(|| format!("Could not parse coin value {s:?}"))
+        .map_err(|err| anyhow::anyhow!("Could not parse coin value {s:?}, error: {err:?}"))
     }
 }
 

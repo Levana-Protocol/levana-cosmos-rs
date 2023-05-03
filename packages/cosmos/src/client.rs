@@ -882,7 +882,7 @@ impl TxBuilder {
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, wallet).await?;
-        self.execute_gas(cosmos, wallet, Some(simres.body), simres.gas_used * 13 / 10)
+        self.execute_gas(cosmos, wallet, Some(simres.body), simres.gas_used * 15 / 10)
             .await
     }
 
