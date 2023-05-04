@@ -67,10 +67,17 @@ mod tests {
         assert_eq!(parse_coin("1ujunox").unwrap(), make_coin(1, "ujunox"));
         parse_coin("1.523ujunox").unwrap_err();
         parse_coin("foobar").unwrap_err();
-        parse_coin("123ujunox456").unwrap_err();
+        parse_coin("123ujunox!").unwrap_err();
         assert_eq!(
             parse_coin("123456uwbtc").unwrap(),
             make_coin(123456, "uwbtc")
+        );
+        assert_eq!(
+            parse_coin("123456factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/lvn1").unwrap(),
+            make_coin(
+                123456,
+                "factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/lvn1"
+            )
         );
     }
 
