@@ -37,6 +37,7 @@ impl FromStr for ParsedCoin {
                 .captures(s)
                 .with_context(|| format!("Could not parse coin value: {}", s))?;
 
+            // the full capture is at 0, the first capture group is at 1, the second at 2, etc.
             let amount = captures
                 .get(1)
                 .with_context(|| format!("Could not parse amount: {}", s))?
