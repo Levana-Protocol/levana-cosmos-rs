@@ -882,7 +882,10 @@ impl TxBuilder {
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, wallet).await?;
-        self.execute_gas(cosmos, wallet, Some(simres.body), simres.gas_used * 15 / 10)
+        // Add 30% to the gas estimate to account for any gas fluctuations
+        // this is the same amount that the CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
+        // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
+        self.execute_gas(cosmos, wallet, Some(simres.body), simres.gas_used * 13 / 10)
             .await
     }
 
