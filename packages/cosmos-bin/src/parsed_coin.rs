@@ -2,6 +2,8 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use cosmos::Coin;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub(super) struct ParsedCoin {
@@ -18,28 +20,41 @@ impl From<ParsedCoin> for Coin {
     }
 }
 
+// Regex to capture the amount and denom of a coin.
+// ^ - start of string
+// ([0-9]+) - first capture group, the amount: one or more digits
+// ([a-zA-z0-9/]+) - second capture group, the denom: any character in the range a-z, A-Z, 0-9, or /
+// $ - end of string
+static COIN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([0-9]+)+([a-zA-z0-9/]+)$").unwrap());
+
 impl FromStr for ParsedCoin {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         (|| {
-            anyhow::ensure!(!s.is_empty(), "Cannot parse empty string");
-            let idx = s
-                .find(|c: char| !c.is_ascii_digit())
-                .context("All characters are ASCII digits")?;
-            let (amount, denom) = s.split_at(idx);
-            anyhow::ensure!(!amount.is_empty(), "Must not have an empty amount");
-            anyhow::ensure!(!denom.is_empty(), "Must not have an empty denom");
-            anyhow::ensure!(
-                denom.bytes().all(|b| b.is_ascii_lowercase()),
-                "Denom must be ASCII lowercase"
-            );
+            let captures = COIN_REGEX
+                .captures(s)
+                .with_context(|| format!("Could not parse coin value: {}", s))?;
+
+            // the full capture is at 0, the first capture group is at 1, the second at 2, etc.
+            let amount = captures
+                .get(1)
+                .with_context(|| format!("Could not parse amount: {}", s))?
+                .as_str();
+
+            let denom = captures
+                .get(2)
+                .with_context(|| format!("Could not parse denom: {}", s))?
+                .as_str();
+
             Ok(ParsedCoin {
                 denom: denom.to_owned(),
                 amount: amount.parse()?,
             })
         })()
-        .with_context(|| format!("Could not parse coin value {s:?}"))
+        .map_err(|err: anyhow::Error| {
+            anyhow::anyhow!("Could not parse coin value {s:?}, error: {err:?}")
+        })
     }
 }
 
@@ -65,10 +80,24 @@ mod tests {
         assert_eq!(parse_coin("1ujunox").unwrap(), make_coin(1, "ujunox"));
         parse_coin("1.523ujunox").unwrap_err();
         parse_coin("foobar").unwrap_err();
-        parse_coin("123ujunox456").unwrap_err();
+        parse_coin("123ujunox!").unwrap_err();
         assert_eq!(
             parse_coin("123456uwbtc").unwrap(),
             make_coin(123456, "uwbtc")
+        );
+        assert_eq!(
+            parse_coin("123456factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/lvn1").unwrap(),
+            make_coin(
+                123456,
+                "factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/lvn1"
+            )
+        );
+        assert_eq!(
+            parse_coin("123456factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/LvN1").unwrap(),
+            make_coin(
+                123456,
+                "factory/osmo12g96ahplpf78558cv5pyunus2m66guykt96lvc/LvN1"
+            )
         );
     }
 
