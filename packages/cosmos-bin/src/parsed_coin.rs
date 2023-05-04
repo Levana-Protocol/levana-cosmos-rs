@@ -25,7 +25,7 @@ impl From<ParsedCoin> for Coin {
 // ([0-9]+) - first capture group, the amount: one or more digits
 // ([a-zA-z0-9/]+) - second capture group, the denom: any character in the range a-z, A-Z, 0-9, or /
 // $ - end of string
-static COIN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([0-9]+)+([a-zA-z0-9/]+)$").unwrap());
+static COIN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(\d+)([a-zA-z0-9/]+)$").unwrap());
 
 impl FromStr for ParsedCoin {
     type Err = anyhow::Error;
