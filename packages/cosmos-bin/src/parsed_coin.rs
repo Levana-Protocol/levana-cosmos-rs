@@ -20,6 +20,7 @@ impl From<ParsedCoin> for Coin {
     }
 }
 
+// Regex to capture the amount and denom of a coin.
 // ^ - start of string
 // ([0-9]+) - first capture group, the amount: one or more digits
 // ([a-zA-z0-9/]+) - second capture group, the denom: any character in the range a-z, A-Z, 0-9, or /
@@ -30,8 +31,6 @@ impl FromStr for ParsedCoin {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // write a RegEx in Rust to validate uppercase, lowercase, numbers and forward slash
-
         (|| {
             let captures = COIN_REGEX
                 .captures(s)
