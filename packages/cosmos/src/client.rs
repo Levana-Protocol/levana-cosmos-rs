@@ -1096,7 +1096,21 @@ impl TxBuilder {
 
         log::debug!("Initial BroadcastTxResponse: {res:?}");
 
-        Ok(cosmos.wait_for_transaction(res.txhash).await?)
+        let res = cosmos.wait_for_transaction(res.txhash).await?;
+        if !self.skip_code_check && res.code != 0 {
+            // We don't do the account sequence mismatch hack work here, once a
+            // transaction actually lands on the chain we don't want to ever
+            // automatically retry.
+            return Err(ExpectedSequenceError::RealError(anyhow::anyhow!(
+                "Transaction failed with code {}. Raw log: {}",
+                res.code,
+                res.raw_log
+            )));
+        };
+
+        log::debug!("TxResponse: {res:?}");
+
+        Ok(res)
     }
 }
 
