@@ -1102,6 +1102,12 @@ impl TxBuilder {
 
 pub struct TypedMessage(cosmos_sdk_proto::Any);
 
+impl TypedMessage {
+    pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
+        TypedMessage(inner)
+    }
+}
+
 impl From<MsgStoreCode> for TypedMessage {
     fn from(msg: MsgStoreCode) -> Self {
         TypedMessage(cosmos_sdk_proto::Any {

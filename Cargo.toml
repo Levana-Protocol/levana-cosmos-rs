@@ -2,6 +2,7 @@
 members = [
     "packages/cosmos",
     "packages/cosmos-bin",
+    "packages/prost-build",
 ]
 
 [profile.dev]

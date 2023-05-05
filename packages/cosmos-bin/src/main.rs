@@ -2,6 +2,7 @@ mod chain;
 mod contract;
 mod nft;
 mod parsed_coin;
+mod tokenfactory;
 
 use std::{io::Write, path::PathBuf, str::FromStr};
 
@@ -240,6 +241,16 @@ enum Subcommand {
     Chain {
         #[clap(flatten)]
         opt: chain::Opt,
+    },
+
+    /// Tokenfactory operations
+    TokenFactory {
+        /// Mnemonic phrase
+        #[clap(long, env = "COSMOS_WALLET")]
+        wallet: RawWallet,
+
+        #[clap(subcommand)]
+        cmd: tokenfactory::Command,
     },
 }
 
@@ -512,6 +523,9 @@ impl Subcommand {
                 contract::go(opt, cosmos).await?;
             }
             Subcommand::Chain { opt } => chain::go(opt, cosmos).await?,
+            Subcommand::TokenFactory { cmd, wallet } => {
+                tokenfactory::go(cosmos, wallet, cmd).await?
+            }
         }
 
         Ok(())
