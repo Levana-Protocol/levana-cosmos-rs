@@ -130,6 +130,8 @@ impl RawWallet {
 }
 
 /// A wallet capable of signing on a specific blockchain
+#[derive(Clone)]
+// Not deriving Copy since this is a pretty large data structure.
 pub struct Wallet {
     address: Address,
     privkey: ExtendedPrivKey,
