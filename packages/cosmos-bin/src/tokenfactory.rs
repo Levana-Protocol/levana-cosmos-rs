@@ -14,7 +14,7 @@ pub enum Command {
 
 pub(crate) async fn go(cosmos: Cosmos, raw_wallet: RawWallet, cmd: Command) -> Result<()> {
     let wallet = raw_wallet.for_chain(cosmos.get_address_type());
-    let tokenfactory = TokenFactory::new(&cosmos, &wallet);
+    let tokenfactory = TokenFactory::new(cosmos, wallet);
 
     match cmd {
         Command::Create { subdenom } => {

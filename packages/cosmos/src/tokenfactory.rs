@@ -7,13 +7,13 @@ use cosmos_sdk_proto::cosmos::{
 use prost::Message;
 
 /// TokenFactory interface
-pub struct TokenFactory<'a, 'b> {
-    client: &'a Cosmos,
-    wallet: &'b Wallet,
+pub struct TokenFactory {
+    client: Cosmos,
+    wallet: Wallet,
 }
 
-impl<'a, 'b> TokenFactory<'a, 'b> {
-    pub fn new(client: &'a Cosmos, wallet: &'b Wallet) -> Self {
+impl TokenFactory {
+    pub fn new(client: Cosmos, wallet: Wallet) -> Self {
         Self { client, wallet }
     }
 
@@ -23,7 +23,7 @@ impl<'a, 'b> TokenFactory<'a, 'b> {
             subdenom,
         };
 
-        let res = self.wallet.broadcast_message(self.client, msg).await?;
+        let res = self.wallet.broadcast_message(&self.client, msg).await?;
 
         let denom = res
             .events
@@ -54,7 +54,7 @@ impl<'a, 'b> TokenFactory<'a, 'b> {
                 amount: amount.to_string(),
             }),
         };
-        self.wallet.broadcast_message(self.client, msg).await
+        self.wallet.broadcast_message(&self.client, msg).await
     }
 
     pub async fn burn(&self, denom: String, amount: u128) -> Result<TxResponse> {
@@ -66,7 +66,7 @@ impl<'a, 'b> TokenFactory<'a, 'b> {
                 amount: amount.to_string(),
             }),
         };
-        self.wallet.broadcast_message(self.client, msg).await
+        self.wallet.broadcast_message(&self.client, msg).await
     }
 
     pub async fn change_admin(&self, denom: String, addr: String) -> Result<TxResponse> {
@@ -75,7 +75,7 @@ impl<'a, 'b> TokenFactory<'a, 'b> {
             denom: denom.clone(),
             new_admin: addr,
         };
-        self.wallet.broadcast_message(self.client, msg).await
+        self.wallet.broadcast_message(&self.client, msg).await
     }
 }
 
