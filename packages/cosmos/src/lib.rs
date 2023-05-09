@@ -2,6 +2,7 @@ pub use address::{
     parse_raw_address, Address, AddressAnyHrp, AddressType, HasAddress, HasAddressType,
     JunoAddress, RawAddress,
 };
+pub use authz::MsgGrantHelper;
 pub use client::{BlockInfo, Cosmos, CosmosNetwork, HasCosmos, TxBuilder, TypedMessage};
 pub use codeid::CodeId;
 pub use contract::{Contract, HasContract};
@@ -11,6 +12,7 @@ pub use tokenfactory::TokenFactory;
 pub use wallet::{RawWallet, SeedPhrase, Wallet};
 
 mod address;
+mod authz;
 mod client;
 mod codeid;
 mod contract;

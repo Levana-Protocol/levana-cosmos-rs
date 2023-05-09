@@ -1,3 +1,4 @@
+mod authz;
 mod chain;
 mod contract;
 mod nft;
@@ -251,6 +252,11 @@ enum Subcommand {
 
         #[clap(subcommand)]
         cmd: tokenfactory::Command,
+    },
+    /// Authz operations
+    Authz {
+        #[clap(flatten)]
+        opt: authz::Opt,
     },
 }
 
@@ -526,6 +532,7 @@ impl Subcommand {
             Subcommand::TokenFactory { cmd, wallet } => {
                 tokenfactory::go(cosmos, wallet, cmd).await?
             }
+            Subcommand::Authz { opt } => authz::go(cosmos, opt).await?,
         }
 
         Ok(())

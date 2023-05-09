@@ -54,7 +54,7 @@ impl deadpool::managed::Manager for CosmosBuilder {
 }
 
 impl Cosmos {
-    async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilder>> {
+    pub(crate) async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilder>> {
         self.pool.get().await.map_err(|e| {
             anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
         })
@@ -80,6 +80,8 @@ pub struct CosmosInner {
     tendermint_client: Mutex<
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<Channel>,
     >,
+    pub(crate) authz_query_client:
+        Mutex<cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<Channel>>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -267,7 +269,10 @@ impl CosmosBuilder {
                 cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(grpc_channel.clone()),
             ),
             tendermint_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel)
+                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel.clone())
+            ),
+            authz_query_client: Mutex::new(
+                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(grpc_channel)
             ),
         })
     }
@@ -1119,6 +1124,10 @@ pub struct TypedMessage(cosmos_sdk_proto::Any);
 impl TypedMessage {
     pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
         TypedMessage(inner)
+    }
+
+    pub fn into_inner(self) -> cosmos_sdk_proto::Any {
+        self.0
     }
 }
 
