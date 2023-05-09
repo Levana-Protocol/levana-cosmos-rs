@@ -63,7 +63,7 @@ impl MsgGrantHelper {
 
 fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp> {
     Ok(prost_types::Timestamp {
-        seconds: x.timestamp().try_into()?,
+        seconds: x.timestamp(),
         nanos: x.timestamp_subsec_nanos().try_into()?,
     })
 }
