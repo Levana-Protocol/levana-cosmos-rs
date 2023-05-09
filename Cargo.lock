@@ -291,6 +291,7 @@ dependencies = [
  "log",
  "once_cell",
  "prost",
+ "prost-types",
  "quickcheck",
  "rand",
  "serde",
@@ -305,11 +306,13 @@ name = "cosmos-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.21.0",
  "chrono",
  "clap",
  "clap_complete",
  "cosmos",
  "env_logger 0.10.0",
+ "fs-err",
  "futures",
  "log",
  "once_cell",
