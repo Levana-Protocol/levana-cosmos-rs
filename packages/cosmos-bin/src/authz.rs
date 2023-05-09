@@ -4,9 +4,12 @@ use std::{
 };
 
 use anyhow::Result;
+use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use cosmos::{
-    proto::{cosmos::authz::v1beta1::MsgExec, cosmwasm::wasm::v1::MsgExecuteContract},
+    proto::{
+        cosmos::authz::v1beta1::MsgExec, cosmwasm::wasm::v1::MsgExecuteContract, traits::Message,
+    },
     Address, Cosmos, HasAddress, HasAddressType, MsgGrantHelper, MsgStoreCode, TxBuilder,
     TypedMessage,
 };
@@ -21,13 +24,27 @@ pub(crate) struct Opt {
 
 #[derive(clap::Parser)]
 enum Subcommand {
-    /// Give the grantee unlimited permissions
+    /// Give the grantee permissions
     Grant {
         grantee: Address,
         /// Type of grant to allow
         grant_type: GrantType,
         #[clap(flatten)]
         tx_opt: TxOpt,
+        /// How long, in seconds, the grant lasts
+        #[clap(long)]
+        duration: i64,
+    },
+    /// Print a CW3-compatible version of a grant
+    Cw3Grant {
+        /// CW3 smart contract address
+        #[clap(long)]
+        granter: Address,
+        /// Address allowed to perform actions
+        #[clap(long)]
+        grantee: Address,
+        /// Type of grant to allow
+        grant_type: GrantType,
         /// How long, in seconds, the grant lasts
         #[clap(long)]
         duration: i64,
@@ -70,6 +87,15 @@ pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
         } => {
             let expiration = Utc::now() + Duration::seconds(duration);
             grant(cosmos, grantee, tx_opt, expiration, grant_type).await?;
+        }
+        Subcommand::Cw3Grant {
+            granter,
+            grantee,
+            grant_type,
+            duration,
+        } => {
+            let expiration = Utc::now() + Duration::seconds(duration);
+            cw3_grant(granter, grantee, expiration, grant_type)?;
         }
         Subcommand::GranterGrants { granter } => granter_grants(cosmos, granter).await?,
         Subcommand::StoreCode {
@@ -133,7 +159,7 @@ async fn grant(
     txbuilder.add_message_mut(
         MsgGrantHelper {
             granter: wallet.get_address(),
-            grantee: grantee.get_address(),
+            grantee,
             authorization: grant_type.as_url().to_owned(),
             expiration: Some(expiration),
         }
@@ -142,6 +168,42 @@ async fn grant(
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
     log::info!("Granted in {}", res.txhash);
     Ok(())
+}
+
+fn cw3_grant(
+    granter: Address,
+    grantee: Address,
+    expiration: DateTime<Utc>,
+    grant_type: GrantType,
+) -> Result<()> {
+    let msg = MsgGrantHelper {
+        granter,
+        grantee,
+        authorization: grant_type.as_url().to_owned(),
+        expiration: Some(expiration),
+    }
+    .try_into_msg_grant()?;
+    let msg = msg.encode_to_vec();
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Msg {
+        Stargate { type_url: String, value: String },
+    }
+
+    let stargate = Msg::Stargate {
+        type_url: "/cosmos.authz.v1beta1.MsgGrant".to_owned(),
+        value: into_base64(&msg),
+    };
+
+    let mut stdout = std::io::stdout();
+    serde_json::to_writer_pretty(&mut stdout, &stargate)?;
+
+    Ok(())
+}
+
+fn into_base64(msg: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD_NO_PAD.encode(msg)
 }
 
 async fn granter_grants(cosmos: Cosmos, granter: Address) -> Result<()> {
