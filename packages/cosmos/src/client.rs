@@ -948,12 +948,14 @@ impl TxBuilder {
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
+    /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
+    /// the multiplier can by adjusted by calling [Cosmos::set_gas_multiplier]
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, wallet).await?;
-        self.execute_gas(
+        self.inner_sign_and_broadcast(
             cosmos,
             wallet,
-            Some(simres.body),
+            simres.body,
             // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
             // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
             (simres.gas_used as f64 * cosmos.get_gas_multiplier()) as u64,
@@ -961,16 +963,26 @@ impl TxBuilder {
         .await
     }
 
-    /// Sign transaction and broadcast using the given amount of gas to request
-    pub async fn execute_gas(
+    /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
+    /// unlike sign_and_broadcast(), the gas amount is explicit here and therefore no simulation is run
+    pub async fn sign_and_broadcast_with_gas(
         &self,
         cosmos: &Cosmos,
         wallet: &Wallet,
-        body: Option<TxBody>,
+        gas_to_request: u64,
+    ) -> Result<TxResponse> {
+        self.inner_sign_and_broadcast(cosmos, wallet, self.make_tx_body(), gas_to_request)
+            .await
+    }
+
+    async fn inner_sign_and_broadcast(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+        body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse> {
         let base_account = cosmos.get_base_account(wallet.address()).await?;
-        let body = body.unwrap_or_else(|| self.make_tx_body());
 
         match self
             .sign_and_broadcast_with(
