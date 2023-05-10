@@ -1,4 +1,8 @@
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
@@ -105,6 +109,11 @@ pub struct CosmosBuilder {
     pub chain_id: String,
     pub gas_coin: String,
     pub address_type: AddressType,
+    // Add a multiplier to the gas estimate to account for any gas fluctuations
+    // This is an internal AtomicU64,
+    // the public API uses f64 getters and setters for simplicity
+    gas_estimate_multiplier: AtomicU64,
+
     /// Coins used per 1000 gas
     coins_per_kgas: u64,
     /// How many attempts to give a transaction before giving up
@@ -510,6 +519,14 @@ impl Cosmos {
         gas * self.pool.manager().coins_per_kgas / 1000
     }
 
+    pub fn get_gas_multiplier(&self) -> f64 {
+        self.pool.manager().get_gas_multiplier()
+    }
+
+    pub fn set_gas_multiplier(&self, value: f64) {
+        self.pool.manager().set_gas_multiplier(value)
+    }
+
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
         self.inner()
             .await?
@@ -637,6 +654,19 @@ impl Cosmos {
 }
 
 impl CosmosBuilder {
+    // same amount that CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
+    // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
+    const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
+
+    pub fn get_gas_multiplier(&self) -> f64 {
+        f64::from_bits(self.gas_estimate_multiplier.load(Ordering::SeqCst))
+    }
+
+    pub fn set_gas_multiplier(&self, value: f64) {
+        self.gas_estimate_multiplier
+            .store(value.to_bits(), Ordering::SeqCst)
+    }
+
     fn new_juno_testnet() -> CosmosBuilder {
         CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
@@ -645,6 +675,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -656,6 +689,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 3, // fail faster during testing
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -668,6 +704,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -680,6 +719,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -692,6 +734,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -703,6 +748,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -714,6 +762,9 @@ impl CosmosBuilder {
             address_type: AddressType::Levana,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -725,6 +776,9 @@ impl CosmosBuilder {
             address_type: AddressType::Wasm,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -735,6 +789,9 @@ impl CosmosBuilder {
             address_type: AddressType::Sei,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -748,6 +805,9 @@ impl CosmosBuilder {
             address_type: AddressType::Stargaze,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -761,6 +821,9 @@ impl CosmosBuilder {
             address_type: AddressType::Stargaze,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 }
@@ -887,11 +950,15 @@ impl TxBuilder {
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, wallet).await?;
-        // Add 30% to the gas estimate to account for any gas fluctuations
-        // this is the same amount that the CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
-        // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
-        self.execute_gas(cosmos, wallet, Some(simres.body), simres.gas_used * 13 / 10)
-            .await
+        self.execute_gas(
+            cosmos,
+            wallet,
+            Some(simres.body),
+            // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+            // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
+            (simres.gas_used as f64 * cosmos.get_gas_multiplier()) as u64,
+        )
+        .await
     }
 
     /// Sign transaction and broadcast using the given amount of gas to request
@@ -1288,6 +1355,19 @@ mod tests {
             get_expected_sequence("account sequence mismatch, expected XXXXX, got 7"),
             None
         );
+    }
+
+    #[test]
+    fn gas_estimate_multiplier() {
+        let cosmos = CosmosBuilder::new_osmosis_testnet();
+
+        // the same as sign_and_broadcast()
+        let multiply_estimated_gas =
+            |gas_used: u64| -> u64 { (gas_used as f64 * cosmos.get_gas_multiplier()) as u64 };
+
+        assert_eq!(multiply_estimated_gas(1234), 1604);
+        cosmos.set_gas_multiplier(4.2);
+        assert_eq!(multiply_estimated_gas(1234), 5182);
     }
 }
 
