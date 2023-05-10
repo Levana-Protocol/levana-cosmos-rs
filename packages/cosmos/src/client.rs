@@ -519,10 +519,9 @@ impl Cosmos {
         gas * self.pool.manager().coins_per_kgas / 1000
     }
 
-    /// Gas estimation is not perfect, and we need to adjust it by a multiplier to account for drift
-    /// Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-    pub fn estimate_gas(&self, simulated_gas_used: u64) -> u64 {
-        self.pool.manager().estimate_gas(simulated_gas_used)
+    /// Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+    pub fn multiply_gas(&self, simulated_gas_used: u64) -> u64 {
+        self.pool.manager().multiply_gas(simulated_gas_used)
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
@@ -669,8 +668,8 @@ impl CosmosBuilder {
     const DEFAULT_GAS_ESTIMATE_MULTIPLIER: u64 = 13000000000;
 
     /// Gas estimation is not perfect, and we need to adjust it by a multiplier to account for drift
-    /// Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-    pub fn estimate_gas(&self, simulated_gas_used: u64) -> u64 {
+    pub fn multiply_gas(&self, simulated_gas_used: u64) -> u64 {
+        // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
         (simulated_gas_used as f64 * self.get_gas_multiplier()) as u64
     }
 
