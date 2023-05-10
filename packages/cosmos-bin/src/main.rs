@@ -366,7 +366,7 @@ impl Subcommand {
                 let tx = match skip_simulate {
                     Some(gas_to_request) => {
                         tx_builder
-                            .execute_gas(&cosmos, &wallet, None, gas_to_request)
+                            .sign_and_broadcast_with_gas(&cosmos, &wallet, gas_to_request)
                             .await?
                     }
                     None => tx_builder.sign_and_broadcast(&cosmos, &wallet).await?,
