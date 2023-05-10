@@ -519,11 +519,6 @@ impl Cosmos {
         gas * self.pool.manager().coins_per_kgas / 1000
     }
 
-    /// Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
-    pub fn multiply_gas(&self, simulated_gas_used: u64) -> u64 {
-        self.pool.manager().multiply_gas(simulated_gas_used)
-    }
-
     pub fn get_gas_multiplier(&self) -> f64 {
         self.pool.manager().get_gas_multiplier()
     }
@@ -659,28 +654,17 @@ impl Cosmos {
 }
 
 impl CosmosBuilder {
-    // We store the multiplier as a u64
-    // but it is really a fixed point number with 10 decimal places
-    const GAS_ESTIMATE_MULTPLIER_PRECISION: u64 = 10000000000;
-    // this is actually 1.3x
     // same amount that CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
     // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
-    const DEFAULT_GAS_ESTIMATE_MULTIPLIER: u64 = 13000000000;
-
-    /// Gas estimation is not perfect, and we need to adjust it by a multiplier to account for drift
-    pub fn multiply_gas(&self, simulated_gas_used: u64) -> u64 {
-        // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-        (simulated_gas_used as f64 * self.get_gas_multiplier()) as u64
-    }
+    const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
 
     pub fn get_gas_multiplier(&self) -> f64 {
-        let raw = self.gas_estimate_multiplier.load(Ordering::SeqCst);
-        raw as f64 / Self::GAS_ESTIMATE_MULTPLIER_PRECISION as f64
+        f64::from_bits(self.gas_estimate_multiplier.load(Ordering::SeqCst))
     }
 
     pub fn set_gas_multiplier(&self, value: f64) {
-        let value = (value * Self::GAS_ESTIMATE_MULTPLIER_PRECISION as f64) as u64;
-        self.gas_estimate_multiplier.store(value, Ordering::SeqCst)
+        self.gas_estimate_multiplier
+            .store(value.to_bits(), Ordering::SeqCst)
     }
 
     fn new_juno_testnet() -> CosmosBuilder {
@@ -691,7 +675,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -703,7 +689,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 3, // fail faster during testing
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -716,7 +704,9 @@ impl CosmosBuilder {
             address_type: AddressType::Juno,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -729,7 +719,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -742,7 +734,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -754,7 +748,9 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -766,7 +762,9 @@ impl CosmosBuilder {
             address_type: AddressType::Levana,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -778,7 +776,9 @@ impl CosmosBuilder {
             address_type: AddressType::Wasm,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -789,7 +789,9 @@ impl CosmosBuilder {
             address_type: AddressType::Sei,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -803,7 +805,9 @@ impl CosmosBuilder {
             address_type: AddressType::Stargaze,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 
@@ -817,7 +821,9 @@ impl CosmosBuilder {
             address_type: AddressType::Stargaze,
             coins_per_kgas: 30,
             transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER),
+            gas_estimate_multiplier: AtomicU64::new(
+                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
+            ),
         }
     }
 }
@@ -948,7 +954,9 @@ impl TxBuilder {
             cosmos,
             wallet,
             Some(simres.body),
-            cosmos.estimate_gas(simres.gas_used),
+            // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+            // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
+            (simres.gas_used as f64 * cosmos.get_gas_multiplier()) as u64,
         )
         .await
     }
@@ -1352,9 +1360,14 @@ mod tests {
     #[test]
     fn gas_estimate_multiplier() {
         let cosmos = CosmosBuilder::new_osmosis_testnet();
-        assert_eq!(cosmos.estimate_gas(1234), 1604);
+
+        // the same as sign_and_broadcast()
+        let multiply_estimated_gas =
+            |gas_used: u64| -> u64 { (gas_used as f64 * cosmos.get_gas_multiplier()) as u64 };
+
+        assert_eq!(multiply_estimated_gas(1234), 1604);
         cosmos.set_gas_multiplier(4.2);
-        assert_eq!(cosmos.estimate_gas(1234), 5182);
+        assert_eq!(multiply_estimated_gas(1234), 5182);
     }
 }
 
