@@ -53,10 +53,10 @@ struct Opt {
         long,
         short,
         global = true,
-        default_value_t = 1.3,
-        env = "GAS_MULTIPLIER"
+        default_value = None,
+        env = "COSMOS_GAS_MULTIPLIER"
     )]
-    gas_multiplier: f64,
+    gas_multiplier: Option<f64>,
 }
 
 impl Opt {
@@ -278,7 +278,10 @@ impl Subcommand {
         }
         let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
-        cosmos.set_gas_multiplier(opt.gas_multiplier);
+
+        if let Some(gas_multiplier) = opt.gas_multiplier {
+            cosmos.set_gas_multiplier(gas_multiplier);
+        }
 
         match self {
             Subcommand::StoreCode { tx_opt, file } => {
