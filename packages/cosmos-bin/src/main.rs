@@ -47,6 +47,10 @@ struct Opt {
     /// Turn on verbose output
     #[clap(long, short, global = true)]
     verbose: bool,
+
+    /// Gas multiplier for simulated transactions
+    #[clap(long, short, global = true, default_value = "1.3")]
+    gas_multiplier: f64,
 }
 
 impl Opt {
@@ -268,6 +272,7 @@ impl Subcommand {
         }
         let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
+        cosmos.set_gas_multiplier(opt.gas_multiplier);
 
         match self {
             Subcommand::StoreCode { tx_opt, file } => {
@@ -388,27 +393,10 @@ impl Subcommand {
                 dest,
                 coins,
             } => {
-                // gas is wildly underestimated on osmosis testnet at least
-                // bump up the multiplier to make sure we have enough
-                // then set it back when we're done sending coins
-                let original_gas_multiplier = cosmos.get_gas_multiplier();
-                if original_gas_multiplier < 1.5 {
-                    log::info!(
-                        "gas multiplier is low ({}) - increasing to 1.5 to send coins",
-                        original_gas_multiplier
-                    );
-                    cosmos.set_gas_multiplier(1.5);
-                }
-
                 let txres = tx_opt
                     .get_wallet(address_type)
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
                     .await?;
-
-                if cosmos.get_gas_multiplier() != original_gas_multiplier {
-                    log::info!("setting gas multiplier back to {}", original_gas_multiplier);
-                    cosmos.set_gas_multiplier(original_gas_multiplier);
-                }
 
                 println!("{}", txres.txhash);
             }
