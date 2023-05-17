@@ -1,10 +1,12 @@
 use std::{
+    cell::RefCell,
     fmt::Display,
+    ops::DerefMut,
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -31,7 +33,12 @@ use cosmos_sdk_proto::{
 use deadpool::{async_trait, managed::RecycleResult};
 use serde::de::Visitor;
 use tokio::sync::Mutex;
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic::{
+    codegen::{http::HeaderMap, InterceptedService},
+    metadata::MetadataValue,
+    transport::{Channel, ClientTlsConfig, Endpoint},
+    Request, Status, service::Interceptor,
+};
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
 
@@ -40,6 +47,7 @@ use super::Wallet;
 #[derive(Clone)]
 pub struct Cosmos {
     pool: deadpool::managed::Pool<CosmosBuilder>,
+    headers: HeaderMap,
 }
 
 #[async_trait]
@@ -71,6 +79,14 @@ impl HasAddressType for Cosmos {
     }
 }
 
+struct MyInterceptor;
+
+impl Interceptor for MyInterceptor {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
+        Ok(request)
+    }
+}
+
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
     auth_query_client:
@@ -80,7 +96,7 @@ pub struct CosmosInner {
     tx_service_client:
         Mutex<cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<Channel>>,
     wasm_query_client:
-        Mutex<cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<Channel>>,
+    Mutex<cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<InterceptedService<Channel, MyInterceptor>>>,
     tendermint_client: Mutex<
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<Channel>,
     >,
@@ -118,21 +134,28 @@ pub struct CosmosBuilder {
     coins_per_kgas: u64,
     /// How many attempts to give a transaction before giving up
     transaction_attempts: usize,
+    /// Set of HTTP headers to add before request is sent
+    headers: HeaderMap,
 }
 
 impl CosmosBuilder {
-    pub async fn build(self) -> Result<Cosmos> {
-        let cosmos = self.build_lazy();
+    pub async fn build(self, headers: Option<HeaderMap>) -> Result<Cosmos> {
+        let cosmos = self.build_lazy(headers);
         // Force strict connection
         std::mem::drop(cosmos.inner().await?);
         Ok(cosmos)
     }
 
-    pub fn build_lazy(self) -> Cosmos {
+    pub fn build_lazy(self, headers: Option<HeaderMap>) -> Cosmos {
+        let headers = match headers {
+            Some(res) => res,
+            None => HeaderMap::new(),
+        };
         Cosmos {
             pool: deadpool::managed::Pool::builder(self)
                 .build()
                 .expect("Unexpected pool build error"),
+            headers,
         }
     }
 }
@@ -218,8 +241,8 @@ impl FromStr for CosmosNetwork {
 }
 
 impl CosmosNetwork {
-    pub async fn connect(self) -> Result<Cosmos> {
-        self.builder().build().await
+    pub async fn connect(self, headers: HeaderMap) -> Result<Cosmos> {
+        self.builder().build(Some(headers)).await
     }
 
     pub fn builder(self) -> CosmosBuilder {
@@ -237,6 +260,17 @@ impl CosmosNetwork {
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
         }
     }
+}
+
+fn intercept(mut req: Request<()>, referrer_header: Option<String>) -> Result<Request<()>, Status> {
+    let request = req.metadata_mut();
+    if let Some(value) = referrer_header {
+        let value = FromStr::from_str(&value);
+        if let Ok(header_value) = value {
+            request.insert("Referer", header_value);
+        }
+    }
+    Ok(req)
 }
 
 impl CosmosBuilder {
@@ -275,7 +309,8 @@ impl CosmosBuilder {
                 ),
             ),
             wasm_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(grpc_channel.clone()),
+                // cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(grpc_channel.clone()),
+                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), MyInterceptor)
             ),
             tendermint_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel.clone())
@@ -289,6 +324,9 @@ impl CosmosBuilder {
 
 impl Cosmos {
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
+        let foo = self.inner().await?;
+
+        // let goo = foo.as_ref();
         let res = self
             .inner()
             .await?
@@ -370,8 +408,10 @@ impl Cosmos {
             address: address.into(),
             query_data: query_data.into(),
         });
+
         let metadata = request.metadata_mut();
         metadata.insert("x-cosmos-block-height", height.into());
+
         Ok(self
             .inner()
             .await?
@@ -678,6 +718,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -692,6 +733,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -707,6 +749,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -722,6 +765,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -737,6 +781,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -751,6 +796,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -765,6 +811,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -779,6 +826,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -792,6 +840,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -808,6 +857,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 
@@ -824,6 +874,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
+            headers: HeaderMap::new(),
         }
     }
 }
