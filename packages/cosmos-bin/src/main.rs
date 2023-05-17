@@ -47,6 +47,16 @@ struct Opt {
     /// Turn on verbose output
     #[clap(long, short, global = true)]
     verbose: bool,
+
+    /// Gas multiplier for simulated transactions
+    #[clap(
+        long,
+        short,
+        global = true,
+        default_value = None,
+        env = "COSMOS_GAS_MULTIPLIER"
+    )]
+    gas_multiplier: Option<f64>,
 }
 
 impl Opt {
@@ -269,6 +279,10 @@ impl Subcommand {
         let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
 
+        if let Some(gas_multiplier) = opt.gas_multiplier {
+            cosmos.set_gas_multiplier(gas_multiplier);
+        }
+
         match self {
             Subcommand::StoreCode { tx_opt, file } => {
                 let wallet = tx_opt.get_wallet(address_type);
@@ -392,6 +406,7 @@ impl Subcommand {
                     .get_wallet(address_type)
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
                     .await?;
+
                 println!("{}", txres.txhash);
             }
             Subcommand::ContractInfo { contract } => {
