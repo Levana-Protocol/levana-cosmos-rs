@@ -406,10 +406,7 @@ impl Subcommand {
                     .await?;
 
                 if cosmos.get_gas_multiplier() != original_gas_multiplier {
-                    log::info!(
-                        "setting gas multiplier back to {}",
-                        original_gas_multiplier
-                    );
+                    log::info!("setting gas multiplier back to {}", original_gas_multiplier);
                     cosmos.set_gas_multiplier(original_gas_multiplier);
                 }
 
