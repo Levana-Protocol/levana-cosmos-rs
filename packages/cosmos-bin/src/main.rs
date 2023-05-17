@@ -49,7 +49,13 @@ struct Opt {
     verbose: bool,
 
     /// Gas multiplier for simulated transactions
-    #[clap(long, short, global = true, default_value = "1.3")]
+    #[clap(
+        long,
+        short,
+        global = true,
+        default_value_t = 1.3,
+        env = "GAS_MULTIPLIER"
+    )]
     gas_multiplier: f64,
 }
 
