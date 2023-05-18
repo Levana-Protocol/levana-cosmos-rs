@@ -84,12 +84,9 @@ impl Interceptor for CosmosInterceptor {
         if let Some(value) = &self.0 {
             let value = FromStr::from_str(&value);
             if let Ok(header_value) = value {
-                log::info!("Inserted referrer header: {header_value:?}");
                 req.insert("referer", header_value);
-                log::info!("sibi debug over2");
             }
         }
-        log::info!("sibi debug over: {:?}", request.metadata());
         Ok(request)
     }
 }
