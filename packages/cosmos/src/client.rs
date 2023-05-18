@@ -1,12 +1,10 @@
 use std::{
-    cell::RefCell,
     fmt::Display,
-    ops::DerefMut,
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -34,10 +32,10 @@ use deadpool::{async_trait, managed::RecycleResult};
 use serde::de::Visitor;
 use tokio::sync::Mutex;
 use tonic::{
-    codegen::{http::HeaderMap, InterceptedService},
-    metadata::MetadataValue,
+    codegen::InterceptedService,
+    service::Interceptor,
     transport::{Channel, ClientTlsConfig, Endpoint},
-    Request, Status, service::Interceptor,
+    Status,
 };
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
@@ -47,7 +45,6 @@ use super::Wallet;
 #[derive(Clone)]
 pub struct Cosmos {
     pool: deadpool::managed::Pool<CosmosBuilder>,
-    headers: HeaderMap,
 }
 
 #[async_trait]
@@ -79,29 +76,56 @@ impl HasAddressType for Cosmos {
     }
 }
 
-struct MyInterceptor;
+pub struct CosmosInterceptor(Option<String>);
 
-impl Interceptor for MyInterceptor {
-    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
+impl Interceptor for CosmosInterceptor {
+    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
+        let req = request.metadata_mut();
+        if let Some(value) = &self.0 {
+            let value = FromStr::from_str(&value);
+            if let Ok(header_value) = value {
+                log::info!("Inserted referrer header: {header_value:?}");
+                req.insert("referer", header_value);
+                log::info!("sibi debug over2");
+            }
+        }
+        log::info!("sibi debug over: {:?}", request.metadata());
         Ok(request)
     }
 }
 
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
-    auth_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<Channel>>,
-    bank_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<Channel>>,
-    tx_service_client:
-        Mutex<cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<Channel>>,
-    wasm_query_client:
-    Mutex<cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<InterceptedService<Channel, MyInterceptor>>>,
-    tendermint_client: Mutex<
-        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<Channel>,
+    auth_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
     >,
-    pub(crate) authz_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<Channel>>,
+    bank_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    tx_service_client: Mutex<
+        cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    wasm_query_client: Mutex<
+        cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    tendermint_client: Mutex<
+        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    pub(crate) authz_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -134,28 +158,23 @@ pub struct CosmosBuilder {
     coins_per_kgas: u64,
     /// How many attempts to give a transaction before giving up
     transaction_attempts: usize,
-    /// Set of HTTP headers to add before request is sent
-    headers: HeaderMap,
+    /// Referrer header that can be set
+    referer_header: Option<String>,
 }
 
 impl CosmosBuilder {
-    pub async fn build(self, headers: Option<HeaderMap>) -> Result<Cosmos> {
-        let cosmos = self.build_lazy(headers);
+    pub async fn build(self) -> Result<Cosmos> {
+        let cosmos = self.build_lazy();
         // Force strict connection
         std::mem::drop(cosmos.inner().await?);
         Ok(cosmos)
     }
 
-    pub fn build_lazy(self, headers: Option<HeaderMap>) -> Cosmos {
-        let headers = match headers {
-            Some(res) => res,
-            None => HeaderMap::new(),
-        };
+    pub fn build_lazy(self) -> Cosmos {
         Cosmos {
             pool: deadpool::managed::Pool::builder(self)
                 .build()
                 .expect("Unexpected pool build error"),
-            headers,
         }
     }
 }
@@ -241,8 +260,8 @@ impl FromStr for CosmosNetwork {
 }
 
 impl CosmosNetwork {
-    pub async fn connect(self, headers: HeaderMap) -> Result<Cosmos> {
-        self.builder().build(Some(headers)).await
+    pub async fn connect(self) -> Result<Cosmos> {
+        self.builder().build().await
     }
 
     pub fn builder(self) -> CosmosBuilder {
@@ -260,17 +279,6 @@ impl CosmosNetwork {
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
         }
     }
-}
-
-fn intercept(mut req: Request<()>, referrer_header: Option<String>) -> Result<Request<()>, Status> {
-    let request = req.metadata_mut();
-    if let Some(value) = referrer_header {
-        let value = FromStr::from_str(&value);
-        if let Ok(header_value) = value {
-            request.insert("Referer", header_value);
-        }
-    }
-    Ok(req)
 }
 
 impl CosmosBuilder {
@@ -292,31 +300,32 @@ impl CosmosBuilder {
                 .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
+        let referer_header = self.referer_header.clone();
+
         Ok(CosmosInner {
             auth_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
+                    grpc_channel.clone(), CosmosInterceptor(referer_header.clone())
                 ),
             ),
             bank_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::with_interceptor(
+                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
                 ),
             ),
             tx_service_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::with_interceptor(
+                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
                 ),
             ),
             wasm_query_client: Mutex::new(
-                // cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(grpc_channel.clone()),
-                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), MyInterceptor)
+                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
             ),
             tendermint_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel.clone())
+                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
             ),
             authz_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(grpc_channel)
+                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header))
             ),
         })
     }
@@ -324,9 +333,6 @@ impl CosmosBuilder {
 
 impl Cosmos {
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
-        let foo = self.inner().await?;
-
-        // let goo = foo.as_ref();
         let res = self
             .inner()
             .await?
@@ -707,6 +713,10 @@ impl CosmosBuilder {
             .store(value.to_bits(), Ordering::SeqCst)
     }
 
+    pub fn set_referer_header(&mut self, value: String) {
+        self.referer_header = Some(value);
+    }
+
     fn new_juno_testnet() -> CosmosBuilder {
         CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
@@ -718,7 +728,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -733,7 +743,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -749,7 +759,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -765,7 +775,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -781,7 +791,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -796,7 +806,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -811,7 +821,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -826,7 +836,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -840,7 +850,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -857,7 +867,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 
@@ -874,7 +884,7 @@ impl CosmosBuilder {
             gas_estimate_multiplier: AtomicU64::new(
                 Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
             ),
-            headers: HeaderMap::new(),
+            referer_header: None,
         }
     }
 }
