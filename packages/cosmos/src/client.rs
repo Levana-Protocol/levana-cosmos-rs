@@ -82,7 +82,7 @@ impl Interceptor for CosmosInterceptor {
     fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
         let req = request.metadata_mut();
         if let Some(value) = &self.0 {
-            let value = FromStr::from_str(&value);
+            let value = FromStr::from_str(value);
             if let Ok(header_value) = value {
                 req.insert("referer", header_value);
             }
