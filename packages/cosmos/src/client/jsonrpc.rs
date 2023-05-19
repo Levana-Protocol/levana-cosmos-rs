@@ -1,6 +1,5 @@
 use anyhow::Context;
 use base64::Engine;
-use rand::Rng;
 
 #[derive(serde::Serialize)]
 struct Request {
@@ -38,12 +37,12 @@ where
     Req: prost::Message,
     Res: prost::Message + Default,
 {
-    let mut rng = rand::thread_rng();
+    let id = rand::random();
 
     let req = Request {
         jsonrpc: "2.0".to_owned(),
         method: "abci_query".to_owned(),
-        id: rng.gen(),
+        id,
         params: Params {
             path: path.into(),
             data: hex::encode(&req.encode_to_vec()),
