@@ -334,17 +334,23 @@ impl CosmosBuilder {
 
 impl Cosmos {
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
-        let res = self
-            .inner()
-            .await?
-            .auth_query_client
-            .lock()
-            .await
-            .account(QueryAccountRequest {
-                address: address.into(),
-            })
-            .await?
-            .into_inner();
+        let inner = self.inner().await?;
+        let req = QueryAccountRequest {
+            address: address.into(),
+        };
+        let res = match &inner.rpc_info {
+            Some(RpcInfo { client, endpoint }) => {
+                make_jsonrpc_request(client, endpoint, req, "/cosmos.auth.v1beta1.Query/Account")
+                    .await?
+            }
+            None => inner
+                .auth_query_client
+                .lock()
+                .await
+                .account(req)
+                .await?
+                .into_inner(),
+        };
 
         Ok(prost::Message::decode(
             res.account.context("no account found")?.value.as_ref(),

@@ -51,16 +51,19 @@ where
         },
     };
 
-    let res: Response = client
+    let raw_body: String = client
         .post(endpoint)
         .json(&req)
         .send()
         .await?
         .error_for_status()?
-        .json()
+        .text()
         .await?;
 
-    let value = base64::engine::general_purpose::STANDARD_NO_PAD
+    let res = serde_json::from_str::<Response>(&raw_body)
+        .with_context(|| format!("Unable to parse JSON response: {raw_body}"))?;
+
+    let value = base64::engine::general_purpose::STANDARD
         .decode(match &res.result {
             Result::Response { value } => value,
         })
