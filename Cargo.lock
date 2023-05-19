@@ -291,6 +291,7 @@ dependencies = [
  "hkd32",
  "log",
  "once_cell",
+ "parking_lot",
  "prost",
  "prost-types",
  "quickcheck",

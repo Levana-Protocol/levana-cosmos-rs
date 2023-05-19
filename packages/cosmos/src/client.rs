@@ -27,7 +27,6 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use deadpool::{async_trait, managed::RecycleResult};
-use rand::seq::SliceRandom;
 use serde::de::Visitor;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -46,6 +45,7 @@ pub struct Cosmos {
 /// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
 pub struct CosmosBuilders {
     builders: Vec<Arc<CosmosBuilder>>,
+    next_index: parking_lot::Mutex<usize>,
 }
 
 impl CosmosBuilders {
@@ -67,7 +67,7 @@ impl deadpool::managed::Manager for CosmosBuilders {
     type Error = anyhow::Error;
 
     async fn create(&self) -> Result<Self::Type> {
-        self.get_random_builder().build_inner().await
+        self.get_next_builder().build_inner().await
     }
 
     async fn recycle(&self, _: &mut CosmosInner) -> RecycleResult<anyhow::Error> {
@@ -76,13 +76,20 @@ impl deadpool::managed::Manager for CosmosBuilders {
 }
 
 impl CosmosBuilders {
-    fn get_random_builder(&self) -> Arc<CosmosBuilder> {
-        let mut rng = rand::thread_rng();
-        self.builders
-            .as_slice()
-            .choose(&mut rng)
-            .expect("Must provide at least one CosmosBuilder")
-            .clone()
+    fn get_next_builder(&self) -> Arc<CosmosBuilder> {
+        let mut guard = self.next_index.lock();
+        let res = self
+            .builders
+            .get(*guard)
+            .expect("Impossible. get_next_builders failed")
+            .clone();
+
+        *guard += 1;
+        if *guard >= self.builders.len() {
+            *guard = 0;
+        }
+
+        res
     }
 }
 
@@ -198,6 +205,7 @@ impl From<CosmosBuilder> for CosmosBuilders {
     fn from(c: CosmosBuilder) -> Self {
         CosmosBuilders {
             builders: vec![c.into()],
+            next_index: parking_lot::Mutex::new(0),
         }
     }
 }
