@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -25,10 +26,12 @@ use cosmos_sdk_proto::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
         MsgUpdateAdmin, QueryContractHistoryRequest, QueryContractHistoryResponse,
         QueryContractInfoRequest, QueryRawContractStateRequest, QuerySmartContractStateRequest,
+        QuerySmartContractStateResponse,
     },
     traits::Message,
 };
 use deadpool::{async_trait, managed::RecycleResult};
+use rand::Rng;
 use serde::de::Visitor;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -86,6 +89,12 @@ pub struct CosmosInner {
     >,
     pub(crate) authz_query_client:
         Mutex<cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<Channel>>,
+    pub(crate) rpc_info: Option<RpcInfo>,
+}
+
+pub(crate) struct RpcInfo {
+    client: reqwest::Client,
+    endpoint: String,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -109,6 +118,17 @@ pub struct CosmosBuilder {
     pub chain_id: String,
     pub gas_coin: String,
     pub address_type: AddressType,
+    pub config: CosmosConfig,
+}
+
+/// Optional config values.
+pub struct CosmosConfig {
+    /// Override RPC endpoint to use instead of gRPC.
+    pub rpc_url: Option<String>,
+
+    /// Client used for RPC connections. If not provided, creates a new one.
+    pub client: Option<reqwest::Client>,
+
     // Add a multiplier to the gas estimate to account for any gas fluctuations
     // This is an internal AtomicU64,
     // the public API uses f64 getters and setters for simplicity
@@ -118,6 +138,21 @@ pub struct CosmosBuilder {
     coins_per_kgas: u64,
     /// How many attempts to give a transaction before giving up
     transaction_attempts: usize,
+}
+
+impl Default for CosmosConfig {
+    fn default() -> Self {
+        // same amount that CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
+        // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
+        const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
+        Self {
+            rpc_url: None,
+            client: None,
+            gas_estimate_multiplier: AtomicU64::new(DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits()),
+            coins_per_kgas: 30,
+            transaction_attempts: 30,
+        }
+    }
 }
 
 impl CosmosBuilder {
@@ -258,6 +293,14 @@ impl CosmosBuilder {
                 .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
+        let rpc_info = self.config.rpc_url.as_ref().map(|endpoint| RpcInfo {
+                client: self
+                    .config
+                    .client
+                    .as_ref()
+                    .map_or_else(reqwest::Client::new, |x| x.clone()),
+                endpoint: endpoint.clone(),
+            });
         Ok(CosmosInner {
             auth_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
@@ -283,6 +326,7 @@ impl CosmosBuilder {
             authz_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(grpc_channel)
             ),
+            rpc_info
         })
     }
 }
@@ -344,19 +388,78 @@ impl Cosmos {
         address: impl Into<String>,
         query_data: impl Into<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        Ok(self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .smart_contract_state(QuerySmartContractStateRequest {
-                address: address.into(),
-                query_data: query_data.into(),
-            })
-            .await?
-            .into_inner()
-            .data)
+        let inner = self.inner().await?;
+        let proto_req = QuerySmartContractStateRequest {
+            address: address.into(),
+            query_data: query_data.into(),
+        };
+        match &inner.rpc_info {
+            Some(RpcInfo { client, endpoint }) => {
+                #[derive(serde::Serialize)]
+                struct Request {
+                    jsonrpc: String,
+                    method: String,
+                    id: u64,
+                    params: Params,
+                }
+                #[derive(serde::Serialize)]
+                struct Params {
+                    path: String,
+                    data: String,
+                    prove: bool,
+                }
+
+                let mut rng = rand::thread_rng();
+
+                let req = Request {
+                    jsonrpc: "2.0".to_owned(),
+                    method: "abci_query".to_owned(),
+                    id: rng.gen(),
+                    params: Params {
+                        path: "/cosmwasm.wasm.v1.Query/SmartContractState".to_owned(),
+                        data: hex::encode(&proto_req.encode_to_vec()),
+                        prove: false,
+                    },
+                };
+
+                #[derive(serde::Deserialize)]
+                struct Response {
+                    // id: u64,
+                    // jsonrpc: String,
+                    result: Result,
+                }
+                #[derive(serde::Deserialize, Debug)]
+                #[serde(rename_all = "snake_case")]
+                enum Result {
+                    Response { value: String },
+                }
+
+                let res: Response = client
+                    .post(endpoint)
+                    .json(&req)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+
+                let value = base64::engine::general_purpose::STANDARD_NO_PAD
+                    .decode(match &res.result {
+                        Result::Response { value } => value,
+                    })
+                    .context("Invalid base64 RPC response")?;
+                let res = QuerySmartContractStateResponse::decode(value.as_slice())?;
+                Ok(res.data)
+            }
+            None => {
+                let mut query_client = inner.wasm_query_client.lock().await;
+                Ok(query_client
+                    .smart_contract_state(proto_req)
+                    .await?
+                    .into_inner()
+                    .data)
+            }
+        }
     }
 
     pub async fn wasm_query_at_height(
@@ -440,7 +543,7 @@ impl Cosmos {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
         let inner = self.inner().await?;
-        for attempt in 1..=self.pool.manager().transaction_attempts {
+        for attempt in 1..=self.pool.manager().config.transaction_attempts {
             let mut client = inner.tx_service_client.lock().await;
             let txres = client
                 .get_tx(GetTxRequest {
@@ -466,7 +569,7 @@ impl Cosmos {
                     if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
                         log::debug!(
                             "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                            self.pool.manager().transaction_attempts
+                            self.pool.manager().config.transaction_attempts
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                     } else {
@@ -516,7 +619,7 @@ impl Cosmos {
     }
 
     fn gas_to_coins(&self, gas: u64) -> u64 {
-        gas * self.pool.manager().coins_per_kgas / 1000
+        gas * self.pool.manager().config.coins_per_kgas / 1000
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
@@ -654,16 +757,13 @@ impl Cosmos {
 }
 
 impl CosmosBuilder {
-    // same amount that CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
-    // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
-    const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
-
     pub fn get_gas_multiplier(&self) -> f64 {
-        f64::from_bits(self.gas_estimate_multiplier.load(Ordering::SeqCst))
+        f64::from_bits(self.config.gas_estimate_multiplier.load(Ordering::SeqCst))
     }
 
     pub fn set_gas_multiplier(&self, value: f64) {
-        self.gas_estimate_multiplier
+        self.config
+            .gas_estimate_multiplier
             .store(value.to_bits(), Ordering::SeqCst)
     }
 
@@ -673,11 +773,7 @@ impl CosmosBuilder {
             chain_id: "uni-6".to_owned(),
             gas_coin: "ujunox".to_owned(),
             address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -687,11 +783,10 @@ impl CosmosBuilder {
             chain_id: "testing".to_owned(),
             gas_coin: "ujunox".to_owned(),
             address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 3, // fail faster during testing
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig {
+                transaction_attempts: 3, // fail faster during testing
+                ..CosmosConfig::default()
+            },
         }
     }
 
@@ -702,11 +797,7 @@ impl CosmosBuilder {
             chain_id: "juno-1".to_owned(),
             gas_coin: "ujuno".to_owned(),
             address_type: AddressType::Juno,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -717,11 +808,7 @@ impl CosmosBuilder {
             chain_id: "osmosis-1".to_owned(),
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -732,11 +819,7 @@ impl CosmosBuilder {
             chain_id: "osmo-test-5".to_owned(),
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -746,11 +829,7 @@ impl CosmosBuilder {
             chain_id: "localosmosis".to_owned(),
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -760,11 +839,7 @@ impl CosmosBuilder {
             chain_id: "dragonfire-4".to_owned(),
             gas_coin: "udragonfire".to_owned(),
             address_type: AddressType::Levana,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -774,11 +849,7 @@ impl CosmosBuilder {
             chain_id: "localwasmd".to_owned(),
             gas_coin: "uwasm".to_owned(),
             address_type: AddressType::Wasm,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -787,11 +858,10 @@ impl CosmosBuilder {
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig {
+                rpc_url: Some("https://sei-testnet-rpc.polkachu.com/".to_owned()),
+                ..CosmosConfig::default()
+            },
         }
     }
 
@@ -803,11 +873,7 @@ impl CosmosBuilder {
             // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/assetlist.json
             gas_coin: "ustars".to_owned(),
             address_type: AddressType::Stargaze,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 
@@ -819,11 +885,7 @@ impl CosmosBuilder {
             // https://github.com/cosmos/chain-registry/blob/master/stargaze/assetlist.json
             gas_coin: "ustars".to_owned(),
             address_type: AddressType::Stargaze,
-            coins_per_kgas: 30,
-            transaction_attempts: 30,
-            gas_estimate_multiplier: AtomicU64::new(
-                Self::DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits(),
-            ),
+            config: CosmosConfig::default(),
         }
     }
 }
