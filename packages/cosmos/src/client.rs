@@ -67,19 +67,22 @@ impl deadpool::managed::Manager for CosmosBuilders {
     type Error = anyhow::Error;
 
     async fn create(&self) -> Result<Self::Type> {
-        let builder = {
-            let mut rng = rand::thread_rng();
-            self.builders
-                .as_slice()
-                .choose(&mut rng)
-                .context("Must provide at least one CosmosBuilder")?
-        }
-        .clone();
-        builder.build_inner().await
+        self.get_random_builder().build_inner().await
     }
 
     async fn recycle(&self, _: &mut CosmosInner) -> RecycleResult<anyhow::Error> {
         Ok(())
+    }
+}
+
+impl CosmosBuilders {
+    fn get_random_builder(&self) -> Arc<CosmosBuilder> {
+        let mut rng = rand::thread_rng();
+        self.builders
+            .as_slice()
+            .choose(&mut rng)
+            .expect("Must provide at least one CosmosBuilder")
+            .clone()
     }
 }
 
