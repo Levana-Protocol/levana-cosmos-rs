@@ -1099,27 +1099,42 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
-        let simres = cosmos
-            .inner()
-            .await?
-            .tx_service_client
-            .lock()
-            .await
-            .simulate(simulate_req)
-            .await;
-
-        // PERP-283: detect account sequence mismatches
-        let simres = match simres {
-            Ok(simres) => simres.into_inner(),
-            Err(e) => {
-                let is_sequence = get_expected_sequence(e.message());
-                let e = anyhow::Error::from(e).context("Unable to simulate transaction");
-                return match is_sequence {
-                    None => Err(ExpectedSequenceError::RealError(e)),
-                    Some(number) => Err(ExpectedSequenceError::NewNumber(number, e)),
-                };
+        let simres = {
+            let inner = cosmos.inner().await?;
+            match &inner.rpc_info {
+                Some(RpcInfo { client, endpoint }) => {
+                    make_jsonrpc_request(
+                        client,
+                        endpoint,
+                        simulate_req,
+                        "/cosmos.tx.v1beta1.Service/Simulate",
+                    )
+                    .await?
+                }
+                None => {
+                    let simres = inner
+                        .tx_service_client
+                        .lock()
+                        .await
+                        .simulate(simulate_req)
+                        .await;
+                    // PERP-283: detect account sequence mismatches
+                    match simres {
+                        Ok(simres) => simres.into_inner(),
+                        Err(e) => {
+                            let is_sequence = get_expected_sequence(e.message());
+                            let e =
+                                anyhow::Error::from(e).context("Unable to simulate transaction");
+                            return match is_sequence {
+                                None => Err(ExpectedSequenceError::RealError(e)),
+                                Some(number) => Err(ExpectedSequenceError::NewNumber(number, e)),
+                            };
+                        }
+                    }
+                }
             }
         };
+
         let gas_used = simres
             .gas_info
             .as_ref()
@@ -1170,21 +1185,32 @@ impl TxBuilder {
             signatures: vec![signature.serialize_compact().to_vec()],
         };
 
-        let res = cosmos
-            .inner()
-            .await?
-            .tx_service_client
-            .lock()
-            .await
-            .broadcast_tx(BroadcastTxRequest {
-                tx_bytes: tx.encode_to_vec(),
-                mode: BroadcastMode::Sync as i32,
-            })
-            .await
-            .context("Unable to broadcast transaction")?
-            .into_inner()
-            .tx_response
-            .context("Missing inner tx_response")?;
+        let inner = cosmos.inner().await?;
+        let req = BroadcastTxRequest {
+            tx_bytes: tx.encode_to_vec(),
+            mode: BroadcastMode::Sync as i32,
+        };
+        let res = match &inner.rpc_info {
+            Some(RpcInfo { client, endpoint }) => {
+                make_jsonrpc_request(
+                    client,
+                    endpoint,
+                    req,
+                    "/cosmos.tx.v1beta1.Service/BroadcastTx",
+                )
+                .await?
+            }
+            None => inner
+                .tx_service_client
+                .lock()
+                .await
+                .broadcast_tx(req)
+                .await
+                .context("Unable to broadcast transaction")?
+                .into_inner(),
+        }
+        .tx_response
+        .context("Missing inner tx_response")?;
 
         if !self.skip_code_check && res.code != 0 {
             let e = anyhow::anyhow!(
