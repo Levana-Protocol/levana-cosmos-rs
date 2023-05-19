@@ -99,6 +99,10 @@ impl Cosmos {
             anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
         })
     }
+
+    pub fn get_first_builder(&self) -> Arc<CosmosBuilder> {
+        self.pool.manager().get_first_builder().clone()
+    }
 }
 
 impl HasAddressType for Cosmos {
@@ -147,6 +151,7 @@ pub enum CosmosNetwork {
 }
 
 /// Build a connection
+#[derive(Clone)]
 pub struct CosmosBuilder {
     pub grpc_url: String,
     pub chain_id: String,
@@ -156,6 +161,7 @@ pub struct CosmosBuilder {
 }
 
 /// Optional config values.
+#[derive(Clone)]
 pub struct CosmosConfig {
     /// Override RPC endpoint to use instead of gRPC.
     pub rpc_url: Option<String>,
