@@ -1,3 +1,5 @@
+mod jsonrpc;
+
 use std::{
     fmt::Display,
     str::FromStr,
@@ -5,7 +7,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -26,17 +27,17 @@ use cosmos_sdk_proto::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
         MsgUpdateAdmin, QueryContractHistoryRequest, QueryContractHistoryResponse,
         QueryContractInfoRequest, QueryRawContractStateRequest, QuerySmartContractStateRequest,
-        QuerySmartContractStateResponse,
     },
     traits::Message,
 };
 use deadpool::{async_trait, managed::RecycleResult};
-use rand::Rng;
 use serde::de::Visitor;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
+
+use self::jsonrpc::make_jsonrpc_request;
 
 use super::Wallet;
 
@@ -294,13 +295,13 @@ impl CosmosBuilder {
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
         let rpc_info = self.config.rpc_url.as_ref().map(|endpoint| RpcInfo {
-                client: self
-                    .config
-                    .client
-                    .as_ref()
-                    .map_or_else(reqwest::Client::new, |x| x.clone()),
-                endpoint: endpoint.clone(),
-            });
+            client: self
+                .config
+                .client
+                .as_ref()
+                .map_or_else(reqwest::Client::new, |x| x.clone()),
+            endpoint: endpoint.clone(),
+        });
         Ok(CosmosInner {
             auth_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
@@ -393,73 +394,25 @@ impl Cosmos {
             address: address.into(),
             query_data: query_data.into(),
         };
-        match &inner.rpc_info {
+        let res = match &inner.rpc_info {
             Some(RpcInfo { client, endpoint }) => {
-                #[derive(serde::Serialize)]
-                struct Request {
-                    jsonrpc: String,
-                    method: String,
-                    id: u64,
-                    params: Params,
-                }
-                #[derive(serde::Serialize)]
-                struct Params {
-                    path: String,
-                    data: String,
-                    prove: bool,
-                }
-
-                let mut rng = rand::thread_rng();
-
-                let req = Request {
-                    jsonrpc: "2.0".to_owned(),
-                    method: "abci_query".to_owned(),
-                    id: rng.gen(),
-                    params: Params {
-                        path: "/cosmwasm.wasm.v1.Query/SmartContractState".to_owned(),
-                        data: hex::encode(&proto_req.encode_to_vec()),
-                        prove: false,
-                    },
-                };
-
-                #[derive(serde::Deserialize)]
-                struct Response {
-                    // id: u64,
-                    // jsonrpc: String,
-                    result: Result,
-                }
-                #[derive(serde::Deserialize, Debug)]
-                #[serde(rename_all = "snake_case")]
-                enum Result {
-                    Response { value: String },
-                }
-
-                let res: Response = client
-                    .post(endpoint)
-                    .json(&req)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json()
-                    .await?;
-
-                let value = base64::engine::general_purpose::STANDARD_NO_PAD
-                    .decode(match &res.result {
-                        Result::Response { value } => value,
-                    })
-                    .context("Invalid base64 RPC response")?;
-                let res = QuerySmartContractStateResponse::decode(value.as_slice())?;
-                Ok(res.data)
+                make_jsonrpc_request(
+                    client,
+                    endpoint,
+                    proto_req,
+                    "/cosmwasm.wasm.v1.Query/SmartContractState",
+                )
+                .await?
             }
             None => {
                 let mut query_client = inner.wasm_query_client.lock().await;
-                Ok(query_client
+                query_client
                     .smart_contract_state(proto_req)
                     .await?
                     .into_inner()
-                    .data)
             }
-        }
+        };
+        Ok(res.data)
     }
 
     pub async fn wasm_query_at_height(
