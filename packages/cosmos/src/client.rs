@@ -1,10 +1,6 @@
 mod jsonrpc;
 
-use std::{
-    fmt::Display,
-    str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
@@ -31,6 +27,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use deadpool::{async_trait, managed::RecycleResult};
+use rand::seq::SliceRandom;
 use serde::de::Visitor;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -43,17 +40,42 @@ use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: deadpool::managed::Pool<CosmosBuilder>,
+    pool: deadpool::managed::Pool<CosmosBuilders>,
+}
+
+/// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
+pub struct CosmosBuilders {
+    builders: Vec<Arc<CosmosBuilder>>,
+}
+
+impl CosmosBuilders {
+    fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
+        self.builders
+            .first()
+            .expect("Cannot construct a CosmosBuilders with no CosmosBuilder")
+    }
+
+    pub fn add(&mut self, builder: impl Into<Arc<CosmosBuilder>>) {
+        self.builders.push(builder.into());
+    }
 }
 
 #[async_trait]
-impl deadpool::managed::Manager for CosmosBuilder {
+impl deadpool::managed::Manager for CosmosBuilders {
     type Type = CosmosInner;
 
     type Error = anyhow::Error;
 
     async fn create(&self) -> Result<Self::Type> {
-        self.build_inner().await
+        let builder = {
+            let mut rng = rand::thread_rng();
+            self.builders
+                .as_slice()
+                .choose(&mut rng)
+                .context("Must provide at least one CosmosBuilder")?
+        }
+        .clone();
+        builder.build_inner().await
     }
 
     async fn recycle(&self, _: &mut CosmosInner) -> RecycleResult<anyhow::Error> {
@@ -62,7 +84,7 @@ impl deadpool::managed::Manager for CosmosBuilder {
 }
 
 impl Cosmos {
-    pub(crate) async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilder>> {
+    pub(crate) async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilders>> {
         self.pool.get().await.map_err(|e| {
             anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
         })
@@ -71,12 +93,13 @@ impl Cosmos {
 
 impl HasAddressType for Cosmos {
     fn get_address_type(&self) -> AddressType {
-        self.pool.manager().address_type
+        self.pool.manager().get_first_builder().address_type
     }
 }
 
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
+    pub(crate) builder: Arc<CosmosBuilder>,
     auth_query_client:
         Mutex<cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<Channel>>,
     bank_query_client:
@@ -131,14 +154,13 @@ pub struct CosmosConfig {
     pub client: Option<reqwest::Client>,
 
     // Add a multiplier to the gas estimate to account for any gas fluctuations
-    // This is an internal AtomicU64,
-    // the public API uses f64 getters and setters for simplicity
-    gas_estimate_multiplier: AtomicU64,
+    pub gas_estimate_multiplier: f64,
 
     /// Coins used per 1000 gas
-    coins_per_kgas: u64,
+    pub coins_per_kgas: u64,
+
     /// How many attempts to give a transaction before giving up
-    transaction_attempts: usize,
+    pub transaction_attempts: usize,
 }
 
 impl Default for CosmosConfig {
@@ -149,7 +171,7 @@ impl Default for CosmosConfig {
         Self {
             rpc_url: None,
             client: None,
-            gas_estimate_multiplier: AtomicU64::new(DEFAULT_GAS_ESTIMATE_MULTIPLIER.to_bits()),
+            gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
             coins_per_kgas: 30,
             transaction_attempts: 30,
         }
@@ -164,6 +186,20 @@ impl CosmosBuilder {
         Ok(cosmos)
     }
 
+    pub fn build_lazy(self) -> Cosmos {
+        CosmosBuilders::from(self).build_lazy()
+    }
+}
+
+impl From<CosmosBuilder> for CosmosBuilders {
+    fn from(c: CosmosBuilder) -> Self {
+        CosmosBuilders {
+            builders: vec![c.into()],
+        }
+    }
+}
+
+impl CosmosBuilders {
     pub fn build_lazy(self) -> Cosmos {
         Cosmos {
             pool: deadpool::managed::Pool::builder(self)
@@ -276,7 +312,7 @@ impl CosmosNetwork {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(&self) -> Result<CosmosInner> {
+    async fn build_inner(self: Arc<Self>) -> Result<CosmosInner> {
         let grpc_url = &self.grpc_url;
         let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
@@ -303,6 +339,7 @@ impl CosmosBuilder {
             endpoint: endpoint.clone(),
         });
         Ok(CosmosInner {
+            builder: self,
             auth_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
                     grpc_channel.clone(),
@@ -327,7 +364,7 @@ impl CosmosBuilder {
             authz_query_client: Mutex::new(
                 cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(grpc_channel)
             ),
-            rpc_info
+            rpc_info,
         })
     }
 }
@@ -502,7 +539,7 @@ impl Cosmos {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
         let inner = self.inner().await?;
-        for attempt in 1..=self.pool.manager().config.transaction_attempts {
+        for attempt in 1..=inner.builder.config.transaction_attempts {
             let mut client = inner.tx_service_client.lock().await;
             let txres = client
                 .get_tx(GetTxRequest {
@@ -528,7 +565,7 @@ impl Cosmos {
                     if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
                         log::debug!(
                             "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                            self.pool.manager().config.transaction_attempts
+                            inner.builder.config.transaction_attempts
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                     } else {
@@ -574,19 +611,25 @@ impl Cosmos {
     }
 
     pub fn get_gas_coin(&self) -> &String {
-        &self.pool.manager().gas_coin
+        &self.pool.manager().get_first_builder().gas_coin
     }
 
     fn gas_to_coins(&self, gas: u64) -> u64 {
-        gas * self.pool.manager().config.coins_per_kgas / 1000
+        gas * self
+            .pool
+            .manager()
+            .get_first_builder()
+            .config
+            .coins_per_kgas
+            / 1000
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
-        self.pool.manager().get_gas_multiplier()
-    }
-
-    pub fn set_gas_multiplier(&self, value: f64) {
-        self.pool.manager().set_gas_multiplier(value)
+        self.pool
+            .manager()
+            .get_first_builder()
+            .config
+            .gas_estimate_multiplier
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
@@ -716,16 +759,6 @@ impl Cosmos {
 }
 
 impl CosmosBuilder {
-    pub fn get_gas_multiplier(&self) -> f64 {
-        f64::from_bits(self.config.gas_estimate_multiplier.load(Ordering::SeqCst))
-    }
-
-    pub fn set_gas_multiplier(&self, value: f64) {
-        self.config
-            .gas_estimate_multiplier
-            .store(value.to_bits(), Ordering::SeqCst)
-    }
-
     fn new_juno_testnet() -> CosmosBuilder {
         CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
@@ -817,10 +850,7 @@ impl CosmosBuilder {
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            config: CosmosConfig {
-                rpc_url: Some("https://sei-testnet-rpc.polkachu.com/".to_owned()),
-                ..CosmosConfig::default()
-            },
+            config: CosmosConfig::default(),
         }
     }
 
@@ -1161,7 +1191,7 @@ impl TxBuilder {
             signer_infos: self.make_signer_infos(wallet, sequence),
             fee: Some(Fee {
                 amount: vec![Coin {
-                    denom: cosmos.pool.manager().gas_coin.clone(),
+                    denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),
                     amount: cosmos.gas_to_coins(gas_to_request).to_string(),
                 }],
                 gas_limit: gas_to_request,
@@ -1173,7 +1203,7 @@ impl TxBuilder {
         let sign_doc = SignDoc {
             body_bytes: body.encode_to_vec(),
             auth_info_bytes: auth_info.encode_to_vec(),
-            chain_id: cosmos.pool.manager().chain_id.clone(),
+            chain_id: cosmos.pool.manager().get_first_builder().chain_id.clone(),
             account_number,
         };
         let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -1418,15 +1448,16 @@ mod tests {
 
     #[test]
     fn gas_estimate_multiplier() {
-        let cosmos = CosmosBuilder::new_osmosis_testnet();
+        let mut cosmos = CosmosBuilder::new_osmosis_testnet();
 
         // the same as sign_and_broadcast()
-        let multiply_estimated_gas =
-            |gas_used: u64| -> u64 { (gas_used as f64 * cosmos.get_gas_multiplier()) as u64 };
+        let multiply_estimated_gas = |cosmos: &CosmosBuilder, gas_used: u64| -> u64 {
+            (gas_used as f64 * cosmos.config.gas_estimate_multiplier) as u64
+        };
 
-        assert_eq!(multiply_estimated_gas(1234), 1604);
-        cosmos.set_gas_multiplier(4.2);
-        assert_eq!(multiply_estimated_gas(1234), 5182);
+        assert_eq!(multiply_estimated_gas(&cosmos, 1234), 1604);
+        cosmos.config.gas_estimate_multiplier = 4.2;
+        assert_eq!(multiply_estimated_gas(&cosmos, 1234), 5182);
     }
 }
 

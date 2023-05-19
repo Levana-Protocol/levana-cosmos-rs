@@ -276,12 +276,11 @@ impl Subcommand {
         if let Some(grpc) = opt.cosmos_grpc {
             builder.grpc_url = grpc;
         }
+        if let Some(gas_multiplier) = opt.gas_multiplier {
+            builder.config.gas_estimate_multiplier = gas_multiplier;
+        }
         let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
-
-        if let Some(gas_multiplier) = opt.gas_multiplier {
-            cosmos.set_gas_multiplier(gas_multiplier);
-        }
 
         match self {
             Subcommand::StoreCode { tx_opt, file } => {
