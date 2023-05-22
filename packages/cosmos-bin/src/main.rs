@@ -57,6 +57,10 @@ struct Opt {
         env = "COSMOS_GAS_MULTIPLIER"
     )]
     gas_multiplier: Option<f64>,
+
+    /// Referer header
+    #[clap(long, short, global = true, env = "COSMOS_REFERER_HEADER")]
+    referer_header: Option<String>,
 }
 
 impl Opt {
@@ -275,6 +279,9 @@ impl Subcommand {
         let mut builder = opt.network.builder();
         if let Some(grpc) = opt.cosmos_grpc {
             builder.grpc_url = grpc;
+        }
+        if let Some(referer_header) = opt.referer_header {
+            builder.set_referer_header(referer_header);
         }
         let cosmos = builder.build_lazy();
         let address_type = cosmos.get_address_type();
