@@ -201,6 +201,9 @@ pub struct CosmosBuilder {
 #[derive(Clone)]
 pub struct CosmosConfig {
     /// Override RPC endpoint to use instead of gRPC.
+    ///
+    /// NOTE: This feature is experimental and not recommended for anything but
+    /// testing purposes.
     pub rpc_url: Option<String>,
 
     /// Client used for RPC connections. If not provided, creates a new one.
