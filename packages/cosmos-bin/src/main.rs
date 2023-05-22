@@ -59,7 +59,7 @@ struct Opt {
     gas_multiplier: Option<f64>,
 
     /// Referer header
-    #[clap(long, short, global = true)]
+    #[clap(long, short, global = true, env = "COSMOS_REFERER_HEADER")]
     referer_header: Option<String>,
 }
 
