@@ -3,7 +3,10 @@ pub use address::{
     JunoAddress, RawAddress,
 };
 pub use authz::MsgGrantHelper;
-pub use client::{BlockInfo, Cosmos, CosmosNetwork, HasCosmos, TxBuilder, TypedMessage};
+pub use client::{
+    BlockInfo, Cosmos, CosmosBuilder, CosmosBuilders, CosmosNetwork, HasCosmos, TxBuilder,
+    TypedMessage,
+};
 pub use codeid::CodeId;
 pub use contract::{Contract, HasContract};
 pub use cosmos_sdk_proto as proto;

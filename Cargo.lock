@@ -280,6 +280,7 @@ name = "cosmos"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.21.0",
  "bech32",
  "bitcoin",
  "chrono",
@@ -290,10 +291,12 @@ dependencies = [
  "hkd32",
  "log",
  "once_cell",
+ "parking_lot",
  "prost",
  "prost-types",
  "quickcheck",
  "rand",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
