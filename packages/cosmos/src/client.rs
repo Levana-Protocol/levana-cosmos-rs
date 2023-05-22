@@ -29,7 +29,12 @@ use cosmos_sdk_proto::{
 use deadpool::{async_trait, managed::RecycleResult};
 use serde::de::Visitor;
 use tokio::sync::Mutex;
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic::{
+    codegen::InterceptedService,
+    service::Interceptor,
+    transport::{Channel, ClientTlsConfig, Endpoint},
+    Status,
+};
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
 
@@ -111,23 +116,55 @@ impl HasAddressType for Cosmos {
     }
 }
 
+pub struct CosmosInterceptor(Option<String>);
+
+impl Interceptor for CosmosInterceptor {
+    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
+        let req = request.metadata_mut();
+        if let Some(value) = &self.0 {
+            let value = FromStr::from_str(value);
+            if let Ok(header_value) = value {
+                req.insert("referer", header_value);
+            }
+        }
+        Ok(request)
+    }
+}
+
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
     pub(crate) builder: Arc<CosmosBuilder>,
-    auth_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<Channel>>,
-    bank_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<Channel>>,
-    tx_service_client:
-        Mutex<cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<Channel>>,
-    wasm_query_client:
-        Mutex<cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<Channel>>,
-    tendermint_client: Mutex<
-        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<Channel>,
-    >,
-    pub(crate) authz_query_client:
-        Mutex<cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<Channel>>,
     pub(crate) rpc_info: Option<RpcInfo>,
+    auth_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    bank_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    tx_service_client: Mutex<
+        cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    wasm_query_client: Mutex<
+        cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    tendermint_client: Mutex<
+        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
+    pub(crate) authz_query_client: Mutex<
+        cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
+            InterceptedService<Channel, CosmosInterceptor>,
+        >,
+    >,
 }
 
 pub(crate) struct RpcInfo {
@@ -177,6 +214,9 @@ pub struct CosmosConfig {
 
     /// How many attempts to give a transaction before giving up
     pub transaction_attempts: usize,
+
+    /// Referrer header that can be set
+    referer_header: Option<String>,
 }
 
 impl Default for CosmosConfig {
@@ -190,6 +230,7 @@ impl Default for CosmosConfig {
             gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
             coins_per_kgas: 30,
             transaction_attempts: 30,
+            referer_header: None,
         }
     }
 }
@@ -355,31 +396,34 @@ impl CosmosBuilder {
                 .map_or_else(reqwest::Client::new, |x| x.clone()),
             endpoint: endpoint.clone(),
         });
+
+        let referer_header = self.config.referer_header.clone();
+
         Ok(CosmosInner {
             builder: self,
             auth_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
+                    grpc_channel.clone(), CosmosInterceptor(referer_header.clone())
                 ),
             ),
             bank_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::with_interceptor(
+                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
                 ),
             ),
             tx_service_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::new(
-                    grpc_channel.clone(),
+                cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::with_interceptor(
+                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
                 ),
             ),
             wasm_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(grpc_channel.clone()),
+                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
             ),
             tendermint_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(grpc_channel.clone())
+                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
             ),
             authz_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(grpc_channel)
+                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header))
             ),
             rpc_info,
         })
@@ -486,8 +530,10 @@ impl Cosmos {
             address: address.into(),
             query_data: query_data.into(),
         });
+
         let metadata = request.metadata_mut();
         metadata.insert("x-cosmos-block-height", height.into());
+
         Ok(self
             .inner()
             .await?
@@ -776,6 +822,10 @@ impl Cosmos {
 }
 
 impl CosmosBuilder {
+    pub fn set_referer_header(&mut self, value: String) {
+        self.config.referer_header = Some(value);
+    }
+
     fn new_juno_testnet() -> CosmosBuilder {
         CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
