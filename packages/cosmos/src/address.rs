@@ -285,9 +285,11 @@ impl HasAddressType for CosmosNetwork {
             CosmosNetwork::OsmosisLocal => AddressType::Osmo,
             CosmosNetwork::Dragonfire => AddressType::Levana,
             CosmosNetwork::WasmdLocal => AddressType::Wasm,
+            CosmosNetwork::SeiMainnet => AddressType::Sei,
             CosmosNetwork::SeiTestnet => AddressType::Sei,
             CosmosNetwork::StargazeTestnet => AddressType::Stargaze,
             CosmosNetwork::StargazeMainnet => AddressType::Stargaze,
+            CosmosNetwork::LevanaTest => AddressType::Sei,
         }
     }
 }
