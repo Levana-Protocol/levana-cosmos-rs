@@ -44,6 +44,9 @@ struct Opt {
     /// Override gRPC endpoint
     #[clap(long, env = "COSMOS_GRPC", global = true)]
     cosmos_grpc: Option<String>,
+    /// Override the chain ID
+    #[clap(long, env = "COSMOS_CHAIN_ID", global = true)]
+    chain_id: Option<String>,
     /// Turn on verbose output
     #[clap(long, short, global = true)]
     verbose: bool,
@@ -279,6 +282,9 @@ impl Subcommand {
         let mut builder = opt.network.builder();
         if let Some(grpc) = opt.cosmos_grpc {
             builder.grpc_url = grpc;
+        }
+        if let Some(chain_id) = opt.chain_id {
+            builder.chain_id = chain_id;
         }
 
         if let Some(gas_multiplier) = opt.gas_multiplier {
