@@ -186,7 +186,6 @@ pub enum CosmosNetwork {
     SeiTestnet,
     StargazeTestnet,
     StargazeMainnet,
-    LevanaTest,
 }
 
 /// Build a connection
@@ -322,7 +321,6 @@ impl CosmosNetwork {
             CosmosNetwork::SeiTestnet => "sei-testnet",
             CosmosNetwork::StargazeTestnet => "stargaze-testnet",
             CosmosNetwork::StargazeMainnet => "stargaze-mainnet",
-            CosmosNetwork::LevanaTest => "levana-test",
         }
     }
 }
@@ -350,7 +348,6 @@ impl FromStr for CosmosNetwork {
             "sei-testnet" => Ok(CosmosNetwork::SeiTestnet),
             "stargaze-testnet" => Ok(CosmosNetwork::StargazeTestnet),
             "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
-            "levana-test" => Ok(CosmosNetwork::LevanaTest),
             _ => Err(anyhow::anyhow!("Unknown network: {s}")),
         }
     }
@@ -373,7 +370,6 @@ impl CosmosNetwork {
             CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
             CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet(),
             CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet(),
-            CosmosNetwork::LevanaTest => CosmosBuilder::new_levana_test(),
             CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
         }
@@ -935,15 +931,6 @@ impl CosmosBuilder {
         CosmosBuilder {
             grpc_url: "https://grpc.atlantic-2.seinetwork.io/".to_owned(),
             chain_id: "atlantic-2".to_owned(),
-            gas_coin: "usei".to_owned(),
-            address_type: AddressType::Sei,
-            config: CosmosConfig::default(),
-        }
-    }
-    fn new_levana_test() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "https://redacted".to_owned(),
-            chain_id: "levana-test".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
             config: CosmosConfig::default(),

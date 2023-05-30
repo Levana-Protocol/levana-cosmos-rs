@@ -289,7 +289,6 @@ impl HasAddressType for CosmosNetwork {
             CosmosNetwork::SeiTestnet => AddressType::Sei,
             CosmosNetwork::StargazeTestnet => AddressType::Stargaze,
             CosmosNetwork::StargazeMainnet => AddressType::Stargaze,
-            CosmosNetwork::LevanaTest => AddressType::Sei,
         }
     }
 }
