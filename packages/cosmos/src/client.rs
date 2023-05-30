@@ -929,7 +929,7 @@ impl CosmosBuilder {
     }
     fn new_sei_testnet() -> CosmosBuilder {
         CosmosBuilder {
-            grpc_url: "https://grpc.atlantic-2.seinetwork.io/".to_owned(),
+            grpc_url: "https://sei-grpc.kingnodes.com".to_owned(),
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
