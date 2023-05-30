@@ -20,6 +20,14 @@ pub struct SeedPhrase {
     seed: Seed,
 }
 
+impl Clone for SeedPhrase {
+    fn clone(&self) -> Self {
+        Self {
+            seed: Seed::new(*self.seed.as_bytes()),
+        }
+    }
+}
+
 impl From<Seed> for SeedPhrase {
     fn from(seed: Seed) -> Self {
         SeedPhrase { seed }
