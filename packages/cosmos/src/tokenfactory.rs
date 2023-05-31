@@ -1,10 +1,9 @@
-use crate::{Cosmos, TypedMessage, Wallet};
+use crate::{AddressType, Cosmos, HasAddressType, TypedMessage, Wallet};
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
     bank::v1beta1::Metadata,
     base::{abci::v1beta1::TxResponse, v1beta1::Coin},
 };
-use prost::Message;
 
 /// TokenFactory interface
 pub struct TokenFactory {
@@ -21,7 +20,8 @@ impl TokenFactory {
         let msg = MsgCreateDenom {
             sender: self.wallet.address().to_string(),
             subdenom,
-        };
+        }
+        .into_typed_message(self.client.get_address_type())?;
 
         let res = self.wallet.broadcast_message(&self.client, msg).await?;
 
@@ -53,7 +53,8 @@ impl TokenFactory {
                 denom,
                 amount: amount.to_string(),
             }),
-        };
+        }
+        .into_typed_message(self.client.get_address_type())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 
@@ -65,7 +66,8 @@ impl TokenFactory {
                 denom,
                 amount: amount.to_string(),
             }),
-        };
+        }
+        .into_typed_message(self.client.get_address_type())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 
@@ -74,47 +76,54 @@ impl TokenFactory {
             sender: self.wallet.address().to_string(),
             denom: denom.clone(),
             new_admin: addr,
-        };
+        }
+        .into_typed_message(self.client.get_address_type())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 }
 
-fn type_url(s: &str) -> String {
-    format!("/osmosis.tokenfactory.v1beta1.{s}")
-}
-
-impl From<MsgCreateDenom> for TypedMessage {
-    fn from(msg: MsgCreateDenom) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
-            type_url: type_url("MsgCreateDenom"),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-impl From<MsgMint> for TypedMessage {
-    fn from(msg: MsgMint) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
-            type_url: type_url("MsgMint"),
-            value: msg.encode_to_vec(),
-        })
+fn type_url(address_type: AddressType, s: &str) -> Result<String> {
+    match address_type {
+        AddressType::Osmo => Ok(format!("/osmosis.tokenfactory.v1beta1.{s}")),
+        AddressType::Sei => Ok(format!("/seiprotocol.seichain.tokenfactory.{s}")),
+        _ => Err(anyhow::anyhow!(
+            "cosmos-rs does not support tokenfactory for address type {address_type:?}"
+        )),
     }
 }
 
-impl From<MsgBurn> for TypedMessage {
-    fn from(msg: MsgBurn) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
-            type_url: type_url("MsgBurn"),
-            value: msg.encode_to_vec(),
-        })
+fn into_typed_message<T: prost::Message>(
+    address_type: AddressType,
+    type_url_suffix: &str,
+    msg: T,
+) -> Result<TypedMessage> {
+    Ok(TypedMessage::new(cosmos_sdk_proto::Any {
+        type_url: type_url(address_type, type_url_suffix)?,
+        value: msg.encode_to_vec(),
+    }))
+}
+
+impl MsgCreateDenom {
+    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+        into_typed_message(address_type, "MsgCreateDenom", self)
     }
 }
 
-impl From<MsgChangeAdmin> for TypedMessage {
-    fn from(msg: MsgChangeAdmin) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
-            type_url: type_url("MsgChangeAdmin"),
-            value: msg.encode_to_vec(),
-        })
+impl MsgMint {
+    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+        into_typed_message(address_type, "MsgMint", self)
+    }
+}
+
+impl MsgBurn {
+    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+        into_typed_message(address_type, "MsgBurn", self)
+    }
+}
+
+impl MsgChangeAdmin {
+    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+        into_typed_message(address_type, "MsgChangeAdmin", self)
     }
 }
 
