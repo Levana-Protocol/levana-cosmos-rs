@@ -17,8 +17,8 @@ use cosmos::{
             QueryContractHistoryResponse,
         },
     },
-    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, CosmosNetwork, HasAddress,
-    HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
+    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, CosmosNetwork,
+    HasAddress, HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -119,6 +119,9 @@ enum Subcommand {
         label: String,
         /// Instantiate message (JSON)
         msg: String,
+        /// Administrator set on this contract
+        #[clap(long, default_value = "sender")]
+        admin: ContractAdmin,
     },
     /// Print balances
     PrintBalances {
@@ -308,9 +311,10 @@ impl Subcommand {
                 code_id,
                 label,
                 msg,
+                admin,
             } => {
                 let contract = CodeId::new(cosmos, code_id)
-                    .instantiate_binary(&tx_opt.get_wallet(address_type), label, vec![], msg)
+                    .instantiate_binary(&tx_opt.get_wallet(address_type), label, vec![], msg, admin)
                     .await?;
                 println!("Contract: {contract}");
             }

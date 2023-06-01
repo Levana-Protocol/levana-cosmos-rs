@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use anyhow::{anyhow, Context, Result};
 use cosmos_sdk_proto::{
@@ -67,8 +67,9 @@ impl CodeId {
         label: impl Into<String>,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
+        admin: ContractAdmin,
     ) -> Result<Contract> {
-        self.instantiate_binary(wallet, label, funds, serde_json::to_vec(&msg)?)
+        self.instantiate_binary(wallet, label, funds, serde_json::to_vec(&msg)?, admin)
             .await
     }
 
@@ -79,10 +80,15 @@ impl CodeId {
         label: impl Into<String>,
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
+        admin: ContractAdmin,
     ) -> Result<Contract> {
         let msg = MsgInstantiateContract {
             sender: wallet.address().to_string(),
-            admin: wallet.address().to_string(),
+            admin: match admin {
+                ContractAdmin::NoAdmin => "".to_owned(),
+                ContractAdmin::Sender => wallet.get_address_string(),
+                ContractAdmin::Addr(addr) => addr.get_address_string(),
+            },
             code_id: self.code_id,
             label: label.into(),
             msg: msg.into(),
@@ -276,5 +282,25 @@ impl HasAddress for Contract {
 impl HasCosmos for Contract {
     fn get_cosmos(&self) -> &Cosmos {
         &self.client
+    }
+}
+
+/// The on-chain admin for a contract set during instantiation
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ContractAdmin {
+    NoAdmin,
+    Sender,
+    Addr(Address),
+}
+
+impl FromStr for ContractAdmin {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "no-admin" => Ok(ContractAdmin::NoAdmin),
+            "sender" => Ok(ContractAdmin::Sender),
+            _ => s.parse().map(ContractAdmin::Addr).map_err(|_| anyhow::anyhow!("Invalid contract admin. Must be 'no-admin', 'sender', or a valid address. Received: {s:?}"))
+        }
     }
 }
