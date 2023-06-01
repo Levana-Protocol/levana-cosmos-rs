@@ -8,7 +8,7 @@ pub use client::{
     TypedMessage,
 };
 pub use codeid::CodeId;
-pub use contract::{Contract, HasContract};
+pub use contract::{Contract, ContractAdmin, HasContract};
 pub use cosmos_sdk_proto as proto;
 pub use cosmos_sdk_proto::{cosmos::base::v1beta1::Coin, cosmwasm::wasm::v1::MsgStoreCode};
 pub use tokenfactory::TokenFactory;
