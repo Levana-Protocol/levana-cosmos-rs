@@ -10,6 +10,7 @@ use std::{io::Write, path::PathBuf, str::FromStr};
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use cosmos::{
+    clap::CosmosOpt,
     proto::{
         cosmos::base::abci::v1beta1::TxResponse,
         cosmwasm::wasm::v1::{
@@ -17,8 +18,8 @@ use cosmos::{
             QueryContractHistoryResponse,
         },
     },
-    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, CosmosNetwork,
-    HasAddress, HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
+    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress,
+    HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -33,37 +34,11 @@ struct Cmd {
 
 #[derive(clap::Parser)]
 struct Opt {
-    /// Network to use, either mainnet or testnet
-    #[clap(
-        long,
-        default_value_t = CosmosNetwork::OsmosisTestnet,
-        env = "COSMOS_NETWORK",
-        global = true
-    )]
-    network: CosmosNetwork,
-    /// Override gRPC endpoint
-    #[clap(long, env = "COSMOS_GRPC", global = true)]
-    cosmos_grpc: Option<String>,
-    /// Override the chain ID
-    #[clap(long, env = "COSMOS_CHAIN_ID", global = true)]
-    chain_id: Option<String>,
+    #[clap(flatten)]
+    network_opt: CosmosOpt,
     /// Turn on verbose output
     #[clap(long, short, global = true)]
     verbose: bool,
-
-    /// Gas multiplier for simulated transactions
-    #[clap(
-        long,
-        short,
-        global = true,
-        default_value = None,
-        env = "COSMOS_GAS_MULTIPLIER"
-    )]
-    gas_multiplier: Option<f64>,
-
-    /// Referer header
-    #[clap(long, short, global = true, env = "COSMOS_REFERER_HEADER")]
-    referer_header: Option<String>,
 }
 
 impl Opt {
@@ -282,22 +257,7 @@ enum Subcommand {
 
 impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
-        let mut builder = opt.network.builder();
-        if let Some(grpc) = opt.cosmos_grpc {
-            builder.grpc_url = grpc;
-        }
-        if let Some(chain_id) = opt.chain_id {
-            builder.chain_id = chain_id;
-        }
-
-        if let Some(gas_multiplier) = opt.gas_multiplier {
-            builder.config.gas_estimate_multiplier = gas_multiplier;
-        }
-
-        if let Some(referer_header) = opt.referer_header {
-            builder.set_referer_header(referer_header);
-        }
-        let cosmos = builder.build_lazy();
+        let cosmos = opt.network_opt.build_lazy();
         let address_type = cosmos.get_address_type();
 
         match self {
