@@ -9,7 +9,7 @@ edition = "2021"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 anyhow = "1.0.69"
-cosmos = { path = "../cosmos" }
+cosmos = { path = "../cosmos", features = ["clap"] }
 tokio = { version = "1.25.0", features = ["full"] }
 chrono = { version = "0.4.23", features = ["serde"] }
 serde = { version = "1.0.152", features = ["derive"] }

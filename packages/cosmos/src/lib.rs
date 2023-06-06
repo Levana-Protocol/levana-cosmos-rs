@@ -21,3 +21,6 @@ mod codeid;
 mod contract;
 mod tokenfactory;
 mod wallet;
+
+#[cfg(feature = "clap")]
+pub mod clap;
