@@ -14,16 +14,24 @@ pub(crate) enum Subcommand {
     FirstBlockAfter {
         #[clap(long)]
         timestamp: DateTime<Utc>,
+        #[clap(long)]
+        earliest: Option<i64>,
     },
 }
 
 pub(crate) async fn go(
     Opt {
-        sub: Subcommand::FirstBlockAfter { timestamp },
+        sub: Subcommand::FirstBlockAfter {
+            timestamp,
+            earliest,
+        },
     }: Opt,
     cosmos: Cosmos,
 ) -> Result<()> {
-    let earliest = cosmos.get_earliest_block_info().await?;
+    let earliest = match earliest {
+        None => cosmos.get_earliest_block_info().await?,
+        Some(height) => cosmos.get_block_info(height).await?,
+    };
     let latest = cosmos.get_latest_block_info().await?;
     anyhow::ensure!(
         earliest.timestamp < timestamp,
