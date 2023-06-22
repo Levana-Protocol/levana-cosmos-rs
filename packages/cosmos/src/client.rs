@@ -1421,9 +1421,9 @@ impl TxBuilder {
 
         let amount = cosmos.gas_to_coins(gas_to_request, attempts).to_string();
         match retry_with_price(amount).await {
-            Ok(x) => return Ok(x),
-            Err(AttemptError::InsufficientGas(e)) => return Err(e.into()),
-            Err(AttemptError::Inner(e)) => return Err(e),
+            Ok(x) => Ok(x),
+            Err(AttemptError::InsufficientGas(e)) => Err(e.into()),
+            Err(AttemptError::Inner(e)) => Err(e),
         }
     }
 }
