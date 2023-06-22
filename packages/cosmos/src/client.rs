@@ -213,8 +213,18 @@ pub struct CosmosConfig {
     // Add a multiplier to the gas estimate to account for any gas fluctuations
     pub gas_estimate_multiplier: f64,
 
-    /// Coins used per 1000 gas
-    pub coins_per_kgas: u64,
+    /// Amount of gas coin to send per unit of gas, at the low end.
+    pub gas_price_low: f64,
+
+    /// Amount of gas coin to send per unit of gas, at the high end.
+    pub gas_price_high: f64,
+
+    /// How many retries at different gas prices should we try before using high
+    ///
+    /// If this is 0, we'll always go straight to high. 1 means we'll try the
+    /// low and the high. 2 means we'll try low, midpoint, and high. And so on
+    /// from there.
+    pub gas_price_retry_attempts: u64,
 
     /// How many attempts to give a transaction before giving up
     pub transaction_attempts: usize,
@@ -232,7 +242,9 @@ impl Default for CosmosConfig {
             rpc_url: None,
             client: None,
             gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
-            coins_per_kgas: 30,
+            gas_price_low: 0.02,
+            gas_price_high: 0.03,
+            gas_price_retry_attempts: 3,
             transaction_attempts: 30,
             referer_header: None,
         }
@@ -684,14 +696,22 @@ impl Cosmos {
         &self.pool.manager().get_first_builder().gas_coin
     }
 
-    fn gas_to_coins(&self, gas: u64) -> u64 {
-        gas * self
-            .pool
-            .manager()
-            .get_first_builder()
-            .config
-            .coins_per_kgas
-            / 1000
+    /// attempt_number starts at 0
+    fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
+        let config = &self.pool.manager().get_first_builder().config;
+        let low = config.gas_price_low;
+        let high = config.gas_price_high;
+        let attempts = config.gas_price_retry_attempts;
+
+        let gas_price = if attempt_number >= attempts {
+            high
+        } else {
+            assert!(attempts > 0);
+            let step = (high - low) / attempts as f64;
+            low + step * attempt_number as f64
+        };
+
+        (gas as f64 * gas_price) as u64
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
@@ -924,7 +944,12 @@ impl CosmosBuilder {
             chain_id: "not-yet-launched".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            config: CosmosConfig::default(),
+            config: CosmosConfig {
+                // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
+                gas_price_low: 0.012,
+                gas_price_retry_attempts: 6,
+                ..CosmosConfig::default()
+            },
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -933,7 +958,12 @@ impl CosmosBuilder {
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            config: CosmosConfig::default(),
+            config: CosmosConfig {
+                // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
+                gas_price_low: 0.012,
+                gas_price_retry_attempts: 6,
+                ..CosmosConfig::default()
+            },
         }
     }
 
@@ -1270,91 +1300,131 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse, ExpectedSequenceError> {
-        let auth_info = AuthInfo {
-            signer_infos: self.make_signer_infos(wallet, sequence),
-            fee: Some(Fee {
-                amount: vec![Coin {
-                    denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),
-                    amount: cosmos.gas_to_coins(gas_to_request).to_string(),
-                }],
-                gas_limit: gas_to_request,
-                payer: "".to_owned(),
-                granter: "".to_owned(),
-            }),
-        };
-
-        let sign_doc = SignDoc {
-            body_bytes: body.encode_to_vec(),
-            auth_info_bytes: auth_info.encode_to_vec(),
-            chain_id: cosmos.pool.manager().get_first_builder().chain_id.clone(),
-            account_number,
-        };
-        let sign_doc_bytes = sign_doc.encode_to_vec();
-        let signature = wallet.sign_bytes(&sign_doc_bytes);
-
-        let tx = Tx {
-            body: Some(body),
-            auth_info: Some(auth_info),
-            signatures: vec![signature.serialize_compact().to_vec()],
-        };
-
-        let inner = cosmos.inner().await?;
-        let req = BroadcastTxRequest {
-            tx_bytes: tx.encode_to_vec(),
-            mode: BroadcastMode::Sync as i32,
-        };
-        let res = match &inner.rpc_info {
-            Some(RpcInfo { client, endpoint }) => {
-                make_jsonrpc_request(
-                    client,
-                    endpoint,
-                    req,
-                    "/cosmos.tx.v1beta1.Service/BroadcastTx",
-                )
-                .await?
-            }
-            None => inner
-                .tx_service_client
-                .lock()
-                .await
-                .broadcast_tx(req)
-                .await
-                .context("Unable to broadcast transaction")?
-                .into_inner(),
+        enum AttemptError {
+            Inner(ExpectedSequenceError),
+            InsufficientGas(anyhow::Error),
         }
-        .tx_response
-        .context("Missing inner tx_response")?;
+        impl From<anyhow::Error> for AttemptError {
+            fn from(e: anyhow::Error) -> Self {
+                AttemptError::Inner(e.into())
+            }
+        }
+        let body_ref = &body;
+        let retry_with_price = |amount| async move {
+            let auth_info = AuthInfo {
+                signer_infos: self.make_signer_infos(wallet, sequence),
+                fee: Some(Fee {
+                    amount: vec![Coin {
+                        denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),
+                        amount,
+                    }],
+                    gas_limit: gas_to_request,
+                    payer: "".to_owned(),
+                    granter: "".to_owned(),
+                }),
+            };
 
-        if !self.skip_code_check && res.code != 0 {
-            let e = anyhow::anyhow!(
-                "Initial transaction broadcast failed with code {}. Raw log: {}",
-                res.code,
-                res.raw_log
-            );
-            let is_sequence = get_expected_sequence(&res.raw_log);
-            return Err(match is_sequence {
-                None => ExpectedSequenceError::RealError(e),
-                Some(number) => ExpectedSequenceError::NewNumber(number, e),
-            });
+            let sign_doc = SignDoc {
+                body_bytes: body_ref.encode_to_vec(),
+                auth_info_bytes: auth_info.encode_to_vec(),
+                chain_id: cosmos.pool.manager().get_first_builder().chain_id.clone(),
+                account_number,
+            };
+            let sign_doc_bytes = sign_doc.encode_to_vec();
+            let signature = wallet.sign_bytes(&sign_doc_bytes);
+
+            let tx = Tx {
+                body: Some(body_ref.clone()),
+                auth_info: Some(auth_info),
+                signatures: vec![signature.serialize_compact().to_vec()],
+            };
+
+            let inner = cosmos.inner().await?;
+            let req = BroadcastTxRequest {
+                tx_bytes: tx.encode_to_vec(),
+                mode: BroadcastMode::Sync as i32,
+            };
+            let res = match &inner.rpc_info {
+                Some(RpcInfo { client, endpoint }) => {
+                    make_jsonrpc_request(
+                        client,
+                        endpoint,
+                        req,
+                        "/cosmos.tx.v1beta1.Service/BroadcastTx",
+                    )
+                    .await?
+                }
+                None => inner
+                    .tx_service_client
+                    .lock()
+                    .await
+                    .broadcast_tx(req)
+                    .await
+                    .context("Unable to broadcast transaction")?
+                    .into_inner(),
+            }
+            .tx_response
+            .context("Missing inner tx_response")?;
+
+            if !self.skip_code_check && res.code != 0 {
+                let e = anyhow::anyhow!(
+                    "Initial transaction broadcast failed with code {}. Raw log: {}",
+                    res.code,
+                    res.raw_log
+                );
+                if res.code == 13 {
+                    return Err(AttemptError::InsufficientGas(e));
+                }
+                let is_sequence = get_expected_sequence(&res.raw_log);
+                return Err(AttemptError::Inner(match is_sequence {
+                    None => ExpectedSequenceError::RealError(e),
+                    Some(number) => ExpectedSequenceError::NewNumber(number, e),
+                }));
+            };
+
+            log::debug!("Initial BroadcastTxResponse: {res:?}");
+
+            let res = cosmos.wait_for_transaction(res.txhash).await?;
+            if !self.skip_code_check && res.code != 0 {
+                // We don't do the account sequence mismatch hack work here, once a
+                // transaction actually lands on the chain we don't want to ever
+                // automatically retry.
+                return Err(AttemptError::Inner(ExpectedSequenceError::RealError(
+                    anyhow::anyhow!(
+                        "Transaction failed with code {}. Raw log: {}",
+                        res.code,
+                        res.raw_log
+                    ),
+                )));
+            };
+
+            log::debug!("TxResponse: {res:?}");
+
+            Ok(res)
         };
 
-        log::debug!("Initial BroadcastTxResponse: {res:?}");
+        let attempts = cosmos.get_first_builder().config.gas_price_retry_attempts;
+        for attempt_number in 0..attempts {
+            let amount = cosmos
+                .gas_to_coins(gas_to_request, attempt_number)
+                .to_string();
+            match retry_with_price(amount).await {
+                Ok(x) => return Ok(x),
+                Err(AttemptError::InsufficientGas(e)) => {
+                    log::debug!(
+                        "Insufficient gas in attempt #{attempt_number}, retrying. Error: {e:?}"
+                    );
+                }
+                Err(AttemptError::Inner(e)) => return Err(e),
+            }
+        }
 
-        let res = cosmos.wait_for_transaction(res.txhash).await?;
-        if !self.skip_code_check && res.code != 0 {
-            // We don't do the account sequence mismatch hack work here, once a
-            // transaction actually lands on the chain we don't want to ever
-            // automatically retry.
-            return Err(ExpectedSequenceError::RealError(anyhow::anyhow!(
-                "Transaction failed with code {}. Raw log: {}",
-                res.code,
-                res.raw_log
-            )));
-        };
-
-        log::debug!("TxResponse: {res:?}");
-
-        Ok(res)
+        let amount = cosmos.gas_to_coins(gas_to_request, attempts).to_string();
+        match retry_with_price(amount).await {
+            Ok(x) => Ok(x),
+            Err(AttemptError::InsufficientGas(e)) => Err(e.into()),
+            Err(AttemptError::Inner(e)) => Err(e),
+        }
     }
 }
 
