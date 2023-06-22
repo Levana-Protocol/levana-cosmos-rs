@@ -213,11 +213,11 @@ pub struct CosmosConfig {
     // Add a multiplier to the gas estimate to account for any gas fluctuations
     pub gas_estimate_multiplier: f64,
 
-    /// Coins used per 1000 gas at the low end
-    pub coins_per_kgas_low: u64,
+    /// Amount of gas coin to send per unit of gas, at the low end.
+    pub gas_price_low: f64,
 
-    /// Coins used per 1000 gas at the high end
-    pub coins_per_kgas_high: u64,
+    /// Amount of gas coin to send per unit of gas, at the high end.
+    pub gas_price_high: f64,
 
     /// How many retries at different gas prices should we try before using high
     ///
@@ -242,8 +242,8 @@ impl Default for CosmosConfig {
             rpc_url: None,
             client: None,
             gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
-            coins_per_kgas_low: 20,
-            coins_per_kgas_high: 30,
+            gas_price_low: 0.02,
+            gas_price_high: 0.03,
             gas_price_retry_attempts: 3,
             transaction_attempts: 30,
             referer_header: None,
@@ -699,19 +699,19 @@ impl Cosmos {
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
         let config = &self.pool.manager().get_first_builder().config;
-        let low = config.coins_per_kgas_low;
-        let high = config.coins_per_kgas_high;
+        let low = config.gas_price_low;
+        let high = config.gas_price_high;
         let attempts = config.gas_price_retry_attempts;
 
         let gas_price = if attempt_number >= attempts {
             high
         } else {
             assert!(attempts > 0);
-            let step = (high - low) as f64 / attempts as f64;
-            low + (step * attempt_number as f64) as u64
+            let step = (high - low) / attempts as f64;
+            low + step * attempt_number as f64
         };
 
-        gas * gas_price / 1000
+        (gas as f64 * gas_price) as u64
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
@@ -946,7 +946,7 @@ impl CosmosBuilder {
             address_type: AddressType::Sei,
             config: CosmosConfig {
                 // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
-                coins_per_kgas_low: 10,
+                gas_price_low: 0.012,
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
@@ -960,7 +960,7 @@ impl CosmosBuilder {
             address_type: AddressType::Sei,
             config: CosmosConfig {
                 // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
-                coins_per_kgas_low: 10,
+                gas_price_low: 0.012,
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
