@@ -924,7 +924,10 @@ impl CosmosBuilder {
             chain_id: "not-yet-launched".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            config: CosmosConfig::default(),
+            config: CosmosConfig {
+                coins_per_kgas: 15,
+                ..CosmosConfig::default()
+            },
         }
     }
     fn new_sei_testnet() -> CosmosBuilder {
@@ -933,7 +936,13 @@ impl CosmosBuilder {
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
-            config: CosmosConfig::default(),
+            config: CosmosConfig {
+                // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
+                //
+                // After testing, 10 was too low, so bumped to 15
+                coins_per_kgas: 15,
+                ..CosmosConfig::default()
+            },
         }
     }
 
