@@ -23,11 +23,11 @@ pub struct CosmosOpt {
 }
 
 impl CosmosOpt {
-    pub fn builder(&self) -> CosmosBuilder {
-        self.clone().into_builder()
+    pub async fn builder(&self) -> Result<CosmosBuilder> {
+        self.clone().into_builder().await
     }
 
-    pub fn into_builder(self) -> CosmosBuilder {
+    pub async fn into_builder(self) -> Result<CosmosBuilder> {
         let CosmosOpt {
             network,
             cosmos_grpc,
@@ -36,7 +36,7 @@ impl CosmosOpt {
             referer_header,
         } = self;
 
-        let mut builder = network.builder();
+        let mut builder = network.builder().await?;
         if let Some(grpc) = cosmos_grpc {
             builder.grpc_url = grpc;
         }
@@ -52,14 +52,14 @@ impl CosmosOpt {
             builder.set_referer_header(referer_header);
         }
 
-        builder
+        Ok(builder)
     }
 
     pub async fn build(&self) -> Result<Cosmos> {
-        self.builder().build().await
+        self.builder().await?.build().await
     }
 
-    pub fn build_lazy(&self) -> Cosmos {
-        self.builder().build_lazy()
+    pub async fn build_lazy(&self) -> Result<Cosmos> {
+        Ok(self.builder().await?.build_lazy())
     }
 }

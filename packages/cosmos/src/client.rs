@@ -27,7 +27,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use deadpool::{async_trait, managed::RecycleResult};
-use serde::de::Visitor;
+use serde::{de::Visitor, Deserialize};
 use tokio::sync::Mutex;
 use tonic::{
     codegen::InterceptedService,
@@ -199,7 +199,7 @@ pub struct CosmosBuilder {
 }
 
 /// Optional config values.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CosmosConfig {
     /// Override RPC endpoint to use instead of gRPC.
     ///
@@ -367,11 +367,11 @@ impl FromStr for CosmosNetwork {
 
 impl CosmosNetwork {
     pub async fn connect(self) -> Result<Cosmos> {
-        self.builder().build().await
+        self.builder().await?.build().await
     }
 
-    pub fn builder(self) -> CosmosBuilder {
-        match self {
+    pub async fn builder(self) -> Result<CosmosBuilder> {
+        Ok(match self {
             CosmosNetwork::JunoTestnet => CosmosBuilder::new_juno_testnet(),
             CosmosNetwork::JunoMainnet => CosmosBuilder::new_juno_mainnet(),
             CosmosNetwork::JunoLocal => CosmosBuilder::new_juno_local(),
@@ -381,10 +381,10 @@ impl CosmosNetwork {
             CosmosNetwork::Dragonfire => CosmosBuilder::new_dragonfire(),
             CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
             CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet(),
-            CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet(),
+            CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet().await?,
             CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
-        }
+        })
     }
 }
 
@@ -450,6 +450,10 @@ impl CosmosBuilder {
 }
 
 impl Cosmos {
+    pub fn get_config(&self) -> &CosmosConfig {
+        &self.pool.manager().get_first_builder().config
+    }
+
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
         let inner = self.inner().await?;
         let req = QueryAccountRequest {
@@ -952,19 +956,33 @@ impl CosmosBuilder {
             },
         }
     }
-    fn new_sei_testnet() -> CosmosBuilder {
-        CosmosBuilder {
+    async fn new_sei_testnet() -> Result<CosmosBuilder> {
+        #[derive(Deserialize)]
+        struct SeiGasConfig {
+            #[serde(rename = "atlantic-2")]
+            pub atlantic_2: SeiGasConfigItem,
+        }
+        #[derive(Deserialize)]
+        struct SeiGasConfigItem {
+            pub min_gas_price: f64,
+        }
+
+        let url = "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json";
+        let resp = reqwest::get(url).await?;
+        let gas_config: SeiGasConfig = resp.json().await?;
+
+        Ok(CosmosBuilder {
             grpc_url: "https://sei-grpc.kingnodes.com".to_owned(),
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
             config: CosmosConfig {
-                // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
-                gas_price_low: 0.012,
+                gas_price_low: gas_config.atlantic_2.min_gas_price,
+                gas_price_high: gas_config.atlantic_2.min_gas_price * 2.0,
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
-        }
+        })
     }
 
     fn new_stargaze_testnet() -> CosmosBuilder {
