@@ -78,6 +78,8 @@ async fn main() -> Result<()> {
 
 #[derive(clap::Parser)]
 enum Subcommand {
+    /// Show config
+    ShowConfig {},
     /// Upload contract
     StoreCode {
         #[clap(flatten)]
@@ -257,10 +259,13 @@ enum Subcommand {
 
 impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
-        let cosmos = opt.network_opt.build_lazy();
+        let cosmos = opt.network_opt.build_lazy().await?;
         let address_type = cosmos.get_address_type();
 
         match self {
+            Subcommand::ShowConfig {} => {
+                println!("{:#?}", cosmos.get_config())
+            }
             Subcommand::StoreCode { tx_opt, file } => {
                 let wallet = tx_opt.get_wallet(address_type);
                 let codeid = cosmos.store_code_path(&wallet, &file).await?;
