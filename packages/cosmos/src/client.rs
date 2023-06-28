@@ -957,8 +957,6 @@ impl CosmosBuilder {
         }
     }
     async fn new_sei_testnet() -> Result<CosmosBuilder> {
-        // use reqwest to fetch the data from https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
-
         #[derive(Deserialize)]
         struct SeiGasConfig {
             #[serde(rename = "atlantic-2")]
