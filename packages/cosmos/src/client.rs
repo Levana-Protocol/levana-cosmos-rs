@@ -231,6 +231,9 @@ pub struct CosmosConfig {
 
     /// Referrer header that can be set
     referer_header: Option<String>,
+
+    /// Set the number of deadpool connection
+    connection_count: Option<usize>,
 }
 
 impl Default for CosmosConfig {
@@ -247,6 +250,7 @@ impl Default for CosmosConfig {
             gas_price_retry_attempts: 3,
             transaction_attempts: 30,
             referer_header: None,
+            connection_count: None,
         }
     }
 }
@@ -275,11 +279,13 @@ impl From<CosmosBuilder> for CosmosBuilders {
 
 impl CosmosBuilders {
     pub fn build_lazy(self) -> Cosmos {
-        Cosmos {
-            pool: deadpool::managed::Pool::builder(self)
-                .build()
-                .expect("Unexpected pool build error"),
+        let count = self.get_first_builder().config.connection_count;
+        let mut builder = deadpool::managed::Pool::builder(self);
+        if let Some(count) = count {
+            builder = builder.max_size(count);
         }
+        let pool = builder.build().expect("Unexpected pool build error");
+        Cosmos { pool }
     }
 }
 
@@ -855,6 +861,10 @@ impl Cosmos {
 impl CosmosBuilder {
     pub fn set_referer_header(&mut self, value: String) {
         self.config.referer_header = Some(value);
+    }
+
+    pub fn set_connection_count(&mut self, count: usize) {
+        self.config.connection_count = Some(count);
     }
 
     fn new_juno_testnet() -> CosmosBuilder {
