@@ -50,14 +50,13 @@ where
         },
     };
 
-    let raw_body: String = client
-        .post(endpoint)
-        .json(&req)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+    let res = client.post(endpoint).json(&req).send().await?;
+
+    if let Err(e) = res.error_for_status_ref() {
+        let body = res.text().await?;
+        return Err(e).with_context(|| format!("Response body: {body}"));
+    }
+    let raw_body = res.text().await?;
 
     let res = serde_json::from_str::<Response>(&raw_body)
         .with_context(|| format!("Unable to parse JSON response: {raw_body}"))?;
