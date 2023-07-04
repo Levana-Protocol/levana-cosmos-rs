@@ -1,9 +1,12 @@
 use std::{fmt::Display, path::Path};
 
 use anyhow::{Context, Result};
-use cosmos_sdk_proto::cosmwasm::wasm::v1::MsgStoreCode;
+use cosmos_sdk_proto::{
+    cosmos::{authz::v1beta1::MsgExec, base::abci::v1beta1::TxResponse},
+    cosmwasm::wasm::v1::MsgStoreCode,
+};
 
-use crate::{Cosmos, HasCosmos, Wallet};
+use crate::{Address, Cosmos, HasAddress, HasCosmos, TxBuilder, TypedMessage, Wallet};
 
 /// Represents the uploaded code on a specific blockchain connection.
 #[derive(Clone)]
@@ -22,6 +25,25 @@ impl CodeId {
     }
 }
 
+/// Get the code ID from a TxResponse
+fn parse_code_id(res: &TxResponse) -> Result<u64> {
+    for log in &res.logs {
+        for event in &log.events {
+            if event.r#type == "store_code" {
+                for attr in &event.attributes {
+                    if attr.key == "code_id" {
+                        return Ok(attr.value.parse()?);
+                    }
+                }
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Missing code_id in store_code response: {res:?}"
+    ))
+}
+
 impl Cosmos {
     /// Convenience helper for uploading code to the blockchain
     pub async fn store_code(&self, wallet: &Wallet, wasm_byte_code: Vec<u8>) -> Result<CodeId> {
@@ -34,24 +56,11 @@ impl Cosmos {
             .broadcast_message(self, msg)
             .await
             .context("Storing WASM contract")?;
-        for log in &res.logs {
-            for event in &log.events {
-                if event.r#type == "store_code" {
-                    for attr in &event.attributes {
-                        if attr.key == "code_id" {
-                            return Ok(CodeId {
-                                code_id: attr.value.parse()?,
-                                client: self.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Missing code_id in store_code response: {res:?}"
-        ))
+        let code_id = parse_code_id(&res)?;
+        return Ok(CodeId {
+            code_id,
+            client: self.clone(),
+        });
     }
 
     /// Convenience wrapper for [Cosmos::store_code] that works on file paths
@@ -61,6 +70,31 @@ impl Cosmos {
         self.store_code(wallet, wasm_byte_code)
             .await
             .with_context(|| format!("Storing code in file {}", path.display()))
+    }
+
+    /// Like store_code_path, but uses the authz grant mechanism
+    pub async fn store_code_path_authz(
+        &self,
+        wallet: &Wallet,
+        path: impl AsRef<Path>,
+        granter: Address,
+    ) -> Result<(TxResponse, CodeId)> {
+        let wasm_byte_code = fs_err::read(path)?;
+        let store_code = MsgStoreCode {
+            sender: granter.get_address_string(),
+            wasm_byte_code,
+            instantiate_permission: None,
+        };
+
+        let mut txbuilder = TxBuilder::default();
+        let msg = MsgExec {
+            grantee: wallet.get_address_string(),
+            msgs: vec![TypedMessage::from(store_code).into_inner()],
+        };
+        txbuilder.add_message_mut(msg);
+        let res = txbuilder.sign_and_broadcast(self, wallet).await?;
+        let code_id = parse_code_id(&res)?;
+        Ok((res, self.make_code_id(code_id)))
     }
 }
 

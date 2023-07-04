@@ -10,8 +10,7 @@ use cosmos::{
     proto::{
         cosmos::authz::v1beta1::MsgExec, cosmwasm::wasm::v1::MsgExecuteContract, traits::Message,
     },
-    Address, Cosmos, HasAddress, HasAddressType, MsgGrantHelper, MsgStoreCode, TxBuilder,
-    TypedMessage,
+    Address, Cosmos, HasAddress, HasAddressType, MsgGrantHelper, TxBuilder, TypedMessage,
 };
 
 use crate::{parsed_coin::ParsedCoin, TxOpt};
@@ -214,22 +213,10 @@ async fn granter_grants(cosmos: Cosmos, granter: Address) -> Result<()> {
 }
 
 async fn store_code(cosmos: Cosmos, tx_opt: TxOpt, path: &Path, granter: Address) -> Result<()> {
-    let wasm_byte_code = fs_err::read(path)?;
-    let store_code = MsgStoreCode {
-        sender: granter.get_address_string(),
-        wasm_byte_code,
-        instantiate_permission: None,
-    };
-
     let wallet = tx_opt.get_wallet(cosmos.get_address_type());
-    let mut txbuilder = TxBuilder::default();
-    let msg = MsgExec {
-        grantee: wallet.get_address_string(),
-        msgs: vec![TypedMessage::from(store_code).into_inner()],
-    };
-    txbuilder.add_message_mut(msg);
-    let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
+    let (res, code_id) = cosmos.store_code_path_authz(&wallet, path, granter).await?;
     log::info!("Executed in {}", res.txhash);
+    log::info!("Code ID: {}", code_id);
     Ok(())
 }
 
