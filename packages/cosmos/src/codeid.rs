@@ -57,10 +57,10 @@ impl Cosmos {
             .await
             .context("Storing WASM contract")?;
         let code_id = parse_code_id(&res)?;
-        return Ok(CodeId {
+        Ok(CodeId {
             code_id,
             client: self.clone(),
-        });
+        })
     }
 
     /// Convenience wrapper for [Cosmos::store_code] that works on file paths
