@@ -394,6 +394,7 @@ dependencies = [
  "cosmos",
  "cosmwasm-std",
  "cw-utils",
+ "cw3",
  "cw3-flex-multisig",
  "cw4",
  "cw4-group",

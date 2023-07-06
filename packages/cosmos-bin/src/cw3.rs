@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use cosmos::{
     Address, ContractAdmin, Cosmos, CosmosNetwork, HasAddress, HasAddressType, TxBuilder,
 };
-use cosmwasm_std::Decimal;
+use cosmwasm_std::{to_binary, CosmosMsg, Decimal, Empty, WasmMsg};
+use cw3::{ProposalListResponse, ProposalResponse};
 use cw4::Member;
 use cw_utils::Threshold;
 
@@ -43,11 +44,41 @@ enum Subcommand {
         #[clap(flatten)]
         inner: NewFlexOpt,
     },
+    /// Print out the JSON command to update the members in a group
+    UpdateMembersMessage {
+        #[clap(flatten)]
+        inner: AddMemberMessageOpt,
+    },
+    /// Make a new proposal
+    Propose {
+        #[clap(flatten)]
+        inner: ProposeOpt,
+    },
+    /// List proposals
+    List {
+        #[clap(flatten)]
+        inner: ListOpt,
+    },
+    /// Vote on an open proposal
+    Vote {
+        #[clap(flatten)]
+        inner: VoteOpt,
+    },
+    /// Execute a passed proposal
+    Execute {
+        #[clap(flatten)]
+        inner: ExecuteOpt,
+    },
 }
 
 pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
     match sub {
         Subcommand::NewFlex { inner } => new_flex(network, cosmos, inner).await,
+        Subcommand::UpdateMembersMessage { inner } => update_members_message(inner).await,
+        Subcommand::Propose { inner } => propose(cosmos, inner).await,
+        Subcommand::List { inner } => list(cosmos, inner).await,
+        Subcommand::Vote { inner } => vote(cosmos, inner).await,
+        Subcommand::Execute { inner } => execute(cosmos, inner).await,
     }
 }
 
@@ -171,4 +202,204 @@ impl FromStr for MyDuration {
             .with_context(|| format!("Could not parse duration value {s}"))?;
         Ok(MyDuration(cw_utils::Duration::Time(num * multiplier)))
     }
+}
+
+#[derive(clap::Parser)]
+struct AddMemberMessageOpt {
+    /// Members to add
+    #[clap(long)]
+    add: Vec<Address>,
+    /// Members to remove
+    #[clap(long)]
+    remove: Vec<Address>,
+    /// CW4 group contract address
+    #[clap(long)]
+    group: Address,
+}
+
+async fn update_members_message(
+    AddMemberMessageOpt { add, remove, group }: AddMemberMessageOpt,
+) -> Result<()> {
+    let msg = cw4_group::msg::ExecuteMsg::UpdateMembers {
+        add: add
+            .into_iter()
+            .map(|x| Member {
+                addr: x.get_address_string(),
+                weight: 1,
+            })
+            .collect(),
+        remove: remove.into_iter().map(|x| x.get_address_string()).collect(),
+    };
+    let msg = CosmosMsg::<Empty>::Wasm(WasmMsg::Execute {
+        contract_addr: group.get_address_string(),
+        msg: to_binary(&msg)?,
+        funds: vec![],
+    });
+    println!("{}", serde_json::to_string(&msg)?);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct ProposeOpt {
+    /// CW3 group contract address
+    #[clap(long)]
+    cw3: Address,
+    #[clap(flatten)]
+    tx_opt: TxOpt,
+    /// Title
+    #[clap(long)]
+    title: String,
+    /// Description, defaults to title
+    #[clap(long)]
+    description: Option<String>,
+    /// Messages, in JSON format
+    #[clap(long)]
+    msg: Vec<String>,
+}
+
+async fn propose(
+    cosmos: Cosmos,
+    ProposeOpt {
+        cw3,
+        tx_opt,
+        title,
+        description,
+        msg,
+    }: ProposeOpt,
+) -> Result<()> {
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let cw3 = cosmos.make_contract(cw3);
+    let res = cw3
+        .execute(
+            &wallet,
+            vec![],
+            cw3_flex_multisig::msg::ExecuteMsg::Propose {
+                description: description.unwrap_or_else(|| title.clone()),
+                title,
+                msgs: msg
+                    .into_iter()
+                    .map(|x| {
+                        serde_json::from_str::<CosmosMsg<Empty>>(&x)
+                            .context("Invalid CosmosMsg provided")
+                    })
+                    .collect::<Result<_>>()?,
+                latest: None,
+            },
+        )
+        .await?;
+    log::info!("Added in {}", res.txhash);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct ListOpt {
+    /// CW3 group contract address
+    #[clap(long)]
+    cw3: Address,
+}
+
+async fn list(cosmos: Cosmos, ListOpt { cw3 }: ListOpt) -> Result<()> {
+    let cw3 = cosmos.make_contract(cw3);
+    let mut start_after = None;
+    loop {
+        let ProposalListResponse::<Empty> { proposals } = cw3
+            .query(cw3_flex_multisig::msg::QueryMsg::ListProposals {
+                start_after,
+                limit: None,
+            })
+            .await?;
+        match proposals.last() {
+            None => break Ok(()),
+            Some(proposal) => start_after = Some(proposal.id),
+        }
+        for ProposalResponse {
+            id,
+            title,
+            description: _,
+            msgs: _,
+            status,
+            expires: _,
+            threshold: _,
+            proposer: _,
+            deposit: _,
+        } in proposals
+        {
+            println!("{id}: {title}. {status:?}");
+        }
+    }
+}
+
+#[derive(clap::Parser)]
+struct VoteOpt {
+    #[clap(flatten)]
+    tx_opt: TxOpt,
+    /// CW3 group contract address
+    #[clap(long)]
+    cw3: Address,
+    /// Proposal ID to execute
+    #[clap(long)]
+    proposal: u64,
+    /// How to vote
+    #[clap(long)]
+    vote: String,
+}
+
+async fn vote(
+    cosmos: Cosmos,
+    VoteOpt {
+        tx_opt,
+        cw3,
+        proposal,
+        vote,
+    }: VoteOpt,
+) -> Result<()> {
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let cw3 = cosmos.make_contract(cw3);
+    let res = cw3
+        .execute(
+            &wallet,
+            vec![],
+            cw3_flex_multisig::msg::ExecuteMsg::Vote {
+                proposal_id: proposal,
+                vote: serde_json::from_value(serde_json::Value::String(vote))?,
+            },
+        )
+        .await?;
+    println!("Executed in {}", res.txhash);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct ExecuteOpt {
+    #[clap(flatten)]
+    tx_opt: TxOpt,
+    /// CW3 group contract address
+    #[clap(long)]
+    cw3: Address,
+    /// Proposal ID to execute
+    #[clap(long)]
+    proposal: u64,
+}
+
+async fn execute(
+    cosmos: Cosmos,
+    ExecuteOpt {
+        tx_opt,
+        cw3,
+        proposal,
+    }: ExecuteOpt,
+) -> Result<()> {
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let cw3 = cosmos.make_contract(cw3);
+    let res = cw3
+        .execute(
+            &wallet,
+            vec![],
+            cw3_flex_multisig::msg::ExecuteMsg::Execute {
+                proposal_id: proposal,
+            },
+        )
+        .await?;
+    println!("Executed in {}", res.txhash);
+    Ok(())
 }
