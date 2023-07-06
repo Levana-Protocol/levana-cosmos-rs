@@ -69,6 +69,11 @@ enum Subcommand {
         #[clap(flatten)]
         inner: ExecuteOpt,
     },
+    /// Generate a message for a CW3 from a contract execute message
+    WasmExecuteMessage {
+        #[clap(flatten)]
+        inner: WasmExecuteMessageOpt,
+    },
 }
 
 pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
@@ -79,6 +84,7 @@ pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt)
         Subcommand::List { inner } => list(cosmos, inner).await,
         Subcommand::Vote { inner } => vote(cosmos, inner).await,
         Subcommand::Execute { inner } => execute(cosmos, inner).await,
+        Subcommand::WasmExecuteMessage { inner } => wasm_execute_message(inner),
     }
 }
 
@@ -401,5 +407,28 @@ async fn execute(
         )
         .await?;
     println!("Executed in {}", res.txhash);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct WasmExecuteMessageOpt {
+    /// Destination contract address
+    #[clap(long)]
+    contract: Address,
+    /// Message to submit
+    #[clap(long)]
+    message: String,
+}
+
+fn wasm_execute_message(
+    WasmExecuteMessageOpt { contract, message }: WasmExecuteMessageOpt,
+) -> Result<()> {
+    let msg = serde_json::from_str::<serde_json::Value>(&message)?;
+    let msg = CosmosMsg::<Empty>::Wasm(WasmMsg::Execute {
+        contract_addr: contract.get_address_string(),
+        msg: to_binary(&msg)?,
+        funds: vec![],
+    });
+    println!("{}", serde_json::to_string(&msg)?);
     Ok(())
 }
