@@ -1,6 +1,7 @@
 mod authz;
 mod chain;
 mod contract;
+mod cw3;
 mod nft;
 mod parsed_coin;
 mod tokenfactory;
@@ -255,10 +256,16 @@ enum Subcommand {
         #[clap(flatten)]
         opt: authz::Opt,
     },
+    /// CW3 multisig operations
+    Cw3 {
+        #[clap(flatten)]
+        opt: cw3::Opt,
+    },
 }
 
 impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
+        let network = opt.network_opt.network;
         let cosmos = opt.network_opt.build_lazy().await?;
         let address_type = cosmos.get_address_type();
 
@@ -531,6 +538,7 @@ impl Subcommand {
                 tokenfactory::go(cosmos, wallet, cmd).await?
             }
             Subcommand::Authz { opt } => authz::go(cosmos, opt).await?,
+            Subcommand::Cw3 { opt } => cw3::go(network, cosmos, opt).await?,
         }
 
         Ok(())
