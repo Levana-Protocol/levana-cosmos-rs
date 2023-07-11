@@ -21,8 +21,9 @@ use cosmos_sdk_proto::{
     },
     cosmwasm::wasm::v1::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
-        MsgUpdateAdmin, QueryContractHistoryRequest, QueryContractHistoryResponse,
-        QueryContractInfoRequest, QueryRawContractStateRequest, QuerySmartContractStateRequest,
+        MsgUpdateAdmin, QueryCodeRequest, QueryContractHistoryRequest,
+        QueryContractHistoryResponse, QueryContractInfoRequest, QueryRawContractStateRequest,
+        QuerySmartContractStateRequest,
     },
     traits::Message,
 };
@@ -618,6 +619,18 @@ impl Cosmos {
             .await?
             .into_inner()
             .data)
+    }
+
+    pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
+        let res = self
+            .inner()
+            .await?
+            .wasm_query_client
+            .lock()
+            .await
+            .code(QueryCodeRequest { code_id })
+            .await?;
+        Ok(res.into_inner().data)
     }
 
     pub async fn wait_for_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {

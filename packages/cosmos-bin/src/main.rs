@@ -1,5 +1,6 @@
 mod authz;
 mod chain;
+mod code;
 mod contract;
 mod cw3;
 mod nft;
@@ -260,6 +261,11 @@ enum Subcommand {
     Cw3 {
         #[clap(flatten)]
         opt: cw3::Opt,
+    },
+    /// Code ID operations
+    Code {
+        #[clap(flatten)]
+        opt: code::Opt,
     },
 }
 
@@ -539,6 +545,7 @@ impl Subcommand {
             }
             Subcommand::Authz { opt } => authz::go(cosmos, opt).await?,
             Subcommand::Cw3 { opt } => cw3::go(network, cosmos, opt).await?,
+            Subcommand::Code { opt } => code::go(cosmos, opt).await?,
         }
 
         Ok(())

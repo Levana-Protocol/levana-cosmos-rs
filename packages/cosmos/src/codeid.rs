@@ -23,6 +23,10 @@ impl CodeId {
     pub fn get_code_id(&self) -> u64 {
         self.code_id
     }
+
+    pub async fn download(&self) -> Result<Vec<u8>> {
+        self.client.code_info(self.code_id).await
+    }
 }
 
 /// Get the code ID from a TxResponse
