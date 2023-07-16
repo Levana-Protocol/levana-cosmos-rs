@@ -74,6 +74,11 @@ enum Subcommand {
         #[clap(flatten)]
         inner: WasmExecuteMessageOpt,
     },
+    /// Generate a message for a CW3 to migrate a contract
+    MigrateContractMessage {
+        #[clap(flatten)]
+        inner: MigrateContractOpt,
+    },
 }
 
 pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
@@ -85,6 +90,7 @@ pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt)
         Subcommand::Vote { inner } => vote(cosmos, inner).await,
         Subcommand::Execute { inner } => execute(cosmos, inner).await,
         Subcommand::WasmExecuteMessage { inner } => wasm_execute_message(inner),
+        Subcommand::MigrateContractMessage { inner } => migrate_contract_message(inner),
     }
 }
 
@@ -428,6 +434,36 @@ fn wasm_execute_message(
         contract_addr: contract.get_address_string(),
         msg: to_binary(&msg)?,
         funds: vec![],
+    });
+    println!("{}", serde_json::to_string(&msg)?);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct MigrateContractOpt {
+    /// Destination contract address
+    #[clap(long)]
+    contract: Address,
+    /// New code ID
+    #[clap(long)]
+    code_id: u64,
+    /// Message to submit
+    #[clap(long)]
+    message: String,
+}
+
+fn migrate_contract_message(
+    MigrateContractOpt {
+        contract,
+        code_id,
+        message,
+    }: MigrateContractOpt,
+) -> Result<()> {
+    let message = serde_json::from_str::<serde_json::Value>(&message)?;
+    let msg = CosmosMsg::<Empty>::Wasm(WasmMsg::Migrate {
+        contract_addr: contract.get_address_string(),
+        new_code_id: code_id,
+        msg: to_binary(&message)?,
     });
     println!("{}", serde_json::to_string(&msg)?);
     Ok(())
