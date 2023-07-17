@@ -81,9 +81,9 @@ enum Subcommand {
     },
 }
 
-pub(crate) async fn go(network: CosmosNetwork, cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
+pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
     match sub {
-        Subcommand::NewFlex { inner } => new_flex(network, cosmos, inner).await,
+        Subcommand::NewFlex { inner } => new_flex(cosmos, inner).await,
         Subcommand::UpdateMembersMessage { inner } => update_members_message(inner).await,
         Subcommand::Propose { inner } => propose(cosmos, inner).await,
         Subcommand::List { inner } => list(cosmos, inner).await,
@@ -119,7 +119,6 @@ struct NewFlexOpt {
 struct MyDuration(cw_utils::Duration);
 
 async fn new_flex(
-    network: CosmosNetwork,
     cosmos: Cosmos,
     NewFlexOpt {
         member: members,
@@ -130,6 +129,7 @@ async fn new_flex(
         duration,
     }: NewFlexOpt,
 ) -> Result<()> {
+    let network = cosmos.get_network();
     let wallet = tx_opt.get_wallet(network.get_address_type());
     let cw3 = cosmos.make_code_id(get_code_id(network, ContractType::Cw3Flex)?);
     let cw4 = cosmos.make_code_id(get_code_id(network, ContractType::Cw4Group)?);

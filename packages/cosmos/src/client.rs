@@ -109,6 +109,10 @@ impl Cosmos {
     pub fn get_first_builder(&self) -> Arc<CosmosBuilder> {
         self.pool.manager().get_first_builder().clone()
     }
+
+    pub fn get_network(&self) -> CosmosNetwork {
+        self.pool.manager().get_first_builder().network
+    }
 }
 
 impl HasAddressType for Cosmos {
@@ -197,6 +201,7 @@ pub struct CosmosBuilder {
     pub gas_coin: String,
     pub address_type: AddressType,
     pub config: CosmosConfig,
+    pub network: CosmosNetwork,
 }
 
 /// Optional config values.
@@ -887,6 +892,7 @@ impl CosmosBuilder {
             gas_coin: "ujunox".to_owned(),
             address_type: AddressType::Juno,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::JunoTestnet,
         }
     }
 
@@ -900,6 +906,7 @@ impl CosmosBuilder {
                 transaction_attempts: 3, // fail faster during testing
                 ..CosmosConfig::default()
             },
+            network: CosmosNetwork::JunoLocal,
         }
     }
 
@@ -911,6 +918,7 @@ impl CosmosBuilder {
             gas_coin: "ujuno".to_owned(),
             address_type: AddressType::Juno,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::JunoMainnet,
         }
     }
 
@@ -922,6 +930,7 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::OsmosisMainnet,
         }
     }
 
@@ -933,6 +942,7 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::OsmosisTestnet,
         }
     }
 
@@ -943,6 +953,7 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             address_type: AddressType::Osmo,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::OsmosisLocal,
         }
     }
 
@@ -953,6 +964,7 @@ impl CosmosBuilder {
             gas_coin: "udragonfire".to_owned(),
             address_type: AddressType::Levana,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::Dragonfire,
         }
     }
 
@@ -963,6 +975,7 @@ impl CosmosBuilder {
             gas_coin: "uwasm".to_owned(),
             address_type: AddressType::Wasm,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::WasmdLocal,
         }
     }
     fn new_sei_mainnet() -> CosmosBuilder {
@@ -977,6 +990,7 @@ impl CosmosBuilder {
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
+            network: CosmosNetwork::SeiMainnet,
         }
     }
     async fn new_sei_testnet() -> Result<CosmosBuilder> {
@@ -1005,6 +1019,7 @@ impl CosmosBuilder {
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
+            network: CosmosNetwork::SeiTestnet,
         })
     }
 
@@ -1017,6 +1032,7 @@ impl CosmosBuilder {
             gas_coin: "ustars".to_owned(),
             address_type: AddressType::Stargaze,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::StargazeTestnet,
         }
     }
 
@@ -1029,6 +1045,7 @@ impl CosmosBuilder {
             gas_coin: "ustars".to_owned(),
             address_type: AddressType::Stargaze,
             config: CosmosConfig::default(),
+            network: CosmosNetwork::StargazeMainnet,
         }
     }
 }

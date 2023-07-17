@@ -271,15 +271,14 @@ enum Subcommand {
 
 impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
-        let network = opt.network_opt.network;
-        let cosmos = opt.network_opt.build_lazy().await?;
-        let address_type = cosmos.get_address_type();
-
         match self {
             Subcommand::ShowConfig {} => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 println!("{:#?}", cosmos.get_config())
             }
             Subcommand::StoreCode { tx_opt, file } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let wallet = tx_opt.get_wallet(address_type);
                 let codeid = cosmos.store_code_path(&wallet, &file).await?;
                 println!("Code ID: {codeid}");
@@ -291,12 +290,15 @@ impl Subcommand {
                 msg,
                 admin,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let contract = CodeId::new(cosmos, code_id)
                     .instantiate_binary(&tx_opt.get_wallet(address_type), label, vec![], msg, admin)
                     .await?;
                 println!("Contract: {contract}");
             }
             Subcommand::PrintBalances { address } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let balances = cosmos.all_balances(address).await?;
                 for Coin { denom, amount } in &balances {
                     println!("{amount}{denom}");
@@ -310,6 +312,7 @@ impl Subcommand {
                 query,
                 height,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let x = match height {
                     Some(height) => cosmos.wasm_query_at_height(address, query, height).await?,
                     None => cosmos.wasm_query(address, query).await?,
@@ -324,6 +327,7 @@ impl Subcommand {
                 key,
                 height,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let x = match height {
                     Some(height) => {
                         cosmos
@@ -343,6 +347,8 @@ impl Subcommand {
                 code_id,
                 msg,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let contract = cosmos::Contract::new(cosmos, address);
                 contract
                     .migrate_binary(&tx_opt.get_wallet(address_type), code_id, msg)
@@ -355,6 +361,8 @@ impl Subcommand {
                 funds: amount,
                 skip_simulate,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let contract = cosmos::Contract::new(cosmos.clone(), address);
                 let amount = match amount {
                     Some(funds) => {
@@ -398,6 +406,8 @@ impl Subcommand {
                 dest,
                 coins,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let txres = tx_opt
                     .get_wallet(address_type)
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
@@ -406,6 +416,7 @@ impl Subcommand {
                 println!("{}", txres.txhash);
             }
             Subcommand::ContractInfo { contract } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let ContractInfo {
                     code_id,
                     creator,
@@ -425,6 +436,7 @@ impl Subcommand {
                 complete,
                 pretty,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let TxResponse {
                     height,
                     txhash: _,
@@ -470,11 +482,13 @@ impl Subcommand {
                 limit,
                 offset,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 for txhash in cosmos.list_transactions_for(address, limit, offset).await? {
                     println!("{txhash}");
                 }
             }
             Subcommand::ContractHistory { contract } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let QueryContractHistoryResponse {
                     entries,
                     pagination: _,
@@ -503,6 +517,8 @@ impl Subcommand {
                 msg,
                 funds,
             } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                let address_type = cosmos.get_address_type();
                 let contract = cosmos::Contract::new(cosmos.clone(), address);
                 let amount = match funds {
                     Some(funds) => {
@@ -517,6 +533,7 @@ impl Subcommand {
                 println!("{simres:?}");
             }
             Subcommand::ShowBlock { height } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 let BlockInfo {
                     height,
                     timestamp,
@@ -533,19 +550,37 @@ impl Subcommand {
             Subcommand::ChangeAddressType { orig, address_type } => {
                 println!("{}", orig.for_chain(address_type));
             }
-            Subcommand::Nft { opt, subcommand } => {
-                nft::go(subcommand, opt, cosmos).await?;
+            Subcommand::Nft {
+                opt: inner,
+                subcommand,
+            } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                nft::go(subcommand, inner, cosmos).await?;
             }
-            Subcommand::Contract { opt } => {
-                contract::go(opt, cosmos).await?;
+            Subcommand::Contract { opt: inner } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                contract::go(inner, cosmos).await?;
             }
-            Subcommand::Chain { opt } => chain::go(opt, cosmos).await?,
+            Subcommand::Chain { opt: inner } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                chain::go(inner, cosmos).await?;
+            }
             Subcommand::TokenFactory { cmd, wallet } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
                 tokenfactory::go(cosmos, wallet, cmd).await?
             }
-            Subcommand::Authz { opt } => authz::go(cosmos, opt).await?,
-            Subcommand::Cw3 { opt } => cw3::go(network, cosmos, opt).await?,
-            Subcommand::Code { opt } => code::go(cosmos, opt).await?,
+            Subcommand::Authz { opt: inner } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                authz::go(cosmos, inner).await?;
+            }
+            Subcommand::Cw3 { opt: inner } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                cw3::go(cosmos, inner).await?;
+            }
+            Subcommand::Code { opt: inner } => {
+                let cosmos = opt.network_opt.build_lazy().await?;
+                code::go(cosmos, inner).await?;
+            }
         }
 
         Ok(())

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{Cosmos, CosmosBuilder, CosmosNetwork};
 
@@ -6,8 +6,8 @@ use crate::{Cosmos, CosmosBuilder, CosmosNetwork};
 #[derive(clap::Parser, Clone, Debug)]
 pub struct CosmosOpt {
     /// Which blockchain to connect to for grabbing blocks
-    #[clap(long, env = "COSMOS_NETWORK")]
-    pub network: CosmosNetwork,
+    #[clap(long, env = "COSMOS_NETWORK", global = true)]
+    pub network: Option<CosmosNetwork>,
     /// Optional gRPC endpoint override
     #[clap(long, env = "COSMOS_GRPC", global = true)]
     pub cosmos_grpc: Option<String>,
@@ -40,7 +40,7 @@ impl CosmosOpt {
             referer_header,
         } = self;
 
-        let mut builder = network.builder().await?;
+        let mut builder = network.context("No network specified, either provide the COSMOS_NETWORK env var or --network option")?.builder().await?;
         if let Some(grpc) = cosmos_grpc {
             builder.grpc_url = grpc;
         }
