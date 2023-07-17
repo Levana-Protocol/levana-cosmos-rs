@@ -280,7 +280,7 @@ impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
         let cosmos = self.build_lazy();
         // Force strict connection
-        std::mem::drop(cosmos.sanity_check().await?);
+        cosmos.sanity_check().await?;
         Ok(cosmos)
     }
 
