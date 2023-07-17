@@ -113,6 +113,21 @@ impl Cosmos {
     pub fn get_network(&self) -> CosmosNetwork {
         self.pool.manager().get_first_builder().network
     }
+
+    /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
+    ///
+    /// Called automatically by [Cosmos::build], but not by [Cosmos::build_lazy].
+    pub async fn sanity_check(&self) -> Result<()> {
+        let actual = &self.get_latest_block_info().await?.chain_id;
+        let expected = &self.get_first_builder().chain_id;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Mismatched chain IDs. Actual: {actual}. Expected: {expected}."
+            ))
+        }
+    }
 }
 
 impl HasAddressType for Cosmos {
@@ -265,7 +280,7 @@ impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
         let cosmos = self.build_lazy();
         // Force strict connection
-        std::mem::drop(cosmos.inner().await?);
+        std::mem::drop(cosmos.sanity_check().await?);
         Ok(cosmos)
     }
 
@@ -816,6 +831,7 @@ impl Cosmos {
             block_hash: hex::encode_upper(block_id.hash),
             timestamp: Utc.timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
             txhashes,
+            chain_id: header.chain_id,
         })
     }
 
@@ -872,6 +888,7 @@ impl Cosmos {
             block_hash: hex::encode_upper(block_id.hash),
             timestamp: Utc.timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
             txhashes,
+            chain_id: header.chain_id,
         })
     }
 }
@@ -1056,6 +1073,7 @@ pub struct BlockInfo {
     pub block_hash: String,
     pub timestamp: DateTime<Utc>,
     pub txhashes: Vec<String>,
+    pub chain_id: String,
 }
 
 #[derive(Default)]
