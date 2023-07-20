@@ -19,6 +19,7 @@ use cosmos::{
             ContractCodeHistoryEntry, ContractInfo, MsgExecuteContract,
             QueryContractHistoryResponse,
         },
+        traits::Message,
     },
     Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress,
     HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
@@ -448,7 +449,7 @@ impl Subcommand {
                     info,
                     gas_wanted,
                     gas_used,
-                    tx: _,
+                    tx,
                     timestamp,
                     events,
                 } = cosmos.wait_for_transaction(txhash).await?;
@@ -475,6 +476,9 @@ impl Subcommand {
                     for (idx, event) in events.into_iter().enumerate() {
                         println!("Event #{idx}: {event:?}");
                     }
+                }
+                if let Some(tx) = tx {
+                    println!("Encoded length: {}", tx.encoded_len());
                 }
             }
             Subcommand::ListTxsFor {
