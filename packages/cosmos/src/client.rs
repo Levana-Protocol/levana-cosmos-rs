@@ -506,20 +506,34 @@ impl Cosmos {
     }
 
     pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>> {
+        self.all_balances_at(address, None).await
+    }
+
+    pub async fn all_balances_at(
+        &self,
+        address: impl Into<String>,
+        height: Option<u64>,
+    ) -> Result<Vec<Coin>> {
         let address = address.into();
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
+            let mut request = tonic::Request::new(QueryAllBalancesRequest {
+                address: address.clone(),
+                pagination: pagination.take(),
+            });
+            if let Some(height) = height {
+                let metadata = request.metadata_mut();
+                metadata.insert("x-cosmos-block-height", height.into());
+            }
+
             let mut res = self
                 .inner()
                 .await?
                 .bank_query_client
                 .lock()
                 .await
-                .all_balances(QueryAllBalancesRequest {
-                    address: address.clone(),
-                    pagination: pagination.take(),
-                })
+                .all_balances(request)
                 .await?
                 .into_inner();
             coins.append(&mut res.balances);

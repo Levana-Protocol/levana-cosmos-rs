@@ -107,6 +107,9 @@ enum Subcommand {
     PrintBalances {
         /// Address on COSMOS blockchain
         address: String,
+        /// Optional height to do the query at
+        #[clap(long)]
+        height: Option<u64>,
     },
     /// Query contract
     QueryContract {
@@ -298,9 +301,9 @@ impl Subcommand {
                     .await?;
                 println!("Contract: {contract}");
             }
-            Subcommand::PrintBalances { address } => {
+            Subcommand::PrintBalances { address, height } => {
                 let cosmos = opt.network_opt.build().await?;
-                let balances = cosmos.all_balances(address).await?;
+                let balances = cosmos.all_balances_at(address, height).await?;
                 for Coin { denom, amount } in &balances {
                     println!("{amount}{denom}");
                 }
