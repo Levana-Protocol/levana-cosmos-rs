@@ -407,7 +407,7 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisLocal => CosmosBuilder::new_osmosis_local(),
             CosmosNetwork::Dragonfire => CosmosBuilder::new_dragonfire(),
             CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
-            CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet(),
+            CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet().await?,
             CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet().await?,
             CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
@@ -1009,20 +1009,34 @@ impl CosmosBuilder {
             network: CosmosNetwork::WasmdLocal,
         }
     }
-    fn new_sei_mainnet() -> CosmosBuilder {
-        CosmosBuilder {
+    async fn new_sei_mainnet() -> Result<CosmosBuilder> {
+        #[derive(Deserialize)]
+        struct SeiGasConfig {
+            #[serde(rename = "pacific-1")]
+            pub pacific_1: SeiGasConfigItem,
+        }
+        #[derive(Deserialize)]
+        struct SeiGasConfigItem {
+            pub min_gas_price: f64,
+        }
+
+        let url = "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json";
+        let resp = reqwest::get(url).await?;
+        let gas_config: SeiGasConfig = resp.json().await?;
+
+        Ok(CosmosBuilder {
             grpc_url: "https://not-yet-launched/".to_owned(),
             chain_id: "not-yet-launched".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
             config: CosmosConfig {
-                // https://github.com/sei-protocol/testnet-registry/blob/master/gas.json
-                gas_price_low: 0.012,
+                gas_price_low: gas_config.pacific_1.min_gas_price,
+                gas_price_high: gas_config.pacific_1.min_gas_price * 2.0,
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
             network: CosmosNetwork::SeiMainnet,
-        }
+        })
     }
     async fn new_sei_testnet() -> Result<CosmosBuilder> {
         #[derive(Deserialize)]
