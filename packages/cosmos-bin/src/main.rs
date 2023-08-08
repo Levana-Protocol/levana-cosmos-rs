@@ -3,6 +3,7 @@ mod chain;
 mod code;
 mod contract;
 mod cw3;
+mod my_duration;
 mod nft;
 mod parsed_coin;
 mod tokenfactory;

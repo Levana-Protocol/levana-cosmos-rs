@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use cosmos::{
     proto::{
         cosmos::authz::v1beta1::MsgExec, cosmwasm::wasm::v1::MsgExecuteContract, traits::Message,
@@ -13,7 +13,7 @@ use cosmos::{
     Address, Cosmos, HasAddress, HasAddressType, MsgGrantHelper, TxBuilder, TypedMessage,
 };
 
-use crate::{parsed_coin::ParsedCoin, TxOpt};
+use crate::{my_duration::MyDuration, parsed_coin::ParsedCoin, TxOpt};
 
 #[derive(clap::Parser)]
 pub(crate) struct Opt {
@@ -30,9 +30,9 @@ enum Subcommand {
         grant_type: GrantType,
         #[clap(flatten)]
         tx_opt: TxOpt,
-        /// How long, in seconds, the grant lasts
+        /// How long the grant lasts
         #[clap(long)]
-        duration: i64,
+        duration: MyDuration,
     },
     /// Print a CW3-compatible version of a grant
     Cw3Grant {
@@ -46,7 +46,7 @@ enum Subcommand {
         grant_type: GrantType,
         /// How long, in seconds, the grant lasts
         #[clap(long)]
-        duration: i64,
+        duration: MyDuration,
     },
     /// Query grants by the granter
     GranterGrants { granter: Address },
@@ -84,7 +84,7 @@ pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
             duration,
             grant_type,
         } => {
-            let expiration = Utc::now() + Duration::seconds(duration);
+            let expiration = Utc::now() + duration.into_chrono_duration()?;
             grant(cosmos, grantee, tx_opt, expiration, grant_type).await?;
         }
         Subcommand::Cw3Grant {
@@ -93,7 +93,8 @@ pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
             grant_type,
             duration,
         } => {
-            let expiration = Utc::now() + Duration::seconds(duration);
+            let expiration = Utc::now() + duration.into_chrono_duration()?;
+            log::debug!("Setting expiration to {expiration}");
             cw3_grant(granter, grantee, expiration, grant_type)?;
         }
         Subcommand::GranterGrants { granter } => granter_grants(cosmos, granter).await?,

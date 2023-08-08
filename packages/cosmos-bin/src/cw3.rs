@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use anyhow::{Context, Result};
 use cosmos::{
     Address, ContractAdmin, Cosmos, CosmosNetwork, HasAddress, HasAddressType, TxBuilder,
@@ -9,7 +7,7 @@ use cw3::{ProposalListResponse, ProposalResponse};
 use cw4::Member;
 use cw_utils::Threshold;
 
-use crate::TxOpt;
+use crate::{my_duration::MyDuration, TxOpt};
 
 #[derive(Clone, Copy, Debug)]
 enum ContractType {
@@ -117,9 +115,6 @@ struct NewFlexOpt {
     duration: MyDuration,
 }
 
-#[derive(Clone, Copy)]
-struct MyDuration(cw_utils::Duration);
-
 async fn new_flex(
     cosmos: Cosmos,
     NewFlexOpt {
@@ -171,7 +166,7 @@ async fn new_flex(
                 threshold: Threshold::AbsolutePercentage {
                     percentage: weight_needed,
                 },
-                max_voting_period: duration.0,
+                max_voting_period: duration.into_cw_duration(),
                 executor: None,
                 proposal_deposit: None,
             },
@@ -197,25 +192,6 @@ async fn new_flex(
     log::info!("Admin permissions updated in {}", res.txhash);
 
     Ok(())
-}
-
-impl FromStr for MyDuration {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let multiplier = match s.as_bytes().last().context("Duration cannot be empty")? {
-            b's' => 1,
-            b'm' => 60,
-            b'h' => 60 * 60,
-            b'd' => 60 * 60 * 24,
-            _ => anyhow::bail!("Final character in duration must be s, m, h, or d."),
-        };
-        let s = &s[0..s.len() - 1];
-        let num: u64 = s
-            .parse()
-            .with_context(|| format!("Could not parse duration value {s}"))?;
-        Ok(MyDuration(cw_utils::Duration::Time(num * multiplier)))
-    }
 }
 
 #[derive(clap::Parser)]
