@@ -1024,9 +1024,10 @@ impl CosmosBuilder {
         let resp = reqwest::get(url).await?;
         let gas_config: SeiGasConfig = resp.json().await?;
 
+        // https://github.com/chainapsis/keplr-chain-registry/blob/main/cosmos/pacific.json
         Ok(CosmosBuilder {
-            grpc_url: "https://not-yet-launched/".to_owned(),
-            chain_id: "not-yet-launched".to_owned(),
+            grpc_url: "http://sei-grpc.polkachu.com:11990".to_owned(),
+            chain_id: "pacific-1".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
             config: CosmosConfig {
