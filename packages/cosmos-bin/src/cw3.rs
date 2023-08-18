@@ -21,8 +21,6 @@ fn get_code_id(network: CosmosNetwork, contract_type: ContractType) -> Result<u6
         (CosmosNetwork::OsmosisTestnet, ContractType::Cw4Group) => Ok(1521),
         (CosmosNetwork::OsmosisMainnet, ContractType::Cw3Flex) => Ok(100),
         (CosmosNetwork::OsmosisMainnet, ContractType::Cw4Group) => Ok(101),
-        (CosmosNetwork::Dragonfire, ContractType::Cw3Flex) => Ok(600),
-        (CosmosNetwork::Dragonfire, ContractType::Cw4Group) => Ok(601),
         (CosmosNetwork::SeiMainnet, ContractType::Cw3Flex) => Ok(46),
         (CosmosNetwork::SeiMainnet, ContractType::Cw4Group) => Ok(47),
         _ => Err(anyhow::anyhow!(

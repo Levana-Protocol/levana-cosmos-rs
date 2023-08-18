@@ -138,19 +138,17 @@ pub enum AddressType {
     Cosmos,
     Juno,
     Osmo,
-    Levana,
     Wasm,
     Sei,
     Stargaze,
 }
 
 impl AddressType {
-    pub fn all() -> [AddressType; 7] {
+    pub fn all() -> [AddressType; 6] {
         [
             AddressType::Cosmos,
             AddressType::Juno,
             AddressType::Osmo,
-            AddressType::Levana,
             AddressType::Wasm,
             AddressType::Sei,
             AddressType::Stargaze,
@@ -162,7 +160,6 @@ impl AddressType {
             AddressType::Cosmos => "cosmos",
             AddressType::Juno => "juno",
             AddressType::Osmo => "osmo",
-            AddressType::Levana => "levana",
             AddressType::Wasm => "wasm",
             AddressType::Sei => "sei",
             // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
@@ -179,7 +176,6 @@ impl FromStr for AddressType {
             "cosmos" => Ok(AddressType::Cosmos),
             "juno" => Ok(AddressType::Juno),
             "osmo" => Ok(AddressType::Osmo),
-            "levana" => Ok(AddressType::Levana),
             "wasm" => Ok(AddressType::Wasm),
             "sei" => Ok(AddressType::Sei),
             // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
@@ -283,7 +279,6 @@ impl HasAddressType for CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
             CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
             CosmosNetwork::OsmosisLocal => AddressType::Osmo,
-            CosmosNetwork::Dragonfire => AddressType::Levana,
             CosmosNetwork::WasmdLocal => AddressType::Wasm,
             CosmosNetwork::SeiMainnet => AddressType::Sei,
             CosmosNetwork::SeiTestnet => AddressType::Sei,

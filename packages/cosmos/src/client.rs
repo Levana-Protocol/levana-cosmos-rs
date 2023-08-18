@@ -200,7 +200,6 @@ pub enum CosmosNetwork {
     OsmosisMainnet,
     OsmosisTestnet,
     OsmosisLocal,
-    Dragonfire,
     WasmdLocal,
     SeiMainnet,
     SeiTestnet,
@@ -354,7 +353,6 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => "osmosis-mainnet",
             CosmosNetwork::OsmosisTestnet => "osmosis-testnet",
             CosmosNetwork::OsmosisLocal => "osmosis-local",
-            CosmosNetwork::Dragonfire => "dragonfire",
             CosmosNetwork::WasmdLocal => "wasmd-local",
             CosmosNetwork::SeiMainnet => "sei-mainnet",
             CosmosNetwork::SeiTestnet => "sei-testnet",
@@ -381,7 +379,6 @@ impl FromStr for CosmosNetwork {
             "osmosis-mainnet" => Ok(CosmosNetwork::OsmosisMainnet),
             "osmosis-testnet" => Ok(CosmosNetwork::OsmosisTestnet),
             "osmosis-local" => Ok(CosmosNetwork::OsmosisLocal),
-            "dragonfire" => Ok(CosmosNetwork::Dragonfire),
             "wasmd-local" => Ok(CosmosNetwork::WasmdLocal),
             "sei-mainnet" => Ok(CosmosNetwork::SeiMainnet),
             "sei-testnet" => Ok(CosmosNetwork::SeiTestnet),
@@ -405,7 +402,6 @@ impl CosmosNetwork {
             CosmosNetwork::OsmosisMainnet => CosmosBuilder::new_osmosis_mainnet(),
             CosmosNetwork::OsmosisTestnet => CosmosBuilder::new_osmosis_testnet(),
             CosmosNetwork::OsmosisLocal => CosmosBuilder::new_osmosis_local(),
-            CosmosNetwork::Dragonfire => CosmosBuilder::new_dragonfire(),
             CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
             CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet().await?,
             CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet().await?,
@@ -985,17 +981,6 @@ impl CosmosBuilder {
             address_type: AddressType::Osmo,
             config: CosmosConfig::default(),
             network: CosmosNetwork::OsmosisLocal,
-        }
-    }
-
-    fn new_dragonfire() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "https://grpc-v4-udb8dydv.dragonfire.sandbox.levana.finance:443".to_owned(),
-            chain_id: "dragonfire-4".to_owned(),
-            gas_coin: "udragonfire".to_owned(),
-            address_type: AddressType::Levana,
-            config: CosmosConfig::default(),
-            network: CosmosNetwork::Dragonfire,
         }
     }
 
