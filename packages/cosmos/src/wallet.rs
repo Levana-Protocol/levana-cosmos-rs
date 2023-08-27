@@ -11,29 +11,35 @@ use bitcoin::util::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use cosmos_sdk_proto::cosmos::bank::v1beta1::MsgSend;
 use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
 use cosmos_sdk_proto::cosmos::base::v1beta1::Coin;
-use hkd32::mnemonic::{Phrase, Seed};
+use hkd32::mnemonic::Phrase;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
+use rand::Rng;
 
 use crate::address::RawAddress;
 use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
 
 /// A seed phrase for a wallet
+#[derive(Clone)]
 pub struct SeedPhrase {
-    seed: Seed,
+    mnemonic: bip39::Mnemonic,
 }
-
-impl Clone for SeedPhrase {
-    fn clone(&self) -> Self {
-        Self {
-            seed: Seed::new(*self.seed.as_bytes()),
+impl SeedPhrase {
+    fn random() -> SeedPhrase {
+        let mut rng = rand::thread_rng();
+        let mut entropy: [u8; 64] = [0; 64];
+        for b in &mut entropy {
+            *b = rng.gen();
+        }
+        SeedPhrase {
+            mnemonic: bip39::Mnemonic::from_entropy(&entropy).unwrap(),
         }
     }
 }
 
-impl From<Seed> for SeedPhrase {
-    fn from(seed: Seed) -> Self {
-        SeedPhrase { seed }
+impl From<bip39::Mnemonic> for SeedPhrase {
+    fn from(mnemonic: bip39::Mnemonic) -> Self {
+        SeedPhrase { mnemonic }
     }
 }
 
@@ -48,13 +54,12 @@ impl FromStr for SeedPhrase {
         }
 
         // Create mnemonic and generate seed from it
-        let phrase = hkd32::mnemonic::Phrase::new(s, hkd32::mnemonic::Language::English)
+        let mnemonic = s
+            .parse()
             .ok()
             .context("Unable to parse mnemonic from phrase")?;
 
-        Ok(SeedPhrase {
-            seed: phrase.to_seed(""),
-        })
+        Ok(SeedPhrase { mnemonic })
     }
 }
 
@@ -215,7 +220,7 @@ impl RawWallet {
 
         let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
             bitcoin::Network::Bitcoin,
-            self.seed_phrase.seed.as_bytes(),
+            &self.seed_phrase.mnemonic.to_seed(""),
         )?;
         let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
         let public_key = ExtendedPubKey::from_priv(secp, &privkey);
@@ -263,13 +268,8 @@ impl Wallet {
 
     /// Generate a random wallet
     pub fn generate(type_: AddressType) -> Result<Self> {
-        let mut bytes = [0; Seed::SIZE];
-        for byte in &mut bytes {
-            *byte = rand::random();
-        }
-
         RawWallet {
-            seed_phrase: Seed::new(bytes).into(),
+            seed_phrase: SeedPhrase::random(),
             derivation_path: None,
         }
         .for_chain(type_)
