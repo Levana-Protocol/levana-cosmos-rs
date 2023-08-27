@@ -154,7 +154,7 @@ async fn grant(
     expiration: DateTime<Utc>,
     grant_type: GrantType,
 ) -> Result<()> {
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
     let mut txbuilder = TxBuilder::default();
     txbuilder.add_message_mut(
         MsgGrantHelper {
@@ -214,7 +214,7 @@ async fn granter_grants(cosmos: Cosmos, granter: Address) -> Result<()> {
 }
 
 async fn store_code(cosmos: Cosmos, tx_opt: TxOpt, path: &Path, granter: Address) -> Result<()> {
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
     let (res, code_id) = cosmos.store_code_path_authz(&wallet, path, granter).await?;
     log::info!("Executed in {}", res.txhash);
     log::info!("Code ID: {}", code_id);
@@ -237,7 +237,7 @@ async fn execute_contract(
         }
         None => vec![],
     };
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
 
     let msg_exec_contract = MsgExecuteContract {
         sender: granter.get_address_string(),

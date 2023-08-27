@@ -32,7 +32,7 @@ pub(crate) async fn go(
 ) -> Result<()> {
     match subcommand {
         Subcommand::UpdateAdmin { new_admin, tx_opt } => {
-            let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+            let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
             TxBuilder::default()
                 .add_update_contract_admin(contract, &wallet, new_admin)
                 .sign_and_broadcast(&cosmos, &wallet)

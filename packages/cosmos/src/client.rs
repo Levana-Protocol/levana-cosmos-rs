@@ -205,6 +205,8 @@ pub enum CosmosNetwork {
     SeiTestnet,
     StargazeTestnet,
     StargazeMainnet,
+    InjectiveTestnet,
+    InjectiveMainnet,
 }
 
 /// Build a connection
@@ -358,6 +360,8 @@ impl CosmosNetwork {
             CosmosNetwork::SeiTestnet => "sei-testnet",
             CosmosNetwork::StargazeTestnet => "stargaze-testnet",
             CosmosNetwork::StargazeMainnet => "stargaze-mainnet",
+            CosmosNetwork::InjectiveTestnet => "injective-testnet",
+            CosmosNetwork::InjectiveMainnet => "injective-mainnet",
         }
     }
 }
@@ -384,6 +388,8 @@ impl FromStr for CosmosNetwork {
             "sei-testnet" => Ok(CosmosNetwork::SeiTestnet),
             "stargaze-testnet" => Ok(CosmosNetwork::StargazeTestnet),
             "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
+            "injective-testnet" => Ok(CosmosNetwork::InjectiveTestnet),
+            "injective-mainnet" => Ok(CosmosNetwork::InjectiveMainnet),
             _ => Err(anyhow::anyhow!("Unknown network: {s}")),
         }
     }
@@ -407,6 +413,8 @@ impl CosmosNetwork {
             CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet().await?,
             CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
             CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
+            CosmosNetwork::InjectiveTestnet => CosmosBuilder::new_injective_testnet(),
+            CosmosNetwork::InjectiveMainnet => CosmosBuilder::new_injective_mainnet(),
         })
     }
 }
@@ -1077,6 +1085,38 @@ impl CosmosBuilder {
             address_type: AddressType::Stargaze,
             config: CosmosConfig::default(),
             network: CosmosNetwork::StargazeMainnet,
+        }
+    }
+
+    fn new_injective_testnet() -> CosmosBuilder {
+        // https://github.com/cosmos/chain-registry/blob/master/testnets/injectivetestnet/chain.json
+        CosmosBuilder {
+            grpc_url: "http://injective-testnet-grpc.polkachu.com:14390".to_owned(),
+            chain_id: "injective-888".to_owned(),
+            gas_coin: "inj".to_owned(),
+            address_type: AddressType::Stargaze,
+            config: CosmosConfig {
+                gas_price_low: 500000000.0,
+                gas_price_high: 900000000.0,
+                ..CosmosConfig::default()
+            },
+            network: CosmosNetwork::InjectiveTestnet,
+        }
+    }
+
+    fn new_injective_mainnet() -> CosmosBuilder {
+        // https://github.com/cosmos/chain-registry/blob/master/injective/chain.json
+        CosmosBuilder {
+            grpc_url: "http://injective-grpc.polkachu.com:14390".to_owned(),
+            chain_id: "injective-1".to_owned(),
+            gas_coin: "inj".to_owned(),
+            address_type: AddressType::Stargaze,
+            config: CosmosConfig {
+                gas_price_low: 500000000.0,
+                gas_price_high: 900000000.0,
+                ..CosmosConfig::default()
+            },
+            network: CosmosNetwork::InjectiveMainnet,
         }
     }
 }

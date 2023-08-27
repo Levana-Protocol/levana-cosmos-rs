@@ -1,16 +1,19 @@
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bitcoin::hashes::{ripemd160, sha256, Hash};
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{All, Message, Secp256k1};
-use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, IntoDerivationPath};
+use bitcoin::util::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use cosmos_sdk_proto::cosmos::bank::v1beta1::MsgSend;
 use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
 use cosmos_sdk_proto::cosmos::base::v1beta1::Coin;
 use hkd32::mnemonic::{Phrase, Seed};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
+use parking_lot::Mutex;
 
 use crate::address::RawAddress;
 use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
@@ -55,37 +58,11 @@ impl FromStr for SeedPhrase {
     }
 }
 
-impl SeedPhrase {
-    /// Derive a [RawWallet] from this seed phrase and a given derivation path
-    pub fn derive(&self, derivation_path: &str) -> Result<RawWallet> {
-        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
-            bitcoin::Network::Bitcoin,
-            self.seed.as_bytes(),
-        )?;
-
-        let derivation_path = derivation_path.into_derivation_path()?;
-        let secp = global_secp();
-
-        Ok(RawWallet {
-            privkey: root_private_key.derive_priv(secp, &derivation_path)?,
-        })
-    }
-
-    /// Use the default Cosmos derivation path
-    pub fn derive_cosmos(&self) -> Result<RawWallet> {
-        self.derive(DEFAULT_DERIVATION_PATH)
-    }
-
-    /// Use a numbered account on the default Cosmos derivation path
-    pub fn derive_cosmos_numbered(&self, idx: u32) -> Result<RawWallet> {
-        self.derive(&format!("m/44'/118'/0'/0/{idx}"))
-    }
-}
-
 /// A private key for a wallet, without specifying the [AddressType].
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RawWallet {
-    privkey: ExtendedPrivKey,
+    seed_phrase: SeedPhrase,
+    derivation_path: Option<Arc<DerivationPath>>,
 }
 
 impl FromStr for RawWallet {
@@ -96,9 +73,112 @@ impl FromStr for RawWallet {
     }
 }
 
-const DEFAULT_DERIVATION_PATH: &str = "m/44'/118'/0'/0/0";
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DerivationPathConfig {
+    Three([DerivationPathComponent; 3]),
+    Four([DerivationPathComponent; 4]),
+    Vec(Vec<DerivationPathComponent>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DerivationPathComponent {
+    pub value: u64,
+    pub hardened: bool,
+}
+
+impl DerivationPathConfig {
+    pub const fn cosmos_numbered(index: u64) -> Self {
+        DerivationPathConfig::Four([
+            DerivationPathComponent {
+                value: 118,
+                hardened: true,
+            },
+            DerivationPathComponent {
+                value: 0,
+                hardened: true,
+            },
+            DerivationPathComponent {
+                value: 0,
+                hardened: false,
+            },
+            DerivationPathComponent {
+                value: index,
+                hardened: false,
+            },
+        ])
+    }
+
+    pub const fn ethereum_numbered(index: u64) -> Self {
+        DerivationPathConfig::Three([
+            DerivationPathComponent {
+                value: 60,
+                hardened: true,
+            },
+            DerivationPathComponent {
+                value: 0,
+                hardened: true,
+            },
+            DerivationPathComponent {
+                value: index,
+                hardened: false,
+            },
+        ])
+    }
+
+    pub fn as_derivation_path(&self) -> Arc<DerivationPath> {
+        static PATHS: Lazy<Arc<Mutex<HashMap<DerivationPathConfig, Arc<DerivationPath>>>>> =
+            Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+        let mut guard = PATHS.lock();
+        match guard.get(self) {
+            Some(s) => s.clone(),
+            None => {
+                let path_str = self.to_string();
+                guard.insert(
+                    self.clone(),
+                    Arc::new(
+                        path_str
+                            .parse()
+                            .with_context(|| {
+                                format!("Generated an invalid derivation path: {path_str}")
+                            })
+                            .unwrap(),
+                    ),
+                );
+                guard.get(self).unwrap().clone()
+            }
+        }
+    }
+}
+
+impl Display for &DerivationPathConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "m/44'")?;
+        let slice = match self {
+            DerivationPathConfig::Three(x) => x.as_slice(),
+            DerivationPathConfig::Four(x) => x.as_slice(),
+            DerivationPathConfig::Vec(x) => x.as_slice(),
+        };
+        for component in slice {
+            write!(f, "/{component}")?
+        }
+        Ok(())
+    }
+}
+
+impl Display for DerivationPathComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if self.hardened {
+            write!(f, "{}'", self.value)
+        } else {
+            write!(f, "{}", self.value)
+        }
+    }
+}
+
 const JUNO_LOCAL_PHRASE: &str = "clip hire initial neck maid actor venue client foam budget lock catalog sweet steak waste crater broccoli pipe steak sister coyote moment obvious choose";
 const OSMO_LOCAL_PHRASE: &str = "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius";
+
+// fn make_derivation_path()
 
 impl RawWallet {
     /// Generate the special Juno Local wallet
@@ -109,31 +189,47 @@ impl RawWallet {
     pub fn from_phrase(phrase: &str) -> Result<Self> {
         let (derivation_path, phrase) = if phrase.starts_with("m/44") {
             match phrase.split_once(' ') {
-                Some(x) => x,
-                None => (DEFAULT_DERIVATION_PATH, phrase),
+                Some((path, phrase)) => {
+                    let path = Arc::new(path.parse()?);
+                    (Some(path), phrase)
+                }
+                None => (None, phrase),
             }
         } else {
-            (DEFAULT_DERIVATION_PATH, phrase)
+            (None, phrase)
         };
 
         let seed_phrase = SeedPhrase::from_str(phrase)?;
-        seed_phrase.derive(derivation_path)
+        Ok(RawWallet {
+            seed_phrase,
+            derivation_path,
+        })
     }
 
-    pub fn for_chain(self, type_: AddressType) -> Wallet {
+    pub fn for_chain(&self, type_: AddressType) -> Result<Wallet> {
         let secp = global_secp();
-        let public_key = ExtendedPubKey::from_priv(secp, &self.privkey);
+        let derivation_path = self
+            .derivation_path
+            .clone()
+            .unwrap_or_else(|| type_.default_derivation_path());
+
+        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
+            bitcoin::Network::Bitcoin,
+            self.seed_phrase.seed.as_bytes(),
+        )?;
+        let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
+        let public_key = ExtendedPubKey::from_priv(secp, &privkey);
 
         let public_key_bytes = public_key.public_key.serialize();
         let raw_address = address_from_public_key(&public_key_bytes);
         let address = RawAddress::from(raw_address).for_chain(type_);
 
-        Wallet {
+        Ok(Wallet {
             address,
-            privkey: self.privkey,
+            privkey,
             // pubkey: public_key,
             public_key_bytes,
-        }
+        })
     }
 }
 
@@ -171,16 +267,25 @@ impl Wallet {
         for byte in &mut bytes {
             *byte = rand::random();
         }
-        Self::from_seed(Seed::new(bytes), DEFAULT_DERIVATION_PATH, type_)
+
+        RawWallet {
+            seed_phrase: Seed::new(bytes).into(),
+            derivation_path: None,
+        }
+        .for_chain(type_)
     }
 
     /// Generate the special Juno Local wallet
     pub fn juno_local() -> Self {
-        RawWallet::juno_local().for_chain(AddressType::Juno)
+        RawWallet::juno_local()
+            .for_chain(AddressType::Juno)
+            .unwrap()
     }
 
     pub fn from_phrase(phrase: &str, type_: AddressType) -> Result<Self> {
-        RawWallet::from_phrase(phrase).map(|raw| raw.for_chain(type_))
+        RawWallet::from_phrase(phrase)
+            .map(|raw| raw.for_chain(type_))
+            .unwrap()
     }
 
     pub fn public_key_bytes(&self) -> &[u8] {
@@ -205,12 +310,6 @@ impl Wallet {
             .add_message(msg.into())
             .sign_and_broadcast(cosmos, self)
             .await
-    }
-
-    fn from_seed(seed: Seed, derivation_path: &str, type_: AddressType) -> Result<Self> {
-        SeedPhrase::from(seed)
-            .derive(derivation_path)
-            .map(|raw| raw.for_chain(type_))
     }
 
     /// Send coins to the given wallet
