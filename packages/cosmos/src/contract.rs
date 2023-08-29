@@ -12,7 +12,7 @@ use cosmos_sdk_proto::{
     },
 };
 
-use crate::address::HasAddressType;
+use crate::{address::HasAddressType, codeid::strip_quotes};
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
 /// A Cosmos smart contract
@@ -95,19 +95,24 @@ impl CodeId {
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
+        self.client.parse_contract_address_from_instantiate(&res)
+    }
+}
 
+impl Cosmos {
+    pub fn parse_contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
         for log in &res.logs {
             for event in &log.events {
-                if event.r#type == "instantiate" {
+                if event.r#type == "instantiate"
+                    || event.r#type == "cosmwasm.wasm.v1.EventContractInstantiated"
+                {
                     for attr in &event.attributes {
-                        if attr.key == "_contract_address" {
-                            let address: Address = attr.value.parse()?;
-                            anyhow::ensure!(
-                                address.get_address_type() == self.client.get_address_type()
-                            );
+                        if attr.key == "_contract_address" || attr.key == "contract_address" {
+                            let address: Address = strip_quotes(&attr.value).parse()?;
+                            anyhow::ensure!(address.get_address_type() == self.get_address_type());
                             return Ok(Contract {
                                 address,
-                                client: self.client.clone(),
+                                client: self.clone(),
                             });
                         }
                     }
@@ -116,7 +121,9 @@ impl CodeId {
         }
 
         Err(anyhow!(
-            "Missing _contract_address in instantiate_contract response: {res:?}"
+            "Missing _contract_address in instantiate_contract response {}: {:#?}",
+            res.txhash,
+            res.logs
         ))
     }
 }

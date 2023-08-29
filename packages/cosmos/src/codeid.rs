@@ -33,19 +33,28 @@ impl CodeId {
 fn parse_code_id(res: &TxResponse) -> Result<u64> {
     for log in &res.logs {
         for event in &log.events {
-            if event.r#type == "store_code" {
-                for attr in &event.attributes {
-                    if attr.key == "code_id" {
-                        return Ok(attr.value.parse()?);
-                    }
+            for attr in &event.attributes {
+                if attr.key == "code_id" {
+                    let value = strip_quotes(&attr.value);
+                    return Ok(value
+                        .parse()
+                        .with_context(|| format!("Unable to parse code ID: {}", attr.value))?);
                 }
             }
         }
     }
 
     Err(anyhow::anyhow!(
-        "Missing code_id in store_code response: {res:?}"
+        "Missing code_id in store_code response {}: {:?}",
+        res.txhash,
+        res.logs
     ))
+}
+
+pub(crate) fn strip_quotes(s: &str) -> &str {
+    s.strip_prefix("\"")
+        .and_then(|s| s.strip_suffix("\""))
+        .unwrap_or(s)
 }
 
 impl Cosmos {
@@ -99,6 +108,20 @@ impl Cosmos {
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
         let code_id = parse_code_id(&res)?;
         Ok((res, self.make_code_id(code_id)))
+    }
+
+    /// Get the code ID from a transaction hash
+    pub async fn code_id_from_tx(&self, txhash: impl Into<String>) -> Result<CodeId> {
+        let (_, txres) = self.wait_for_transaction_body(txhash).await?;
+        let code_id = parse_code_id(&txres)?;
+        Ok(self.make_code_id(code_id))
+    }
+
+    /// Get the contract address from a transaction hash
+    pub async fn contract_address_from_tx(&self, txhash: impl Into<String>) -> Result<CodeId> {
+        let (_, txres) = self.wait_for_transaction_body(txhash).await?;
+        let code_id = parse_code_id(&txres)?;
+        Ok(self.make_code_id(code_id))
     }
 }
 

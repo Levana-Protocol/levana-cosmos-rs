@@ -19,6 +19,10 @@ pub(crate) enum Subcommand {
     },
     /// Get account number and sequence number for the given address
     AccountInfo { address: Address },
+    /// Get the code ID from the given transaction
+    CodeIdFromTx { txhash: String },
+    /// Get the contract address instantiated in a given transaction
+    ContractAddressFromTx { txhash: String },
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -28,6 +32,10 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
             earliest,
         } => first_block_after(cosmos, timestamp, earliest).await,
         Subcommand::AccountInfo { address } => account_info(cosmos, address).await,
+        Subcommand::CodeIdFromTx { txhash } => code_id_from_tx(cosmos, txhash).await,
+        Subcommand::ContractAddressFromTx { txhash } => {
+            contract_address_from_tx(cosmos, txhash).await
+        }
     }
 }
 
@@ -80,5 +88,18 @@ async fn account_info(cosmos: Cosmos, address: Address) -> Result<()> {
     let base_account = cosmos.get_base_account(address).await?;
     log::info!("Account number: {}", base_account.account_number);
     log::info!("Sequence number: {}", base_account.sequence);
+    Ok(())
+}
+
+async fn code_id_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
+    let code_id = cosmos.code_id_from_tx(txhash).await?;
+    log::info!("Code ID: {code_id}");
+    Ok(())
+}
+
+async fn contract_address_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
+    let (_, tx) = cosmos.wait_for_transaction_body(txhash).await?;
+    let contract = cosmos.parse_contract_address_from_instantiate(&tx)?;
+    log::info!("Contract address: {contract}");
     Ok(())
 }
