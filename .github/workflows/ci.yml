@@ -13,7 +13,7 @@ jobs:
   cosmos-bin:
     uses: fpco/reusable_workflows/.github/workflows/rust_build_lint_test.yml@rust
     with:
-      toolchain: "1.65.0"
+      toolchain: "1.70.0"
       binary: cosmos
       package: cosmos-bin
       build_version_location: "packages/build-version.txt"

@@ -25,7 +25,7 @@ pub(crate) async fn go(cosmos: Cosmos, opt: Opt) -> Result<()> {
         Subcommand::Download { code_id, dest } => {
             let code = cosmos.make_code_id(code_id);
             let bytes = code.download().await?;
-            fs_err::write(&dest, &bytes)?;
+            fs_err::write(&dest, bytes)?;
             Ok(())
         }
     }

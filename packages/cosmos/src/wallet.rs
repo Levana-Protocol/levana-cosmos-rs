@@ -131,7 +131,8 @@ impl DerivationPathConfig {
     }
 
     pub fn as_derivation_path(&self) -> Arc<DerivationPath> {
-        static PATHS: Lazy<Arc<Mutex<HashMap<DerivationPathConfig, Arc<DerivationPath>>>>> =
+        type DerivationPathMap = HashMap<DerivationPathConfig, Arc<DerivationPath>>;
+        static PATHS: Lazy<Arc<Mutex<DerivationPathMap>>> =
             Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
         let mut guard = PATHS.lock();
         match guard.get(self) {
@@ -260,10 +261,8 @@ impl Wallet {
 
     /// Generate a random mnemonic phrase
     pub fn generate_phrase() -> String {
-        let mut rng = rand::thread_rng();
-        Phrase::random(&mut rng, Default::default())
-            .phrase()
-            .to_owned()
+        let rng = rand::thread_rng();
+        Phrase::random(rng, Default::default()).phrase().to_owned()
     }
 
     /// Generate a random wallet

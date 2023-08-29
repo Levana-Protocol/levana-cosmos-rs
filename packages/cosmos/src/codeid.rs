@@ -36,9 +36,9 @@ fn parse_code_id(res: &TxResponse) -> Result<u64> {
             for attr in &event.attributes {
                 if attr.key == "code_id" {
                     let value = strip_quotes(&attr.value);
-                    return Ok(value
+                    return value
                         .parse()
-                        .with_context(|| format!("Unable to parse code ID: {}", attr.value))?);
+                        .with_context(|| format!("Unable to parse code ID: {}", attr.value));
                 }
             }
         }
@@ -52,8 +52,8 @@ fn parse_code_id(res: &TxResponse) -> Result<u64> {
 }
 
 pub(crate) fn strip_quotes(s: &str) -> &str {
-    s.strip_prefix("\"")
-        .and_then(|s| s.strip_suffix("\""))
+    s.strip_prefix('\"')
+        .and_then(|s| s.strip_suffix('\"'))
         .unwrap_or(s)
 }
 
