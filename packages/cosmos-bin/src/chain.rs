@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use cosmos::Cosmos;
+use cosmos::{Address, Cosmos};
 
 #[derive(clap::Parser)]
 pub(crate) struct Opt {
@@ -17,16 +17,24 @@ pub(crate) enum Subcommand {
         #[clap(long)]
         earliest: Option<i64>,
     },
+    /// Get account number and sequence number for the given address
+    AccountInfo { address: Address },
 }
 
-pub(crate) async fn go(
-    Opt {
-        sub: Subcommand::FirstBlockAfter {
+pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
+    match sub {
+        Subcommand::FirstBlockAfter {
             timestamp,
             earliest,
-        },
-    }: Opt,
+        } => first_block_after(cosmos, timestamp, earliest).await,
+        Subcommand::AccountInfo { address } => account_info(cosmos, address).await,
+    }
+}
+
+async fn first_block_after(
     cosmos: Cosmos,
+    timestamp: DateTime<Utc>,
+    earliest: Option<i64>,
 ) -> Result<()> {
     let earliest = match earliest {
         None => cosmos.get_earliest_block_info().await?,
@@ -66,4 +74,11 @@ pub(crate) async fn go(
             high = mid;
         }
     }
+}
+
+async fn account_info(cosmos: Cosmos, address: Address) -> Result<()> {
+    let base_account = cosmos.get_base_account(address).await?;
+    log::info!("Account number: {}", base_account.account_number);
+    log::info!("Sequence number: {}", base_account.sequence);
+    Ok(())
 }

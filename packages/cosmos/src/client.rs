@@ -504,9 +504,15 @@ impl Cosmos {
                 .into_inner(),
         };
 
-        Ok(prost::Message::decode(
-            res.account.context("no account found")?.value.as_ref(),
-        )?)
+        let base_account = if self.get_address_type() == AddressType::Injective {
+            let eth_account: crate::injective::EthAccount = prost::Message::decode(
+                res.account.context("no eth account found")?.value.as_ref(),
+            )?;
+            eth_account.base_account.context("no base account found")?
+        } else {
+            prost::Message::decode(res.account.context("no account found")?.value.as_ref())?
+        };
+        Ok(base_account)
     }
 
     pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>> {
@@ -1094,7 +1100,7 @@ impl CosmosBuilder {
             grpc_url: "http://injective-testnet-grpc.polkachu.com:14390".to_owned(),
             chain_id: "injective-888".to_owned(),
             gas_coin: "inj".to_owned(),
-            address_type: AddressType::Stargaze,
+            address_type: AddressType::Injective,
             config: CosmosConfig {
                 gas_price_low: 500000000.0,
                 gas_price_high: 900000000.0,
@@ -1110,7 +1116,7 @@ impl CosmosBuilder {
             grpc_url: "http://injective-grpc.polkachu.com:14390".to_owned(),
             chain_id: "injective-1".to_owned(),
             gas_coin: "inj".to_owned(),
-            address_type: AddressType::Stargaze,
+            address_type: AddressType::Injective,
             config: CosmosConfig {
                 gas_price_low: 500000000.0,
                 gas_price_high: 900000000.0,

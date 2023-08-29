@@ -19,6 +19,7 @@ mod authz;
 mod client;
 mod codeid;
 mod contract;
+mod injective;
 mod tokenfactory;
 mod wallet;
 
