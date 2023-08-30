@@ -35,6 +35,21 @@ impl SeedPhrase {
             mnemonic: bip39::Mnemonic::from_entropy(&entropy).unwrap(),
         }
     }
+
+    pub fn with_derivation_path(&self, derivation_path_config: &DerivationPathConfig) -> RawWallet {
+        RawWallet {
+            seed_phrase: self.clone(),
+            derivation_path: Some(derivation_path_config.as_derivation_path()),
+        }
+    }
+
+    pub fn derive_cosmos_numbered(&self, index: u64) -> RawWallet {
+        self.with_derivation_path(&DerivationPathConfig::cosmos_numbered(index))
+    }
+
+    pub fn derive_ethereum_numbered(&self, index: u64) -> RawWallet {
+        self.with_derivation_path(&DerivationPathConfig::ethereum_numbered(index))
+    }
 }
 
 impl From<bip39::Mnemonic> for SeedPhrase {
