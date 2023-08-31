@@ -2,13 +2,15 @@ use std::{
     convert::TryFrom,
     fmt::{Debug, Display},
     str::FromStr,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
 use bech32::{FromBase32, ToBase32};
+use bitcoin::util::bip32::DerivationPath;
 use serde::de::Visitor;
 
-use crate::CosmosNetwork;
+use crate::{wallet::DerivationPathConfig, CosmosNetwork};
 
 /// A raw address value not connected to a specific blockchain. You usually want [Address].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -141,10 +143,11 @@ pub enum AddressType {
     Wasm,
     Sei,
     Stargaze,
+    Injective,
 }
 
 impl AddressType {
-    pub fn all() -> [AddressType; 6] {
+    pub fn all() -> [AddressType; 7] {
         [
             AddressType::Cosmos,
             AddressType::Juno,
@@ -152,6 +155,7 @@ impl AddressType {
             AddressType::Wasm,
             AddressType::Sei,
             AddressType::Stargaze,
+            AddressType::Injective,
         ]
     }
 
@@ -164,7 +168,21 @@ impl AddressType {
             AddressType::Sei => "sei",
             // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
             AddressType::Stargaze => "stars",
+            AddressType::Injective => "inj",
         }
+    }
+
+    pub fn default_derivation_path(self) -> Arc<DerivationPath> {
+        match self {
+            AddressType::Cosmos
+            | AddressType::Juno
+            | AddressType::Osmo
+            | AddressType::Sei
+            | AddressType::Stargaze
+            | AddressType::Wasm => DerivationPathConfig::cosmos_numbered(0),
+            AddressType::Injective => DerivationPathConfig::ethereum_numbered(0),
+        }
+        .as_derivation_path()
     }
 }
 
@@ -180,6 +198,7 @@ impl FromStr for AddressType {
             "sei" => Ok(AddressType::Sei),
             // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
             "stars" => Ok(AddressType::Stargaze),
+            "inj" => Ok(AddressType::Injective),
             _ => Err(anyhow::anyhow!("Invalid address type {s:?}")),
         }
     }
@@ -284,6 +303,8 @@ impl HasAddressType for CosmosNetwork {
             CosmosNetwork::SeiTestnet => AddressType::Sei,
             CosmosNetwork::StargazeTestnet => AddressType::Stargaze,
             CosmosNetwork::StargazeMainnet => AddressType::Stargaze,
+            CosmosNetwork::InjectiveTestnet => AddressType::Injective,
+            CosmosNetwork::InjectiveMainnet => AddressType::Injective,
         }
     }
 }

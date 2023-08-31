@@ -125,7 +125,7 @@ async fn new_flex(
     }: NewFlexOpt,
 ) -> Result<()> {
     let network = cosmos.get_network();
-    let wallet = tx_opt.get_wallet(network.get_address_type());
+    let wallet = tx_opt.get_wallet(network.get_address_type())?;
     let cw3 = cosmos.make_code_id(get_code_id(network, ContractType::Cw3Flex)?);
     let cw4 = cosmos.make_code_id(get_code_id(network, ContractType::Cw4Group)?);
 
@@ -255,7 +255,7 @@ async fn propose(
         msg,
     }: ProposeOpt,
 ) -> Result<()> {
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
     let cw3 = cosmos.make_contract(cw3);
     let res = cw3
         .execute(
@@ -341,7 +341,7 @@ async fn vote(
         vote,
     }: VoteOpt,
 ) -> Result<()> {
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
     let cw3 = cosmos.make_contract(cw3);
     let res = cw3
         .execute(
@@ -377,7 +377,7 @@ async fn execute(
         proposal,
     }: ExecuteOpt,
 ) -> Result<()> {
-    let wallet = tx_opt.get_wallet(cosmos.get_address_type());
+    let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
     let cw3 = cosmos.make_contract(cw3);
     let res = cw3
         .execute(

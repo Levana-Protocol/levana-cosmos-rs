@@ -67,7 +67,7 @@ struct TxOpt {
 }
 
 impl TxOpt {
-    pub(crate) fn get_wallet(&self, address_type: AddressType) -> Wallet {
+    pub(crate) fn get_wallet(&self, address_type: AddressType) -> Result<Wallet> {
         self.wallet.for_chain(address_type)
     }
 }
@@ -284,7 +284,7 @@ impl Subcommand {
             Subcommand::StoreCode { tx_opt, file } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_type();
-                let wallet = tx_opt.get_wallet(address_type);
+                let wallet = tx_opt.get_wallet(address_type)?;
                 let codeid = cosmos.store_code_path(&wallet, &file).await?;
                 println!("Code ID: {codeid}");
             }
@@ -298,7 +298,13 @@ impl Subcommand {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_type();
                 let contract = CodeId::new(cosmos, code_id)
-                    .instantiate_binary(&tx_opt.get_wallet(address_type), label, vec![], msg, admin)
+                    .instantiate_binary(
+                        &tx_opt.get_wallet(address_type)?,
+                        label,
+                        vec![],
+                        msg,
+                        admin,
+                    )
                     .await?;
                 println!("Contract: {contract}");
             }
@@ -356,7 +362,7 @@ impl Subcommand {
                 let address_type = cosmos.get_address_type();
                 let contract = cosmos::Contract::new(cosmos, address);
                 contract
-                    .migrate_binary(&tx_opt.get_wallet(address_type), code_id, msg)
+                    .migrate_binary(&tx_opt.get_wallet(address_type)?, code_id, msg)
                     .await?;
             }
             Subcommand::ExecuteContract {
@@ -376,7 +382,7 @@ impl Subcommand {
                     }
                     None => vec![],
                 };
-                let wallet = tx_opt.get_wallet(address_type);
+                let wallet = tx_opt.get_wallet(address_type)?;
 
                 let mut tx_builder = TxBuilder::default();
                 tx_builder.add_message_mut(MsgExecuteContract {
@@ -404,7 +410,7 @@ impl Subcommand {
                 address_type,
                 phrase,
             } => {
-                println!("{}", phrase.for_chain(address_type));
+                println!("{}", phrase.for_chain(address_type)?);
             }
             Subcommand::SendCoins {
                 tx_opt,
@@ -414,7 +420,7 @@ impl Subcommand {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_type();
                 let txres = tx_opt
-                    .get_wallet(address_type)
+                    .get_wallet(address_type)?
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
                     .await?;
 
@@ -536,7 +542,7 @@ impl Subcommand {
                     None => vec![],
                 };
                 let simres = contract
-                    .simulate_binary(&tx_opt.get_wallet(address_type), amount, msg)
+                    .simulate_binary(&tx_opt.get_wallet(address_type)?, amount, msg)
                     .await?;
                 println!("{simres:?}");
             }

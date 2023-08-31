@@ -45,7 +45,7 @@ where
         id,
         params: Params {
             path: path.into(),
-            data: hex::encode(&req.encode_to_vec()),
+            data: hex::encode(req.encode_to_vec()),
             prove: false,
         },
     };
