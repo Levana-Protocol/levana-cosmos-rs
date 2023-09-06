@@ -201,15 +201,31 @@ impl Contract {
             .map(|x| x.simres)
     }
 
+    /// Perform a raw query
+    pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+        self.client.wasm_raw_query(self.address, key).await
+    }
+
+    /// Perform a raw query at a given block height
+    pub async fn query_raw_at_height(
+        &self,
+        key: impl Into<Vec<u8>>,
+        height: u64,
+    ) -> Result<Vec<u8>> {
+        self.client
+            .wasm_raw_query_at_height(self.address, key, height)
+            .await
+    }
+
     /// Perform a query and return the raw unparsed JSON bytes.
-    pub async fn query_raw(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
+    pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
         self.client
             .wasm_query(self.address, serde_json::to_vec(&msg)?)
             .await
     }
 
-    /// Perform a query and return the raw unparsed JSON bytes.
-    pub async fn query_raw_at_height(
+    /// Perform a query at a given block height and return the raw unparsed JSON bytes.
+    pub async fn query_bytes_at_height(
         &self,
         msg: impl serde::Serialize,
         height: u64,
@@ -223,7 +239,7 @@ impl Contract {
         &self,
         msg: impl serde::Serialize,
     ) -> Result<T> {
-        serde_json::from_slice(&self.query_raw(msg).await?)
+        serde_json::from_slice(&self.query_bytes(msg).await?)
             .context("Invalid JSON response from smart contract query")
     }
 
@@ -232,7 +248,7 @@ impl Contract {
         msg: impl serde::Serialize,
         height: u64,
     ) -> Result<T> {
-        serde_json::from_slice(&self.query_raw_at_height(msg, height).await?)
+        serde_json::from_slice(&self.query_bytes_at_height(msg, height).await?)
             .context("Invalid JSON response from smart contract query")
     }
 
