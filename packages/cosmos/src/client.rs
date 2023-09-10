@@ -677,8 +677,25 @@ impl Cosmos {
         Ok(res.into_inner().data)
     }
 
+    /// Implements a retry loop waiting for a transaction to be ready
     pub async fn wait_for_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {
         self.wait_for_transaction_body(txhash).await.map(|x| x.1)
+    }
+
+    /// Get a transaction, failing immediately if not present
+    pub async fn get_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {
+        let txhash = txhash.into();
+        let inner = self.inner().await?;
+        let mut client = inner.tx_service_client.lock().await;
+        client
+            .get_tx(GetTxRequest {
+                hash: txhash.clone(),
+            })
+            .await
+            .with_context(|| format!("Unable to get transaction {txhash}"))?
+            .into_inner()
+            .tx_response
+            .with_context(|| format!("Missing tx_response for transaction {txhash}"))
     }
 
     pub async fn wait_for_transaction_body(
