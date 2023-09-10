@@ -683,19 +683,29 @@ impl Cosmos {
     }
 
     /// Get a transaction, failing immediately if not present
-    pub async fn get_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {
+    pub async fn get_transaction_body(
+        &self,
+        txhash: impl Into<String>,
+    ) -> Result<(TxBody, TxResponse)> {
         let txhash = txhash.into();
         let inner = self.inner().await?;
         let mut client = inner.tx_service_client.lock().await;
-        client
+        let txres = client
             .get_tx(GetTxRequest {
                 hash: txhash.clone(),
             })
             .await
             .with_context(|| format!("Unable to get transaction {txhash}"))?
-            .into_inner()
+            .into_inner();
+        let txbody = txres
+            .tx
+            .with_context(|| format!("Missing tx for transaction {txhash}"))?
+            .body
+            .with_context(|| format!("Missing body for transaction {txhash}"))?;
+        let txres = txres
             .tx_response
-            .with_context(|| format!("Missing tx_response for transaction {txhash}"))
+            .with_context(|| format!("Missing tx_response for transaction {txhash}"))?;
+        Ok((txbody, txres))
     }
 
     pub async fn wait_for_transaction_body(
