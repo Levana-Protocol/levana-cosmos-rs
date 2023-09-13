@@ -1247,8 +1247,24 @@ impl TxBuilder {
     }
 
     /// Simulate the amount of gas needed to run a transaction.
-    pub async fn simulate(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<FullSimulateResponse> {
-        let base_account = cosmos.get_base_account(wallet.address()).await?;
+    pub async fn simulate(
+        &self,
+        cosmos: &Cosmos,
+        wallet: impl HasAddress,
+    ) -> Result<FullSimulateResponse> {
+        let sequence = match cosmos.get_base_account(wallet.get_address()).await {
+            Ok(account) => account.sequence,
+            Err(err) => {
+                if err.to_string().contains("not found") {
+                    log::warn!(
+                        "Simulating with a non-existent wallet. Setting sequence number to 0"
+                    );
+                    0
+                } else {
+                    return Err(err);
+                }
+            }
+        };
 
         // Deal with account sequence errors, overall relevant issue is: https://phobosfinance.atlassian.net/browse/PERP-283
         //
@@ -1259,19 +1275,14 @@ impl TxBuilder {
         //
         // See: https://github.com/cosmos/cosmos-sdk/issues/11597
 
-        Ok(
-            match self
-                .simulate_inner(cosmos, wallet, base_account.sequence)
-                .await
-            {
-                Ok(pair) => pair,
-                Err(ExpectedSequenceError::RealError(e)) => return Err(e),
-                Err(ExpectedSequenceError::NewNumber(x, e)) => {
-                    log::warn!("Received an account sequence error while simulating a transaction, retrying with new number {x}: {e:?}");
-                    self.simulate_inner(cosmos, wallet, x).await?
-                }
-            },
-        )
+        Ok(match self.simulate_inner(cosmos, sequence).await {
+            Ok(pair) => pair,
+            Err(ExpectedSequenceError::RealError(e)) => return Err(e),
+            Err(ExpectedSequenceError::NewNumber(x, e)) => {
+                log::warn!("Received an account sequence error while simulating a transaction, retrying with new number {x}: {e:?}");
+                self.simulate_inner(cosmos, x).await?
+            }
+        })
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
@@ -1340,15 +1351,13 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_infos(&self, wallet: &Wallet, sequence: u64) -> Vec<SignerInfo> {
+    fn make_signer_infos(&self, sequence: u64) -> Vec<SignerInfo> {
         vec![SignerInfo {
             public_key: Some(cosmos_sdk_proto::Any {
                 type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
                 value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
                     sum: Some(
-                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
-                            wallet.public_key_bytes().to_owned(),
-                        ),
+                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
                     ),
                 }
                 .encode_to_vec(),
@@ -1379,7 +1388,6 @@ impl TxBuilder {
     async fn simulate_inner(
         &self,
         cosmos: &Cosmos,
-        wallet: &Wallet,
         sequence: u64,
     ) -> Result<FullSimulateResponse, ExpectedSequenceError> {
         let body = self.make_tx_body();
@@ -1393,7 +1401,7 @@ impl TxBuilder {
                     payer: "".to_owned(),
                     granter: "".to_owned(),
                 }),
-                signer_infos: self.make_signer_infos(wallet, sequence),
+                signer_infos: self.make_signer_infos(sequence),
             }),
             signatures: vec![vec![]],
             body: Some(body.clone()),
@@ -1475,7 +1483,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: self.make_signer_infos(wallet, sequence),
+                signer_infos: self.make_signer_infos(sequence),
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),

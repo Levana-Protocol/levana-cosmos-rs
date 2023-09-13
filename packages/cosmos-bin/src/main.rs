@@ -158,8 +158,11 @@ enum Subcommand {
     },
     /// Simulate executing a message, but don't actually do it
     SimulateContract {
-        #[clap(flatten)]
-        tx_opt: TxOpt,
+        #[clap(long, env = "COSMOS_SENDER")]
+        sender: RawAddress,
+        /// Memo to put on transaction
+        #[clap(long)]
+        memo: Option<String>,
         /// Contract address
         address: Address,
         /// Execute message (JSON)
@@ -526,7 +529,8 @@ impl Subcommand {
                 );
             }
             Subcommand::SimulateContract {
-                tx_opt,
+                sender,
+                memo,
                 address,
                 msg,
                 funds,
@@ -542,7 +546,7 @@ impl Subcommand {
                     None => vec![],
                 };
                 let simres = contract
-                    .simulate_binary(&tx_opt.get_wallet(address_type)?, amount, msg)
+                    .simulate_binary(sender.for_chain(address_type), amount, msg, memo)
                     .await?;
                 println!("{simres:?}");
             }

@@ -160,8 +160,9 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
+        memo: Option<String>,
     ) -> Result<SimulateResponse> {
-        self.simulate_binary(wallet, funds, serde_json::to_vec(&msg)?)
+        self.simulate_binary(wallet, funds, serde_json::to_vec(&msg)?, memo)
             .await
     }
 
@@ -184,18 +185,22 @@ impl Contract {
     /// Same as [Contract::simulate] but the msg is serialized
     pub async fn simulate_binary(
         &self,
-        wallet: &Wallet,
+        wallet: impl HasAddress,
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
+        memo: Option<String>,
     ) -> Result<SimulateResponse> {
         let msg = MsgExecuteContract {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address().to_string(),
             contract: self.address.to_string(),
             msg: msg.into(),
             funds,
         };
-        TxBuilder::default()
-            .add_message(msg)
+        let mut builder = TxBuilder::default().add_message(msg);
+        if let Some(memo) = memo {
+            builder = builder.set_memo(memo);
+        }
+        builder
             .simulate(&self.client, wallet)
             .await
             .map(|x| x.simres)
