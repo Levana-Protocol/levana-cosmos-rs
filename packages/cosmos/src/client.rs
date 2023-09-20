@@ -3,6 +3,7 @@ mod jsonrpc;
 use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
+use bb8::{ManageConnection, Pool, PooledConnection};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -27,10 +28,10 @@ use cosmos_sdk_proto::{
     },
     traits::Message,
 };
-use deadpool::{async_trait, managed::RecycleResult};
 use serde::{de::Visitor, Deserialize};
 use tokio::sync::Mutex;
 use tonic::{
+    async_trait,
     codegen::InterceptedService,
     service::Interceptor,
     transport::{Channel, ClientTlsConfig, Endpoint},
@@ -45,7 +46,8 @@ use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: deadpool::managed::Pool<CosmosBuilders>,
+    pool: Pool<CosmosBuilders>,
+    first_builder: Arc<CosmosBuilder>,
 }
 
 /// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
@@ -67,17 +69,22 @@ impl CosmosBuilders {
 }
 
 #[async_trait]
-impl deadpool::managed::Manager for CosmosBuilders {
-    type Type = CosmosInner;
+impl ManageConnection for CosmosBuilders {
+    type Connection = CosmosInner;
 
     type Error = anyhow::Error;
 
-    async fn create(&self) -> Result<Self::Type> {
+    async fn connect(&self) -> Result<Self::Connection> {
         self.get_next_builder().build_inner().await
     }
 
-    async fn recycle(&self, _: &mut CosmosInner) -> RecycleResult<anyhow::Error> {
+    async fn is_valid(&self, _: &mut CosmosInner) -> Result<()> {
+        // FIXME need to implement!
         Ok(())
+    }
+
+    fn has_broken(&self, _: &mut CosmosInner) -> bool {
+        false
     }
 }
 
@@ -100,18 +107,18 @@ impl CosmosBuilders {
 }
 
 impl Cosmos {
-    pub(crate) async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilders>> {
+    pub(crate) async fn inner(&self) -> Result<PooledConnection<CosmosBuilders>> {
         self.pool.get().await.map_err(|e| {
             anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
         })
     }
 
-    pub fn get_first_builder(&self) -> Arc<CosmosBuilder> {
-        self.pool.manager().get_first_builder().clone()
+    pub fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
+        &self.first_builder
     }
 
     pub fn get_network(&self) -> CosmosNetwork {
-        self.pool.manager().get_first_builder().network
+        self.get_first_builder().network
     }
 
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
@@ -132,7 +139,7 @@ impl Cosmos {
 
 impl HasAddressType for Cosmos {
     fn get_address_type(&self) -> AddressType {
-        self.pool.manager().get_first_builder().address_type
+        self.get_first_builder().address_type
     }
 }
 
@@ -255,7 +262,7 @@ pub struct CosmosConfig {
     referer_header: Option<String>,
 
     /// Set the number of deadpool connection
-    connection_count: Option<usize>,
+    connection_count: Option<u32>,
 }
 
 impl Default for CosmosConfig {
@@ -279,14 +286,14 @@ impl Default for CosmosConfig {
 
 impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
-        let cosmos = self.build_lazy();
+        let cosmos = self.build_lazy().await;
         // Force strict connection
         cosmos.sanity_check().await?;
         Ok(cosmos)
     }
 
-    pub fn build_lazy(self) -> Cosmos {
-        CosmosBuilders::from(self).build_lazy()
+    pub async fn build_lazy(self) -> Cosmos {
+        CosmosBuilders::from(self).build_lazy().await
     }
 }
 
@@ -300,14 +307,21 @@ impl From<CosmosBuilder> for CosmosBuilders {
 }
 
 impl CosmosBuilders {
-    pub fn build_lazy(self) -> Cosmos {
-        let count = self.get_first_builder().config.connection_count;
-        let mut builder = deadpool::managed::Pool::builder(self);
+    pub async fn build_lazy(self) -> Cosmos {
+        let first_builder = self.get_first_builder().clone();
+        let count = first_builder.config.connection_count;
+        let mut builder = Pool::builder();
         if let Some(count) = count {
             builder = builder.max_size(count);
         }
-        let pool = builder.build().expect("Unexpected pool build error");
-        Cosmos { pool }
+        let pool = builder
+            .build(self)
+            .await
+            .expect("Unexpected pool build error");
+        Cosmos {
+            pool,
+            first_builder,
+        }
     }
 }
 
@@ -482,7 +496,7 @@ impl CosmosBuilder {
 
 impl Cosmos {
     pub fn get_config(&self) -> &CosmosConfig {
-        &self.pool.manager().get_first_builder().config
+        &self.first_builder.config
     }
 
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
@@ -787,12 +801,12 @@ impl Cosmos {
     }
 
     pub fn get_gas_coin(&self) -> &String {
-        &self.pool.manager().get_first_builder().gas_coin
+        &self.first_builder.gas_coin
     }
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let config = &self.pool.manager().get_first_builder().config;
+        let config = &self.first_builder.config;
         let low = config.gas_price_low;
         let high = config.gas_price_high;
         let attempts = config.gas_price_retry_attempts;
@@ -809,11 +823,7 @@ impl Cosmos {
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
-        self.pool
-            .manager()
-            .get_first_builder()
-            .config
-            .gas_estimate_multiplier
+        self.first_builder.config.gas_estimate_multiplier
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
@@ -949,7 +959,7 @@ impl CosmosBuilder {
         self.config.referer_header = Some(value);
     }
 
-    pub fn set_connection_count(&mut self, count: usize) {
+    pub fn set_connection_count(&mut self, count: u32) {
         self.config.connection_count = Some(count);
     }
 
@@ -1488,7 +1498,7 @@ impl TxBuilder {
                 signer_infos: self.make_signer_infos(sequence),
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),
+                        denom: cosmos.first_builder.gas_coin.clone(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -1500,7 +1510,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.pool.manager().get_first_builder().chain_id.clone(),
+                chain_id: cosmos.first_builder.chain_id.clone(),
                 account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
