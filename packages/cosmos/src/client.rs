@@ -1,6 +1,6 @@
 mod jsonrpc;
 
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool, PooledConnection};
@@ -261,8 +261,13 @@ pub struct CosmosConfig {
     /// Referrer header that can be set
     referer_header: Option<String>,
 
-    /// Set the number of deadpool connection
+    /// Set the number of bb8 connections
     connection_count: Option<u32>,
+
+    /// Sets the number of seconds before an idle connection is reaped
+    ///
+    /// Defaults to 20 seconds
+    idle_timeout_seconds: u32,
 }
 
 impl Default for CosmosConfig {
@@ -280,6 +285,7 @@ impl Default for CosmosConfig {
             transaction_attempts: 30,
             referer_header: None,
             connection_count: None,
+            idle_timeout_seconds: 20,
         }
     }
 }
@@ -309,9 +315,10 @@ impl From<CosmosBuilder> for CosmosBuilders {
 impl CosmosBuilders {
     pub async fn build_lazy(self) -> Cosmos {
         let first_builder = self.get_first_builder().clone();
-        let count = first_builder.config.connection_count;
-        let mut builder = Pool::builder();
-        if let Some(count) = count {
+        let mut builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
+            first_builder.config.idle_timeout_seconds.into(),
+        )));
+        if let Some(count) = first_builder.config.connection_count {
             builder = builder.max_size(count);
         }
         let pool = builder
@@ -961,6 +968,10 @@ impl CosmosBuilder {
 
     pub fn set_connection_count(&mut self, count: u32) {
         self.config.connection_count = Some(count);
+    }
+
+    pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
+        self.config.idle_timeout_seconds = timeout_seconds;
     }
 
     fn new_juno_testnet() -> CosmosBuilder {
