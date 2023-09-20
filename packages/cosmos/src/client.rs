@@ -1123,8 +1123,9 @@ impl CosmosBuilder {
 
     fn new_injective_testnet() -> CosmosBuilder {
         // https://github.com/cosmos/chain-registry/blob/master/testnets/injectivetestnet/chain.json
+        // https://docs.injective.network/develop/public-endpoints/
         CosmosBuilder {
-            grpc_url: "http://injective-testnet-grpc.polkachu.com:14390".to_owned(),
+            grpc_url: "https://testnet.sentry.chain.grpc.injective.network:443".to_owned(),
             chain_id: "injective-888".to_owned(),
             gas_coin: "inj".to_owned(),
             address_type: AddressType::Injective,
@@ -1139,8 +1140,9 @@ impl CosmosBuilder {
 
     fn new_injective_mainnet() -> CosmosBuilder {
         // https://github.com/cosmos/chain-registry/blob/master/injective/chain.json
+        // https://docs.injective.network/develop/public-endpoints/
         CosmosBuilder {
-            grpc_url: "http://injective-grpc.polkachu.com:14390".to_owned(),
+            grpc_url: "https://sentry.chain.grpc.injective.network:443".to_owned(),
             chain_id: "injective-1".to_owned(),
             gas_coin: "inj".to_owned(),
             address_type: AddressType::Injective,
