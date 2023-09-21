@@ -1,14 +1,6 @@
 mod query;
 
-use std::{
-    fmt::Display,
-    str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool};
@@ -37,7 +29,6 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use serde::{de::Visitor, Deserialize};
-use tokio::sync::Mutex;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -83,16 +74,17 @@ impl ManageConnection for CosmosBuilders {
     type Error = anyhow::Error;
 
     async fn connect(&self) -> Result<Self::Connection> {
-        println!("In connect");
         self.get_next_builder().build_inner().await
     }
 
-    async fn is_valid(&self, _: &mut CosmosInner) -> Result<()> {
+    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
+        // Always assume connections are valid, but once we go through here we know it's a reused connection.
+        inner.is_reused = true;
         Ok(())
     }
 
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
-        inner.is_broken.load(Ordering::SeqCst)
+        inner.is_broken
     }
 }
 
@@ -140,26 +132,25 @@ impl Cosmos {
         &self,
         req: tonic::Request<Request>,
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
-        let cosmos_inner = self
+        // FIXME add retry logic, timeouts, check if this is a new or existing connection...
+        let mut cosmos_inner = self
             .pool
             .get()
             .await
             .map_err(PerformQueryError::PoolError)?;
-        let res = GrpcRequest::perform(req, &cosmos_inner).await;
+        let res = GrpcRequest::perform(req, &mut cosmos_inner).await;
         match res {
             Ok(x) => Ok(x),
             Err(err) => {
                 // Basic sanity check that we can still talk to the blockchain
                 match cosmos_inner
                     .tendermint_client
-                    .lock()
-                    .await
                     .get_latest_block(GetLatestBlockRequest {})
                     .await
                 {
                     Ok(_) => (),
                     Err(_) => {
-                        cosmos_inner.is_broken.store(true, Ordering::SeqCst);
+                        cosmos_inner.is_broken = true;
                     }
                 }
                 Err(PerformQueryError::TonicError(err.into()))
@@ -214,37 +205,28 @@ impl Interceptor for CosmosInterceptor {
 
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
-    auth_query_client: Mutex<
-        cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    auth_query_client: cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    bank_query_client: Mutex<
-        cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    bank_query_client: cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    tx_service_client: Mutex<
-        cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    tx_service_client: cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    wasm_query_client: Mutex<
-        cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    tendermint_client: Mutex<
+    tendermint_client:
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    >,
-    pub(crate) authz_query_client: Mutex<
+    pub(crate) authz_query_client:
         cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    >,
-    is_broken: AtomicBool,
+    is_broken: bool,
+    is_reused: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -500,31 +482,23 @@ impl CosmosBuilder {
         let referer_header = self.config.referer_header.clone();
 
         Ok(CosmosInner {
-            auth_query_client: Mutex::new(
+            auth_query_client:
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
                     grpc_channel.clone(), CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            bank_query_client: Mutex::new(
+            bank_query_client:
                 cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::with_interceptor(
                     grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            tx_service_client: Mutex::new(
+            tx_service_client:
                 cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::with_interceptor(
                     grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            wasm_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
-            ),
-            tendermint_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
-            ),
-            authz_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header))
-            ),
-            is_broken: false.into()
+            wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
+            tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
+            authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
+            is_broken: false,
+            is_reused: false,
         })
     }
 }

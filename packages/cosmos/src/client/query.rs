@@ -32,7 +32,7 @@ pub(crate) trait GrpcRequest: Sized {
 
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status>;
 }
 
@@ -41,9 +41,9 @@ impl GrpcRequest for QueryAccountRequest {
     type Response = QueryAccountResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.auth_query_client.lock().await.account(req).await
+        inner.auth_query_client.account(req).await
     }
 }
 
@@ -52,9 +52,9 @@ impl GrpcRequest for QueryAllBalancesRequest {
     type Response = QueryAllBalancesResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.bank_query_client.lock().await.all_balances(req).await
+        inner.bank_query_client.all_balances(req).await
     }
 }
 
@@ -63,14 +63,9 @@ impl GrpcRequest for QuerySmartContractStateRequest {
     type Response = QuerySmartContractStateResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .wasm_query_client
-            .lock()
-            .await
-            .smart_contract_state(req)
-            .await
+        inner.wasm_query_client.smart_contract_state(req).await
     }
 }
 
@@ -79,14 +74,9 @@ impl GrpcRequest for QueryRawContractStateRequest {
     type Response = QueryRawContractStateResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .wasm_query_client
-            .lock()
-            .await
-            .raw_contract_state(req)
-            .await
+        inner.wasm_query_client.raw_contract_state(req).await
     }
 }
 
@@ -95,9 +85,9 @@ impl GrpcRequest for QueryCodeRequest {
     type Response = QueryCodeResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.lock().await.code(req).await
+        inner.wasm_query_client.code(req).await
     }
 }
 
@@ -106,9 +96,9 @@ impl GrpcRequest for GetTxRequest {
     type Response = GetTxResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.lock().await.get_tx(req).await
+        inner.tx_service_client.get_tx(req).await
     }
 }
 
@@ -117,14 +107,9 @@ impl GrpcRequest for GetTxsEventRequest {
     type Response = GetTxsEventResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .tx_service_client
-            .lock()
-            .await
-            .get_txs_event(req)
-            .await
+        inner.tx_service_client.get_txs_event(req).await
     }
 }
 
@@ -133,14 +118,9 @@ impl GrpcRequest for QueryContractInfoRequest {
     type Response = QueryContractInfoResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .wasm_query_client
-            .lock()
-            .await
-            .contract_info(req)
-            .await
+        inner.wasm_query_client.contract_info(req).await
     }
 }
 
@@ -149,14 +129,9 @@ impl GrpcRequest for QueryContractHistoryRequest {
     type Response = QueryContractHistoryResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .wasm_query_client
-            .lock()
-            .await
-            .contract_history(req)
-            .await
+        inner.wasm_query_client.contract_history(req).await
     }
 }
 
@@ -165,14 +140,9 @@ impl GrpcRequest for GetBlockByHeightRequest {
     type Response = GetBlockByHeightResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .tendermint_client
-            .lock()
-            .await
-            .get_block_by_height(req)
-            .await
+        inner.tendermint_client.get_block_by_height(req).await
     }
 }
 
@@ -181,14 +151,9 @@ impl GrpcRequest for GetLatestBlockRequest {
     type Response = GetLatestBlockResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .tendermint_client
-            .lock()
-            .await
-            .get_latest_block(req)
-            .await
+        inner.tendermint_client.get_latest_block(req).await
     }
 }
 
@@ -197,9 +162,9 @@ impl GrpcRequest for SimulateRequest {
     type Response = SimulateResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.lock().await.simulate(req).await
+        inner.tx_service_client.simulate(req).await
     }
 }
 
@@ -208,9 +173,9 @@ impl GrpcRequest for BroadcastTxRequest {
     type Response = BroadcastTxResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.lock().await.broadcast_tx(req).await
+        inner.tx_service_client.broadcast_tx(req).await
     }
 }
 
@@ -219,14 +184,9 @@ impl GrpcRequest for QueryGranterGrantsRequest {
     type Response = QueryGranterGrantsResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .authz_query_client
-            .lock()
-            .await
-            .granter_grants(req)
-            .await
+        inner.authz_query_client.granter_grants(req).await
     }
 }
 
@@ -235,13 +195,8 @@ impl GrpcRequest for QueryGranteeGrantsRequest {
     type Response = QueryGranteeGrantsResponse;
     async fn perform(
         req: tonic::Request<Self>,
-        inner: &CosmosInner,
+        inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner
-            .authz_query_client
-            .lock()
-            .await
-            .grantee_grants(req)
-            .await
+        inner.authz_query_client.grantee_grants(req).await
     }
 }
