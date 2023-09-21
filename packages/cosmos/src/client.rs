@@ -78,9 +78,12 @@ impl ManageConnection for CosmosBuilders {
         self.get_next_builder().build_inner().await
     }
 
-    async fn is_valid(&self, _: &mut CosmosInner) -> Result<()> {
-        // We do the validity check within the perform_query calls and update is_broken
-        Ok(())
+    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
+        if inner.is_broken {
+            Err(anyhow::anyhow!("Connection is marked as broken"))
+        } else {
+            Ok(())
+        }
     }
 
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
