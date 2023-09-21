@@ -29,6 +29,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use serde::{de::Visitor, Deserialize};
+use tokio::time::error::Elapsed;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -77,9 +78,8 @@ impl ManageConnection for CosmosBuilders {
         self.get_next_builder().build_inner().await
     }
 
-    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
-        // Always assume connections are valid, but once we go through here we know it's a reused connection.
-        inner.is_reused = true;
+    async fn is_valid(&self, _: &mut CosmosInner) -> Result<()> {
+        // We do the validity check within the perform_query calls and update is_broken
         Ok(())
     }
 
@@ -115,9 +115,11 @@ trait WithCosmosInner {
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum PerformQueryError {
     #[error("Error getting a gRPC connection from the pool: {0:?}")]
-    PoolError(bb8::RunError<anyhow::Error>),
+    Pool(bb8::RunError<anyhow::Error>),
     #[error("Error response from gRPC endpoint: {0:?}")]
-    TonicError(tonic::Status),
+    Tonic(tonic::Status),
+    #[error("Query timed out, total elapsed time: {0}")]
+    Timeout(Elapsed),
 }
 
 impl Cosmos {
@@ -125,35 +127,54 @@ impl Cosmos {
         &self,
         req: Request,
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
-        self.perform_query_wrapped(tonic::Request::new(req)).await
+        self.perform_query_at(req, None).await
     }
 
-    pub(crate) async fn perform_query_wrapped<Request: GrpcRequest>(
+    pub(crate) async fn perform_query_at<Request: GrpcRequest>(
         &self,
-        req: tonic::Request<Request>,
+        req: Request,
+        height: Option<u64>,
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
-        // FIXME add retry logic, timeouts, check if this is a new or existing connection...
-        let mut cosmos_inner = self
-            .pool
-            .get()
-            .await
-            .map_err(PerformQueryError::PoolError)?;
-        let res = GrpcRequest::perform(req, &mut cosmos_inner).await;
-        match res {
-            Ok(x) => Ok(x),
-            Err(err) => {
-                // Basic sanity check that we can still talk to the blockchain
-                match cosmos_inner
-                    .tendermint_client
-                    .get_latest_block(GetLatestBlockRequest {})
-                    .await
-                {
-                    Ok(_) => (),
-                    Err(_) => {
-                        cosmos_inner.is_broken = true;
+        let mut attempt = 0;
+        loop {
+            let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
+            let duration = tokio::time::Duration::from_secs(
+                self.first_builder.config.query_timeout_seconds.into(),
+            );
+            let mut req = tonic::Request::new(req.clone());
+            if let Some(height) = height {
+                // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
+                let metadata = req.metadata_mut();
+                metadata.insert("x-cosmos-block-height", height.into());
+            }
+            let res =
+                tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+            let e = match res {
+                Ok(Ok(x)) => return Ok(x),
+                Ok(Err(err)) => {
+                    // Basic sanity check that we can still talk to the blockchain
+                    match cosmos_inner
+                        .tendermint_client
+                        .get_latest_block(GetLatestBlockRequest {})
+                        .await
+                    {
+                        Ok(_) => (),
+                        Err(_) => {
+                            cosmos_inner.is_broken = true;
+                        }
                     }
+                    PerformQueryError::Tonic(err.into())
                 }
-                Err(PerformQueryError::TonicError(err.into()))
+                Err(e) => PerformQueryError::Timeout(e),
+            };
+            if attempt >= self.first_builder.config.query_retries {
+                return Err(e);
+            } else {
+                attempt += 1;
+                log::warn!(
+                    "Error performing a query, retrying. Attempt {attempt} of {}",
+                    self.first_builder.config.query_retries
+                );
             }
         }
     }
@@ -226,7 +247,6 @@ pub struct CosmosInner {
             InterceptedService<Channel, CosmosInterceptor>,
         >,
     is_broken: bool,
-    is_reused: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -289,6 +309,18 @@ pub struct CosmosConfig {
     ///
     /// Defaults to 20 seconds
     idle_timeout_seconds: u32,
+
+    /// Sets the number of seconds before timing out a gRPC query
+    ///
+    /// Defaults to 5 seconds
+    query_timeout_seconds: u32,
+
+    /// Number of attempts to make at a query before giving up.
+    ///
+    /// Only retries if there is a tonic-level error.
+    ///
+    /// Defaults to 3
+    query_retries: u32,
 }
 
 impl Default for CosmosConfig {
@@ -305,6 +337,8 @@ impl Default for CosmosConfig {
             referer_header: None,
             connection_count: None,
             idle_timeout_seconds: 20,
+            query_timeout_seconds: 5,
+            query_retries: 3,
         }
     }
 }
@@ -498,7 +532,6 @@ impl CosmosBuilder {
             tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: false,
-            is_reused: false,
         })
     }
 }
@@ -509,9 +542,10 @@ impl Cosmos {
     }
 
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
-        let address = address.into();
         let res = self
-            .perform_query(QueryAccountRequest { address })
+            .perform_query(QueryAccountRequest {
+                address: address.into(),
+            })
             .await?
             .into_inner();
 
@@ -539,16 +573,16 @@ impl Cosmos {
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
-            let mut request = tonic::Request::new(QueryAllBalancesRequest {
-                address: address.clone(),
-                pagination: pagination.take(),
-            });
-            if let Some(height) = height {
-                let metadata = request.metadata_mut();
-                metadata.insert("x-cosmos-block-height", height.into());
-            }
-
-            let mut res = self.perform_query_wrapped(request).await?.into_inner();
+            let mut res = self
+                .perform_query_at(
+                    QueryAllBalancesRequest {
+                        address: address.clone(),
+                        pagination: pagination.take(),
+                    },
+                    height,
+                )
+                .await?
+                .into_inner();
             coins.append(&mut res.balances);
             match res.pagination {
                 Some(x) if !x.next_key.is_empty() => {
@@ -586,16 +620,17 @@ impl Cosmos {
         query_data: impl Into<Vec<u8>>,
         height: u64,
     ) -> Result<Vec<u8>> {
-        // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-        let mut request = tonic::Request::new(QuerySmartContractStateRequest {
-            address: address.into(),
-            query_data: query_data.into(),
-        });
-
-        let metadata = request.metadata_mut();
-        metadata.insert("x-cosmos-block-height", height.into());
-
-        Ok(self.perform_query_wrapped(request).await?.into_inner().data)
+        Ok(self
+            .perform_query_at(
+                QuerySmartContractStateRequest {
+                    address: address.into(),
+                    query_data: query_data.into(),
+                },
+                Some(height),
+            )
+            .await?
+            .into_inner()
+            .data)
     }
 
     pub async fn wasm_raw_query(
@@ -619,14 +654,17 @@ impl Cosmos {
         key: impl Into<Vec<u8>>,
         height: u64,
     ) -> Result<Vec<u8>> {
-        // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-        let mut request = tonic::Request::new(QueryRawContractStateRequest {
-            address: address.into(),
-            query_data: key.into(),
-        });
-        let metadata = request.metadata_mut();
-        metadata.insert("x-cosmos-block-height", height.into());
-        Ok(self.perform_query_wrapped(request).await?.into_inner().data)
+        Ok(self
+            .perform_query_at(
+                QueryRawContractStateRequest {
+                    address: address.into(),
+                    query_data: key.into(),
+                },
+                Some(height),
+            )
+            .await?
+            .into_inner()
+            .data)
     }
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
@@ -690,7 +728,7 @@ impl Cosmos {
                     ));
                 }
                 // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
-                Err(PerformQueryError::TonicError(e))
+                Err(PerformQueryError::Tonic(e))
                     if e.code() == tonic::Code::NotFound || e.message().contains("not found") =>
                 {
                     log::debug!(
@@ -880,6 +918,14 @@ impl CosmosBuilder {
 
     pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
         self.config.idle_timeout_seconds = timeout_seconds;
+    }
+
+    pub fn set_query_timeout(&mut self, timeout_seconds: u32) {
+        self.config.query_timeout_seconds = timeout_seconds;
+    }
+
+    pub fn set_query_retries(&mut self, retries: u32) {
+        self.config.query_retries = retries;
     }
 
     fn new_juno_testnet() -> CosmosBuilder {
@@ -1348,7 +1394,7 @@ impl TxBuilder {
         // PERP-283: detect account sequence mismatches
         let simres = match simres {
             Ok(simres) => simres.into_inner(),
-            Err(PerformQueryError::TonicError(e)) => {
+            Err(PerformQueryError::Tonic(e)) => {
                 let is_sequence = get_expected_sequence(e.message());
                 let e = anyhow::Error::from(e).context("Unable to simulate transaction");
                 return match is_sequence {

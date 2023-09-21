@@ -27,7 +27,7 @@ use tonic::async_trait;
 use super::CosmosInner;
 
 #[async_trait]
-pub(crate) trait GrpcRequest: Sized {
+pub(crate) trait GrpcRequest: Clone + Sized {
     type Response;
 
     async fn perform(
