@@ -157,7 +157,7 @@ impl Cosmos {
                             cosmos_inner.is_broken = true;
                         }
                     }
-                    PerformQueryError::Tonic(err.into())
+                    PerformQueryError::Tonic(err)
                 }
                 Err(e) => {
                     cosmos_inner.is_broken = true;
