@@ -1,8 +1,9 @@
-mod jsonrpc;
+mod query;
 
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use bb8::{ManageConnection, Pool};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -27,10 +28,10 @@ use cosmos_sdk_proto::{
     },
     traits::Message,
 };
-use deadpool::{async_trait, managed::RecycleResult};
 use serde::{de::Visitor, Deserialize};
-use tokio::sync::Mutex;
+use tokio::time::error::Elapsed;
 use tonic::{
+    async_trait,
     codegen::InterceptedService,
     service::Interceptor,
     transport::{Channel, ClientTlsConfig, Endpoint},
@@ -39,13 +40,14 @@ use tonic::{
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
 
-use self::jsonrpc::make_jsonrpc_request;
+use self::query::GrpcRequest;
 
 use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: deadpool::managed::Pool<CosmosBuilders>,
+    pool: Pool<CosmosBuilders>,
+    first_builder: Arc<CosmosBuilder>,
 }
 
 /// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
@@ -67,17 +69,25 @@ impl CosmosBuilders {
 }
 
 #[async_trait]
-impl deadpool::managed::Manager for CosmosBuilders {
-    type Type = CosmosInner;
+impl ManageConnection for CosmosBuilders {
+    type Connection = CosmosInner;
 
     type Error = anyhow::Error;
 
-    async fn create(&self) -> Result<Self::Type> {
+    async fn connect(&self) -> Result<Self::Connection> {
         self.get_next_builder().build_inner().await
     }
 
-    async fn recycle(&self, _: &mut CosmosInner) -> RecycleResult<anyhow::Error> {
-        Ok(())
+    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
+        if inner.is_broken {
+            Err(anyhow::anyhow!("Connection is marked as broken"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn has_broken(&self, inner: &mut CosmosInner) -> bool {
+        inner.is_broken
     }
 }
 
@@ -99,19 +109,82 @@ impl CosmosBuilders {
     }
 }
 
+#[async_trait]
+trait WithCosmosInner {
+    type Output;
+    async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
+}
+
+#[derive(thiserror::Error, Debug)]
+pub(crate) enum PerformQueryError {
+    #[error("Error getting a gRPC connection from the pool: {0:?}")]
+    Pool(bb8::RunError<anyhow::Error>),
+    #[error("Error response from gRPC endpoint: {0:?}")]
+    Tonic(tonic::Status),
+    #[error("Query timed out, total elapsed time: {0}")]
+    Timeout(Elapsed),
+}
+
 impl Cosmos {
-    pub(crate) async fn inner(&self) -> Result<deadpool::managed::Object<CosmosBuilders>> {
-        self.pool.get().await.map_err(|e| {
-            anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
-        })
+    pub(crate) async fn perform_query<Request: GrpcRequest>(
+        &self,
+        height: Option<u64>,
+        req: Request,
+    ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
+        let mut attempt = 0;
+        loop {
+            let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
+            let duration = tokio::time::Duration::from_secs(
+                self.first_builder.config.query_timeout_seconds.into(),
+            );
+            let mut req = tonic::Request::new(req.clone());
+            if let Some(height) = height {
+                // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
+                let metadata = req.metadata_mut();
+                metadata.insert("x-cosmos-block-height", height.into());
+            }
+            let res =
+                tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+            let e = match res {
+                Ok(Ok(x)) => return Ok(x),
+                Ok(Err(err)) => {
+                    // Basic sanity check that we can still talk to the blockchain
+                    match GrpcRequest::perform(
+                        tonic::Request::new(GetLatestBlockRequest {}),
+                        &mut cosmos_inner,
+                    )
+                    .await
+                    {
+                        Ok(_) => (),
+                        Err(_) => {
+                            cosmos_inner.is_broken = true;
+                        }
+                    }
+                    PerformQueryError::Tonic(err)
+                }
+                Err(e) => {
+                    cosmos_inner.is_broken = true;
+                    PerformQueryError::Timeout(e)
+                }
+            };
+            if attempt >= self.first_builder.config.query_retries {
+                return Err(e);
+            } else {
+                attempt += 1;
+                log::warn!(
+                    "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
+                    self.first_builder.config.query_retries
+                );
+            }
+        }
     }
 
-    pub fn get_first_builder(&self) -> Arc<CosmosBuilder> {
-        self.pool.manager().get_first_builder().clone()
+    pub fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
+        &self.first_builder
     }
 
     pub fn get_network(&self) -> CosmosNetwork {
-        self.pool.manager().get_first_builder().network
+        self.get_first_builder().network
     }
 
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
@@ -132,7 +205,7 @@ impl Cosmos {
 
 impl HasAddressType for Cosmos {
     fn get_address_type(&self) -> AddressType {
-        self.pool.manager().get_first_builder().address_type
+        self.get_first_builder().address_type
     }
 }
 
@@ -153,43 +226,27 @@ impl Interceptor for CosmosInterceptor {
 
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
-    pub(crate) builder: Arc<CosmosBuilder>,
-    pub(crate) rpc_info: Option<RpcInfo>,
-    auth_query_client: Mutex<
-        cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    auth_query_client: cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    bank_query_client: Mutex<
-        cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    bank_query_client: cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    tx_service_client: Mutex<
-        cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    tx_service_client: cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    wasm_query_client: Mutex<
-        cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
     >,
-    tendermint_client: Mutex<
+    tendermint_client:
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    >,
-    pub(crate) authz_query_client: Mutex<
+    pub(crate) authz_query_client:
         cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    >,
-}
-
-pub(crate) struct RpcInfo {
-    client: reqwest::Client,
-    endpoint: String,
+    is_broken: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -223,15 +280,6 @@ pub struct CosmosBuilder {
 /// Optional config values.
 #[derive(Clone, Debug)]
 pub struct CosmosConfig {
-    /// Override RPC endpoint to use instead of gRPC.
-    ///
-    /// NOTE: This feature is experimental and not recommended for anything but
-    /// testing purposes.
-    pub rpc_url: Option<String>,
-
-    /// Client used for RPC connections. If not provided, creates a new one.
-    pub client: Option<reqwest::Client>,
-
     // Add a multiplier to the gas estimate to account for any gas fluctuations
     pub gas_estimate_multiplier: f64,
 
@@ -254,8 +302,25 @@ pub struct CosmosConfig {
     /// Referrer header that can be set
     referer_header: Option<String>,
 
-    /// Set the number of deadpool connection
-    connection_count: Option<usize>,
+    /// Set the number of bb8 connections
+    connection_count: Option<u32>,
+
+    /// Sets the number of seconds before an idle connection is reaped
+    ///
+    /// Defaults to 20 seconds
+    idle_timeout_seconds: u32,
+
+    /// Sets the number of seconds before timing out a gRPC query
+    ///
+    /// Defaults to 5 seconds
+    query_timeout_seconds: u32,
+
+    /// Number of attempts to make at a query before giving up.
+    ///
+    /// Only retries if there is a tonic-level error.
+    ///
+    /// Defaults to 3
+    query_retries: u32,
 }
 
 impl Default for CosmosConfig {
@@ -264,8 +329,6 @@ impl Default for CosmosConfig {
         // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
         const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
         Self {
-            rpc_url: None,
-            client: None,
             gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
             gas_price_low: 0.02,
             gas_price_high: 0.03,
@@ -273,20 +336,23 @@ impl Default for CosmosConfig {
             transaction_attempts: 30,
             referer_header: None,
             connection_count: None,
+            idle_timeout_seconds: 20,
+            query_timeout_seconds: 5,
+            query_retries: 3,
         }
     }
 }
 
 impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
-        let cosmos = self.build_lazy();
+        let cosmos = self.build_lazy().await;
         // Force strict connection
         cosmos.sanity_check().await?;
         Ok(cosmos)
     }
 
-    pub fn build_lazy(self) -> Cosmos {
-        CosmosBuilders::from(self).build_lazy()
+    pub async fn build_lazy(self) -> Cosmos {
+        CosmosBuilders::from(self).build_lazy().await
     }
 }
 
@@ -300,14 +366,22 @@ impl From<CosmosBuilder> for CosmosBuilders {
 }
 
 impl CosmosBuilders {
-    pub fn build_lazy(self) -> Cosmos {
-        let count = self.get_first_builder().config.connection_count;
-        let mut builder = deadpool::managed::Pool::builder(self);
-        if let Some(count) = count {
+    pub async fn build_lazy(self) -> Cosmos {
+        let first_builder = self.get_first_builder().clone();
+        let mut builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
+            first_builder.config.idle_timeout_seconds.into(),
+        )));
+        if let Some(count) = first_builder.config.connection_count {
             builder = builder.max_size(count);
         }
-        let pool = builder.build().expect("Unexpected pool build error");
-        Cosmos { pool }
+        let pool = builder
+            .build(self)
+            .await
+            .expect("Unexpected pool build error");
+        Cosmos {
+            pool,
+            first_builder,
+        }
     }
 }
 
@@ -438,71 +512,45 @@ impl CosmosBuilder {
                 .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
-        let rpc_info = self.config.rpc_url.as_ref().map(|endpoint| RpcInfo {
-            client: self
-                .config
-                .client
-                .as_ref()
-                .map_or_else(reqwest::Client::new, |x| x.clone()),
-            endpoint: endpoint.clone(),
-        });
 
         let referer_header = self.config.referer_header.clone();
 
         Ok(CosmosInner {
-            builder: self,
-            auth_query_client: Mutex::new(
+            auth_query_client:
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
                     grpc_channel.clone(), CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            bank_query_client: Mutex::new(
+            bank_query_client:
                 cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::with_interceptor(
                     grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            tx_service_client: Mutex::new(
+            tx_service_client:
                 cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::with_interceptor(
                     grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-                ),
             ),
-            wasm_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
-            ),
-            tendermint_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone()))
-            ),
-            authz_query_client: Mutex::new(
-                cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header))
-            ),
-            rpc_info,
+            wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
+            tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
+            authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
+            is_broken: false,
         })
     }
 }
 
 impl Cosmos {
     pub fn get_config(&self) -> &CosmosConfig {
-        &self.pool.manager().get_first_builder().config
+        &self.first_builder.config
     }
 
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
-        let inner = self.inner().await?;
-        let req = QueryAccountRequest {
-            address: address.into(),
-        };
-        let res = match &inner.rpc_info {
-            Some(RpcInfo { client, endpoint }) => {
-                make_jsonrpc_request(client, endpoint, req, "/cosmos.auth.v1beta1.Query/Account")
-                    .await?
-            }
-            None => inner
-                .auth_query_client
-                .lock()
-                .await
-                .account(req)
-                .await?
-                .into_inner(),
-        };
+        let res = self
+            .perform_query(
+                None,
+                QueryAccountRequest {
+                    address: address.into(),
+                },
+            )
+            .await?
+            .into_inner();
 
         let base_account = if self.get_address_type() == AddressType::Injective {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
@@ -528,22 +576,14 @@ impl Cosmos {
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
-            let mut request = tonic::Request::new(QueryAllBalancesRequest {
-                address: address.clone(),
-                pagination: pagination.take(),
-            });
-            if let Some(height) = height {
-                let metadata = request.metadata_mut();
-                metadata.insert("x-cosmos-block-height", height.into());
-            }
-
             let mut res = self
-                .inner()
-                .await?
-                .bank_query_client
-                .lock()
-                .await
-                .all_balances(request)
+                .perform_query(
+                    height,
+                    QueryAllBalancesRequest {
+                        address: address.clone(),
+                        pagination: pagination.take(),
+                    },
+                )
                 .await?
                 .into_inner();
             coins.append(&mut res.balances);
@@ -567,29 +607,16 @@ impl Cosmos {
         address: impl Into<String>,
         query_data: impl Into<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        let inner = self.inner().await?;
-        let proto_req = QuerySmartContractStateRequest {
-            address: address.into(),
-            query_data: query_data.into(),
-        };
-        let res = match &inner.rpc_info {
-            Some(RpcInfo { client, endpoint }) => {
-                make_jsonrpc_request(
-                    client,
-                    endpoint,
-                    proto_req,
-                    "/cosmwasm.wasm.v1.Query/SmartContractState",
-                )
-                .await?
-            }
-            None => {
-                let mut query_client = inner.wasm_query_client.lock().await;
-                query_client
-                    .smart_contract_state(proto_req)
-                    .await?
-                    .into_inner()
-            }
-        };
+        let res = self
+            .perform_query(
+                None,
+                QuerySmartContractStateRequest {
+                    address: address.into(),
+                    query_data: query_data.into(),
+                },
+            )
+            .await?
+            .into_inner();
         Ok(res.data)
     }
 
@@ -599,22 +626,14 @@ impl Cosmos {
         query_data: impl Into<Vec<u8>>,
         height: u64,
     ) -> Result<Vec<u8>> {
-        // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-        let mut request = tonic::Request::new(QuerySmartContractStateRequest {
-            address: address.into(),
-            query_data: query_data.into(),
-        });
-
-        let metadata = request.metadata_mut();
-        metadata.insert("x-cosmos-block-height", height.into());
-
         Ok(self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .smart_contract_state(request)
+            .perform_query(
+                Some(height),
+                QuerySmartContractStateRequest {
+                    address: address.into(),
+                    query_data: query_data.into(),
+                },
+            )
             .await?
             .into_inner()
             .data)
@@ -626,15 +645,13 @@ impl Cosmos {
         key: impl Into<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         Ok(self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .raw_contract_state(QueryRawContractStateRequest {
-                address: address.into(),
-                query_data: key.into(),
-            })
+            .perform_query(
+                None,
+                QueryRawContractStateRequest {
+                    address: address.into(),
+                    query_data: key.into(),
+                },
+            )
             .await?
             .into_inner()
             .data)
@@ -646,20 +663,14 @@ impl Cosmos {
         key: impl Into<Vec<u8>>,
         height: u64,
     ) -> Result<Vec<u8>> {
-        // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-        let mut request = tonic::Request::new(QueryRawContractStateRequest {
-            address: address.into(),
-            query_data: key.into(),
-        });
-        let metadata = request.metadata_mut();
-        metadata.insert("x-cosmos-block-height", height.into());
         Ok(self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .raw_contract_state(request)
+            .perform_query(
+                Some(height),
+                QueryRawContractStateRequest {
+                    address: address.into(),
+                    query_data: key.into(),
+                },
+            )
             .await?
             .into_inner()
             .data)
@@ -667,12 +678,7 @@ impl Cosmos {
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .code(QueryCodeRequest { code_id })
+            .perform_query(None, QueryCodeRequest { code_id })
             .await?;
         Ok(res.into_inner().data)
     }
@@ -688,12 +694,13 @@ impl Cosmos {
         txhash: impl Into<String>,
     ) -> Result<(TxBody, TxResponse)> {
         let txhash = txhash.into();
-        let inner = self.inner().await?;
-        let mut client = inner.tx_service_client.lock().await;
-        let txres = client
-            .get_tx(GetTxRequest {
-                hash: txhash.clone(),
-            })
+        let txres = self
+            .perform_query(
+                None,
+                GetTxRequest {
+                    hash: txhash.clone(),
+                },
+            )
             .await
             .with_context(|| format!("Unable to get transaction {txhash}"))?
             .into_inner();
@@ -714,13 +721,14 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse)> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        let inner = self.inner().await?;
-        for attempt in 1..=inner.builder.config.transaction_attempts {
-            let mut client = inner.tx_service_client.lock().await;
-            let txres = client
-                .get_tx(GetTxRequest {
-                    hash: txhash.clone(),
-                })
+        for attempt in 1..=self.first_builder.config.transaction_attempts {
+            let txres = self
+                .perform_query(
+                    None,
+                    GetTxRequest {
+                        hash: txhash.clone(),
+                    },
+                )
                 .await;
             match txres {
                 Ok(txres) => {
@@ -736,17 +744,18 @@ impl Cosmos {
                         })?,
                     ));
                 }
+                // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
+                Err(PerformQueryError::Tonic(e))
+                    if e.code() == tonic::Code::NotFound || e.message().contains("not found") =>
+                {
+                    log::debug!(
+                        "Transaction {txhash} not ready, attempt #{attempt}/{}",
+                        self.first_builder.config.transaction_attempts
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
+                }
                 Err(e) => {
-                    // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
-                    if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
-                        log::debug!(
-                            "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                            inner.builder.config.transaction_attempts
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
-                    } else {
-                        return Err(e.into());
-                    }
+                    return Err(e.into());
                 }
             }
         }
@@ -762,22 +771,20 @@ impl Cosmos {
         offset: Option<u64>,
     ) -> Result<Vec<String>> {
         let x = self
-            .inner()
-            .await?
-            .tx_service_client
-            .lock()
-            .await
-            .get_txs_event(GetTxsEventRequest {
-                events: vec![format!("message.sender='{address}'")],
-                pagination: Some(PageRequest {
-                    key: vec![],
-                    offset: offset.unwrap_or_default(),
-                    limit: limit.unwrap_or(10),
-                    count_total: false,
-                    reverse: false,
-                }),
-                order_by: OrderBy::Asc as i32,
-            })
+            .perform_query(
+                None,
+                GetTxsEventRequest {
+                    events: vec![format!("message.sender='{address}'")],
+                    pagination: Some(PageRequest {
+                        key: vec![],
+                        offset: offset.unwrap_or_default(),
+                        limit: limit.unwrap_or(10),
+                        count_total: false,
+                        reverse: false,
+                    }),
+                    order_by: OrderBy::Asc as i32,
+                },
+            )
             .await?;
         Ok(x.into_inner()
             .tx_responses
@@ -787,12 +794,12 @@ impl Cosmos {
     }
 
     pub fn get_gas_coin(&self) -> &String {
-        &self.pool.manager().get_first_builder().gas_coin
+        &self.first_builder.gas_coin
     }
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let config = &self.pool.manager().get_first_builder().config;
+        let config = &self.first_builder.config;
         let low = config.gas_price_low;
         let high = config.gas_price_high;
         let attempts = config.gas_price_retry_attempts;
@@ -809,26 +816,20 @@ impl Cosmos {
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
-        self.pool
-            .manager()
-            .get_first_builder()
-            .config
-            .gas_estimate_multiplier
+        self.first_builder.config.gas_estimate_multiplier
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
-        self.inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .contract_info(QueryContractInfoRequest {
+        self.perform_query(
+            None,
+            QueryContractInfoRequest {
                 address: address.into(),
-            })
-            .await?
-            .into_inner()
-            .contract_info
-            .context("contract_info: missing contract_info (ironic...)")
+            },
+        )
+        .await?
+        .into_inner()
+        .contract_info
+        .context("contract_info: missing contract_info (ironic...)")
     }
 
     pub async fn contract_history(
@@ -836,27 +837,20 @@ impl Cosmos {
         address: impl Into<String>,
     ) -> Result<QueryContractHistoryResponse> {
         Ok(self
-            .inner()
-            .await?
-            .wasm_query_client
-            .lock()
-            .await
-            .contract_history(QueryContractHistoryRequest {
-                address: address.into(),
-                pagination: None,
-            })
+            .perform_query(
+                None,
+                QueryContractHistoryRequest {
+                    address: address.into(),
+                    pagination: None,
+                },
+            )
             .await?
             .into_inner())
     }
 
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .inner()
-            .await?
-            .tendermint_client
-            .lock()
-            .await
-            .get_block_by_height(GetBlockByHeightRequest { height })
+            .perform_query(None, GetBlockByHeightRequest { height })
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -913,12 +907,7 @@ impl Cosmos {
 
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
-            .inner()
-            .await?
-            .tendermint_client
-            .lock()
-            .await
-            .get_latest_block(GetLatestBlockRequest {})
+            .perform_query(None, GetLatestBlockRequest {})
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -949,8 +938,20 @@ impl CosmosBuilder {
         self.config.referer_header = Some(value);
     }
 
-    pub fn set_connection_count(&mut self, count: usize) {
+    pub fn set_connection_count(&mut self, count: u32) {
         self.config.connection_count = Some(count);
+    }
+
+    pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
+        self.config.idle_timeout_seconds = timeout_seconds;
+    }
+
+    pub fn set_query_timeout(&mut self, timeout_seconds: u32) {
+        self.config.query_timeout_seconds = timeout_seconds;
+    }
+
+    pub fn set_query_retries(&mut self, retries: u32) {
+        self.config.query_retries = retries;
     }
 
     fn new_juno_testnet() -> CosmosBuilder {
@@ -1353,13 +1354,18 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_infos(&self, sequence: u64) -> Vec<SignerInfo> {
+    fn make_signer_infos(&self, sequence: u64, wallet: Option<&Wallet>) -> Vec<SignerInfo> {
         vec![SignerInfo {
             public_key: Some(cosmos_sdk_proto::Any {
                 type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
                 value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
                     sum: Some(
-                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
+                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                            match wallet {
+                                None => vec![],
+                                Some(wallet) => wallet.public_key_bytes().to_owned(),
+                            },
+                        ),
                     ),
                 }
                 .encode_to_vec(),
@@ -1403,7 +1409,7 @@ impl TxBuilder {
                     payer: "".to_owned(),
                     granter: "".to_owned(),
                 }),
-                signer_infos: self.make_signer_infos(sequence),
+                signer_infos: self.make_signer_infos(sequence, None),
             }),
             signatures: vec![vec![]],
             body: Some(body.clone()),
@@ -1415,40 +1421,19 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
-        let simres = {
-            let inner = cosmos.inner().await?;
-            match &inner.rpc_info {
-                Some(RpcInfo { client, endpoint }) => {
-                    make_jsonrpc_request(
-                        client,
-                        endpoint,
-                        simulate_req,
-                        "/cosmos.tx.v1beta1.Service/Simulate",
-                    )
-                    .await?
-                }
-                None => {
-                    let simres = inner
-                        .tx_service_client
-                        .lock()
-                        .await
-                        .simulate(simulate_req)
-                        .await;
-                    // PERP-283: detect account sequence mismatches
-                    match simres {
-                        Ok(simres) => simres.into_inner(),
-                        Err(e) => {
-                            let is_sequence = get_expected_sequence(e.message());
-                            let e =
-                                anyhow::Error::from(e).context("Unable to simulate transaction");
-                            return match is_sequence {
-                                None => Err(ExpectedSequenceError::RealError(e)),
-                                Some(number) => Err(ExpectedSequenceError::NewNumber(number, e)),
-                            };
-                        }
-                    }
-                }
+        let simres = cosmos.perform_query(None, simulate_req).await;
+        // PERP-283: detect account sequence mismatches
+        let simres = match simres {
+            Ok(simres) => simres.into_inner(),
+            Err(PerformQueryError::Tonic(e)) => {
+                let is_sequence = get_expected_sequence(e.message());
+                let e = anyhow::Error::from(e).context("Unable to simulate transaction");
+                return match is_sequence {
+                    None => Err(ExpectedSequenceError::RealError(e)),
+                    Some(number) => Err(ExpectedSequenceError::NewNumber(number, e)),
+                };
             }
+            Err(e) => return Err(ExpectedSequenceError::RealError(e.into())),
         };
 
         let gas_used = simres
@@ -1485,10 +1470,10 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: self.make_signer_infos(sequence),
+                signer_infos: self.make_signer_infos(sequence, Some(wallet)),
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.pool.manager().get_first_builder().gas_coin.clone(),
+                        denom: cosmos.first_builder.gas_coin.clone(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -1500,7 +1485,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.pool.manager().get_first_builder().chain_id.clone(),
+                chain_id: cosmos.first_builder.chain_id.clone(),
                 account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -1512,32 +1497,19 @@ impl TxBuilder {
                 signatures: vec![signature.serialize_compact().to_vec()],
             };
 
-            let inner = cosmos.inner().await?;
-            let req = BroadcastTxRequest {
-                tx_bytes: tx.encode_to_vec(),
-                mode: BroadcastMode::Sync as i32,
-            };
-            let res = match &inner.rpc_info {
-                Some(RpcInfo { client, endpoint }) => {
-                    make_jsonrpc_request(
-                        client,
-                        endpoint,
-                        req,
-                        "/cosmos.tx.v1beta1.Service/BroadcastTx",
-                    )
-                    .await?
-                }
-                None => inner
-                    .tx_service_client
-                    .lock()
-                    .await
-                    .broadcast_tx(req)
-                    .await
-                    .context("Unable to broadcast transaction")?
-                    .into_inner(),
-            }
-            .tx_response
-            .context("Missing inner tx_response")?;
+            let res = cosmos
+                .perform_query(
+                    None,
+                    BroadcastTxRequest {
+                        tx_bytes: tx.encode_to_vec(),
+                        mode: BroadcastMode::Sync as i32,
+                    },
+                )
+                .await
+                .context("Unable to broadcast transaction")?
+                .into_inner()
+                .tx_response
+                .context("Missing inner tx_response")?;
 
             if !self.skip_code_check && res.code != 0 {
                 let e = anyhow::anyhow!(
