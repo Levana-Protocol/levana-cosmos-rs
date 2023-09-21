@@ -1,6 +1,16 @@
 mod jsonrpc;
+mod query;
 
-use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    fmt::Display,
+    future::Future,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool, PooledConnection};
@@ -40,7 +50,7 @@ use tonic::{
 
 use crate::{address::HasAddressType, Address, AddressType, HasAddress};
 
-use self::jsonrpc::make_jsonrpc_request;
+use self::{jsonrpc::make_jsonrpc_request, query::GrpcRequest};
 
 use super::Wallet;
 
@@ -75,16 +85,16 @@ impl ManageConnection for CosmosBuilders {
     type Error = anyhow::Error;
 
     async fn connect(&self) -> Result<Self::Connection> {
+        println!("In connect");
         self.get_next_builder().build_inner().await
     }
 
     async fn is_valid(&self, _: &mut CosmosInner) -> Result<()> {
-        // FIXME need to implement!
         Ok(())
     }
 
-    fn has_broken(&self, _: &mut CosmosInner) -> bool {
-        false
+    fn has_broken(&self, inner: &mut CosmosInner) -> bool {
+        inner.is_broken.load(Ordering::SeqCst)
     }
 }
 
@@ -106,11 +116,103 @@ impl CosmosBuilders {
     }
 }
 
+#[async_trait]
+trait WithCosmosInner {
+    type Output;
+    async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
+}
+
 impl Cosmos {
-    pub(crate) async fn inner(&self) -> Result<PooledConnection<CosmosBuilders>> {
-        self.pool.get().await.map_err(|e| {
+    pub(crate) async fn perform_query_old<'a, Req, Fut, Res, Client>(
+        &'a self,
+        get_mutex: fn(&CosmosInner) -> &Mutex<Client>,
+        req: Req,
+        query: impl Fn(&mut Client, Req) -> Fut,
+    ) -> Result<tonic::Response<Res>>
+    where
+        Fut: Future<Output = Result<tonic::Response<Res>, tonic::Status>>,
+        Res: 'a,
+    {
+        let cosmos_inner = self.pool.get().await.map_err(|e| {
             anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
-        })
+        })?;
+        let mut mutex = get_mutex(&cosmos_inner).lock().await;
+        let res = query(&mut mutex, req).await;
+        match res {
+            Ok(x) => Ok(x),
+            Err(err) => {
+                // Basic sanity check that we can still talk to the blockchain
+                match cosmos_inner
+                    .tendermint_client
+                    .lock()
+                    .await
+                    .get_latest_block(GetLatestBlockRequest {})
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(_) => {
+                        cosmos_inner.is_broken.store(true, Ordering::SeqCst);
+                    }
+                }
+                Err(err.into())
+            }
+        }
+    }
+    pub(crate) async fn perform_query<'a, Request: GrpcRequest>(
+        &'a self,
+        req: Request,
+    ) -> Result<tonic::Response<Request::Response>> {
+        let cosmos_inner = self.pool.get().await.map_err(|e| {
+            anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
+        })?;
+        let res = req.perform(&cosmos_inner).await;
+        match res {
+            Ok(x) => Ok(x),
+            Err(err) => {
+                // Basic sanity check that we can still talk to the blockchain
+                match cosmos_inner
+                    .tendermint_client
+                    .lock()
+                    .await
+                    .get_latest_block(GetLatestBlockRequest {})
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(_) => {
+                        cosmos_inner.is_broken.store(true, Ordering::SeqCst);
+                    }
+                }
+                Err(err.into())
+            }
+        }
+    }
+
+    pub(crate) async fn with_cosmos_inner<Inner: WithCosmosInner>(
+        &self,
+        inner: Inner,
+    ) -> Result<Inner::Output> {
+        let cosmos_inner = self.pool.get().await.map_err(|e| {
+            anyhow::anyhow!("Unable to get internal CosmosInner value from pool: {e:?}")
+        })?;
+        match inner.call(&*cosmos_inner).await {
+            Ok(x) => Ok(x),
+            Err(err) => {
+                // Basic sanity check that we can still talk to the blockchain
+                match cosmos_inner
+                    .tendermint_client
+                    .lock()
+                    .await
+                    .get_latest_block(GetLatestBlockRequest {})
+                    .await
+                {
+                    Ok(_) => (),
+                    Err(_) => {
+                        cosmos_inner.is_broken.store(true, Ordering::SeqCst);
+                    }
+                }
+                Err(err)
+            }
+        }
     }
 
     pub fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
@@ -192,6 +294,7 @@ pub struct CosmosInner {
             InterceptedService<Channel, CosmosInterceptor>,
         >,
     >,
+    is_broken: AtomicBool,
 }
 
 pub(crate) struct RpcInfo {
@@ -497,6 +600,7 @@ impl CosmosBuilder {
                 cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header))
             ),
             rpc_info,
+            is_broken: false.into()
         })
     }
 }
@@ -507,23 +611,11 @@ impl Cosmos {
     }
 
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
-        let inner = self.inner().await?;
-        let req = QueryAccountRequest {
-            address: address.into(),
-        };
-        let res = match &inner.rpc_info {
-            Some(RpcInfo { client, endpoint }) => {
-                make_jsonrpc_request(client, endpoint, req, "/cosmos.auth.v1beta1.Query/Account")
-                    .await?
-            }
-            None => inner
-                .auth_query_client
-                .lock()
-                .await
-                .account(req)
-                .await?
-                .into_inner(),
-        };
+        let address = address.into();
+        let res = self
+            .perform_query(QueryAccountRequest { address })
+            .await?
+            .into_inner();
 
         let base_account = if self.get_address_type() == AddressType::Injective {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
@@ -558,15 +650,7 @@ impl Cosmos {
                 metadata.insert("x-cosmos-block-height", height.into());
             }
 
-            let mut res = self
-                .inner()
-                .await?
-                .bank_query_client
-                .lock()
-                .await
-                .all_balances(request)
-                .await?
-                .into_inner();
+            let mut res = self.perform_query(request).await?.into_inner();
             coins.append(&mut res.balances);
             match res.pagination {
                 Some(x) if !x.next_key.is_empty() => {
