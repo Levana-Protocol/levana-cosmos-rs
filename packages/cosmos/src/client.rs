@@ -146,10 +146,11 @@ impl Cosmos {
                 Ok(Ok(x)) => return Ok(x),
                 Ok(Err(err)) => {
                     // Basic sanity check that we can still talk to the blockchain
-                    match cosmos_inner
-                        .tendermint_client
-                        .get_latest_block(GetLatestBlockRequest {})
-                        .await
+                    match GrpcRequest::perform(
+                        tonic::Request::new(GetLatestBlockRequest {}),
+                        &mut cosmos_inner,
+                    )
+                    .await
                     {
                         Ok(_) => (),
                         Err(_) => {
@@ -158,7 +159,10 @@ impl Cosmos {
                     }
                     PerformQueryError::Tonic(err.into())
                 }
-                Err(e) => PerformQueryError::Timeout(e),
+                Err(e) => {
+                    cosmos_inner.is_broken = true;
+                    PerformQueryError::Timeout(e)
+                }
             };
             if attempt >= self.first_builder.config.query_retries {
                 return Err(e);
