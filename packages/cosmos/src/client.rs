@@ -1354,13 +1354,18 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_infos(&self, sequence: u64) -> Vec<SignerInfo> {
+    fn make_signer_infos(&self, sequence: u64, wallet: Option<&Wallet>) -> Vec<SignerInfo> {
         vec![SignerInfo {
             public_key: Some(cosmos_sdk_proto::Any {
                 type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
                 value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
                     sum: Some(
-                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
+                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                            match wallet {
+                                None => vec![],
+                                Some(wallet) => wallet.public_key_bytes().to_owned(),
+                            },
+                        ),
                     ),
                 }
                 .encode_to_vec(),
@@ -1404,7 +1409,7 @@ impl TxBuilder {
                     payer: "".to_owned(),
                     granter: "".to_owned(),
                 }),
-                signer_infos: self.make_signer_infos(sequence),
+                signer_infos: self.make_signer_infos(sequence, None),
             }),
             signatures: vec![vec![]],
             body: Some(body.clone()),
@@ -1465,7 +1470,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: self.make_signer_infos(sequence),
+                signer_infos: self.make_signer_infos(sequence, Some(wallet)),
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.first_builder.gas_coin.clone(),
