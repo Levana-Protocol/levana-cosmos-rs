@@ -11,9 +11,6 @@ pub struct CosmosOpt {
     /// Optional gRPC endpoint override
     #[clap(long, env = "COSMOS_GRPC", global = true)]
     pub cosmos_grpc: Option<String>,
-    /// Optional RPC endpoint override
-    #[clap(long, env = "COSMOS_RPC", global = true)]
-    pub cosmos_rpc: Option<String>,
     /// Optional chain ID override
     #[clap(long, env = "COSMOS_CHAIN_ID", global = true)]
     pub chain_id: Option<String>,
@@ -34,7 +31,6 @@ impl CosmosOpt {
         let CosmosOpt {
             network,
             cosmos_grpc,
-            cosmos_rpc,
             chain_id,
             gas_multiplier,
             referer_header,
@@ -43,9 +39,6 @@ impl CosmosOpt {
         let mut builder = network.context("No network specified, either provide the COSMOS_NETWORK env var or --network option")?.builder().await?;
         if let Some(grpc) = cosmos_grpc {
             builder.grpc_url = grpc;
-        }
-        if let Some(rpc) = cosmos_rpc {
-            builder.config.rpc_url = Some(rpc);
         }
         if let Some(chain_id) = chain_id {
             builder.chain_id = chain_id;

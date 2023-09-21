@@ -32,6 +32,7 @@ parking_lot = "0.12"
 clap = { version = "4", features = ["derive", "env"], optional = true }
 bip39 = "2"
 bb8 = "0.8.1"
+thiserror = "1.0.48"
 
 [features]
 clap = ["dep:clap"]

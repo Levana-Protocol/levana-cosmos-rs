@@ -85,15 +85,7 @@ impl Cosmos {
             let QueryGranterGrantsResponse {
                 mut grants,
                 pagination: pag_res,
-            } = self
-                .inner()
-                .await?
-                .authz_query_client
-                .lock()
-                .await
-                .granter_grants(req)
-                .await?
-                .into_inner();
+            } = self.perform_query(req).await?.into_inner();
             println!("{grants:?}");
             if grants.is_empty() {
                 break Ok(res);
