@@ -171,7 +171,7 @@ impl Cosmos {
                 return Err(e);
             } else {
                 attempt += 1;
-                log::warn!(
+                log::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
                     self.first_builder.config.query_retries
                 );
