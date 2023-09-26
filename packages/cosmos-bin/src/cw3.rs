@@ -23,6 +23,8 @@ fn get_code_id(network: CosmosNetwork, contract_type: ContractType) -> Result<u6
         (CosmosNetwork::OsmosisMainnet, ContractType::Cw4Group) => Ok(101),
         (CosmosNetwork::SeiMainnet, ContractType::Cw3Flex) => Ok(46),
         (CosmosNetwork::SeiMainnet, ContractType::Cw4Group) => Ok(47),
+        (CosmosNetwork::InjectiveMainnet, ContractType::Cw3Flex) => Ok(124),
+        (CosmosNetwork::InjectiveMainnet, ContractType::Cw4Group) => Ok(125),
         _ => Err(anyhow::anyhow!(
             "No code ID found for combo {network}/{contract_type:?}"
         )),
