@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use cosmos::{Address, Cosmos};
 
@@ -125,15 +125,22 @@ async fn archive_check(cosmos: Cosmos, start_block: i64, end_block: Option<i64>)
         }
     };
     anyhow::ensure!(end_block >= start_block);
-    for block in start_block..=end_block {
-        log::info!("Checking block {block}");
-        let block = cosmos.get_block_info(block).await?;
-        for txhash in block.txhashes {
-            cosmos
-                .get_transaction_body(&txhash)
-                .await
-                .with_context(|| format!("Unable to get transaction {txhash}"))?;
-        }
+    for block_height in start_block..=end_block {
+        log::info!("Checking block {block_height}");
+        match cosmos.get_block_info(block_height).await {
+            Ok(block) => {
+                for txhash in block.txhashes {
+                    if let Err(e) = cosmos.get_transaction_body(&txhash).await {
+                        log::error!("Error while getting transaction {txhash}: {e:?}");
+                        println!("Missing transaction: {txhash} in block: {block_height}");
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Error while processing block {block_height}: {e:?}");
+                println!("Missing block: {block_height}");
+            }
+        };
     }
     Ok(())
 }
