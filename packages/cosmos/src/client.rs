@@ -130,6 +130,7 @@ impl Cosmos {
         &self,
         height: Option<u64>,
         req: Request,
+        should_retry: bool,
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
         let mut attempt = 0;
         loop {
@@ -167,7 +168,7 @@ impl Cosmos {
                     PerformQueryError::Timeout(e)
                 }
             };
-            if attempt >= self.first_builder.config.query_retries {
+            if attempt >= self.first_builder.config.query_retries || !should_retry {
                 return Err(e);
             } else {
                 attempt += 1;
@@ -548,6 +549,7 @@ impl Cosmos {
                 QueryAccountRequest {
                     address: address.into(),
                 },
+                true,
             )
             .await?
             .into_inner();
@@ -583,6 +585,7 @@ impl Cosmos {
                         address: address.clone(),
                         pagination: pagination.take(),
                     },
+                    true,
                 )
                 .await?
                 .into_inner();
@@ -614,6 +617,7 @@ impl Cosmos {
                     address: address.into(),
                     query_data: query_data.into(),
                 },
+                true,
             )
             .await?
             .into_inner();
@@ -633,6 +637,7 @@ impl Cosmos {
                     address: address.into(),
                     query_data: query_data.into(),
                 },
+                true,
             )
             .await?
             .into_inner()
@@ -651,6 +656,7 @@ impl Cosmos {
                     address: address.into(),
                     query_data: key.into(),
                 },
+                true,
             )
             .await?
             .into_inner()
@@ -670,6 +676,7 @@ impl Cosmos {
                     address: address.into(),
                     query_data: key.into(),
                 },
+                true,
             )
             .await?
             .into_inner()
@@ -678,7 +685,7 @@ impl Cosmos {
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
-            .perform_query(None, QueryCodeRequest { code_id })
+            .perform_query(None, QueryCodeRequest { code_id }, true)
             .await?;
         Ok(res.into_inner().data)
     }
@@ -700,6 +707,7 @@ impl Cosmos {
                 GetTxRequest {
                     hash: txhash.clone(),
                 },
+                true,
             )
             .await
             .with_context(|| format!("Unable to get transaction {txhash}"))?
@@ -728,6 +736,7 @@ impl Cosmos {
                     GetTxRequest {
                         hash: txhash.clone(),
                     },
+                    false,
                 )
                 .await;
             match txres {
@@ -784,6 +793,7 @@ impl Cosmos {
                     }),
                     order_by: OrderBy::Asc as i32,
                 },
+                true,
             )
             .await?;
         Ok(x.into_inner()
@@ -825,6 +835,7 @@ impl Cosmos {
             QueryContractInfoRequest {
                 address: address.into(),
             },
+            true,
         )
         .await?
         .into_inner()
@@ -843,6 +854,7 @@ impl Cosmos {
                     address: address.into(),
                     pagination: None,
                 },
+                true,
             )
             .await?
             .into_inner())
@@ -850,7 +862,7 @@ impl Cosmos {
 
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .perform_query(None, GetBlockByHeightRequest { height })
+            .perform_query(None, GetBlockByHeightRequest { height }, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -907,7 +919,7 @@ impl Cosmos {
 
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
-            .perform_query(None, GetLatestBlockRequest {})
+            .perform_query(None, GetLatestBlockRequest {}, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -1421,7 +1433,7 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
-        let simres = cosmos.perform_query(None, simulate_req).await;
+        let simres = cosmos.perform_query(None, simulate_req, true).await;
         // PERP-283: detect account sequence mismatches
         let simres = match simres {
             Ok(simres) => simres.into_inner(),
@@ -1504,6 +1516,7 @@ impl TxBuilder {
                         tx_bytes: tx.encode_to_vec(),
                         mode: BroadcastMode::Sync as i32,
                     },
+                    true,
                 )
                 .await
                 .context("Unable to broadcast transaction")?
