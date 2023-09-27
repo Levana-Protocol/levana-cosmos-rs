@@ -250,7 +250,7 @@ pub struct CosmosInner {
     is_broken: bool,
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CosmosNetwork {
     JunoTestnet,
     JunoMainnet,
