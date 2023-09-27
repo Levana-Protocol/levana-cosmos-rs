@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use cosmos::{Address, Cosmos};
 
@@ -23,6 +23,13 @@ pub(crate) enum Subcommand {
     CodeIdFromTx { txhash: String },
     /// Get the contract address instantiated in a given transaction
     ContractAddressFromTx { txhash: String },
+    /// Check that all transaction data is available on an archive node
+    ArchiveCheck {
+        #[clap(long)]
+        start_block: i64,
+        #[clap(long)]
+        end_block: Option<i64>,
+    },
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -36,6 +43,10 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
         Subcommand::ContractAddressFromTx { txhash } => {
             contract_address_from_tx(cosmos, txhash).await
         }
+        Subcommand::ArchiveCheck {
+            start_block,
+            end_block,
+        } => archive_check(cosmos, start_block, end_block).await,
     }
 }
 
@@ -101,5 +112,28 @@ async fn contract_address_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> 
     let (_, tx) = cosmos.wait_for_transaction_body(txhash).await?;
     let contract = cosmos.parse_contract_address_from_instantiate(&tx)?;
     log::info!("Contract address: {contract}");
+    Ok(())
+}
+
+async fn archive_check(cosmos: Cosmos, start_block: i64, end_block: Option<i64>) -> Result<()> {
+    let end_block = match end_block {
+        Some(end_block) => end_block,
+        None => {
+            let end_block = cosmos.get_latest_block_info().await?.height;
+            log::info!("Checking until block height {end_block}");
+            end_block
+        }
+    };
+    anyhow::ensure!(end_block >= start_block);
+    for block in start_block..=end_block {
+        log::info!("Checking block {block}");
+        let block = cosmos.get_block_info(block).await?;
+        for txhash in block.txhashes {
+            cosmos
+                .get_transaction_body(&txhash)
+                .await
+                .with_context(|| format!("Unable to get transaction {txhash}"))?;
+        }
+    }
     Ok(())
 }
