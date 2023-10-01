@@ -1094,7 +1094,7 @@ impl CosmosBuilder {
         let gas_config: SeiGasConfig = resp.json().await?;
 
         Ok(CosmosBuilder {
-            grpc_url: "https://test-sei-grpc.kingnodes.com".to_owned(),
+            grpc_url: "https://grpc-testnet.sei-apis.com".to_owned(),
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
             address_type: AddressType::Sei,
