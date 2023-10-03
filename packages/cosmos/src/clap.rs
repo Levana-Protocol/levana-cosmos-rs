@@ -56,10 +56,10 @@ impl CosmosOpt {
     }
 
     pub async fn build(&self) -> Result<Cosmos> {
-        self.builder().await?.build().await
+        self.builder().await?.build(None).await
     }
 
     pub async fn build_lazy(&self) -> Result<Cosmos> {
-        Ok(self.builder().await?.build_lazy().await)
+        Ok(self.builder().await?.build_lazy(None).await)
     }
 }

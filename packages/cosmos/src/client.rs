@@ -46,7 +46,9 @@ use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: Pool<CosmosBuilders>,
+    prmary_pool: Pool<CosmosBuilders>,
+    more_pool: Option<Pool<CosmosBuilders>>,
+    more_pool_count: usize,
     first_builder: Arc<CosmosBuilder>,
 }
 
@@ -65,6 +67,10 @@ impl CosmosBuilders {
 
     pub fn add(&mut self, builder: impl Into<Arc<CosmosBuilder>>) {
         self.builders.push(builder.into());
+    }
+
+    pub fn get_count(&self) -> usize {
+        self.builders.len()
     }
 }
 
@@ -134,20 +140,52 @@ impl Cosmos {
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
         let mut attempt = 0;
         loop {
-            let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
+            let mut cosmos_inner = self
+                .prmary_pool
+                .get()
+                .await
+                .map_err(PerformQueryError::Pool)?;
             let duration = tokio::time::Duration::from_secs(
                 self.first_builder.config.query_timeout_seconds.into(),
             );
-            let mut req = tonic::Request::new(req.clone());
+            let mut treq = tonic::Request::new(req.clone());
             if let Some(height) = height {
                 // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-                let metadata = req.metadata_mut();
+                let metadata = treq.metadata_mut();
                 metadata.insert("x-cosmos-block-height", height.into());
             }
             let res =
-                tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+                tokio::time::timeout(duration, GrpcRequest::perform(treq, &mut cosmos_inner)).await;
+
+            if let Ok(Ok(x)) = res {
+                return Ok(x);
+            } else if self.more_pool.is_some() {
+                let more_pool_opt_ref = self.more_pool.as_ref();
+                let more_pool_ref = more_pool_opt_ref.expect("This cannot happen");
+                for _ in 0..self.more_pool_count {
+                    let mut cosmos_inner =
+                        more_pool_ref.get().await.map_err(PerformQueryError::Pool)?;
+                    let mut treq = tonic::Request::new(req.clone());
+                    if let Some(height) = height {
+                        // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
+                        let metadata = treq.metadata_mut();
+                        metadata.insert("x-cosmos-block-height", height.into());
+                    }
+                    let res_more = tokio::time::timeout(
+                        duration,
+                        GrpcRequest::perform(treq, &mut cosmos_inner),
+                    )
+                    .await;
+                    if let Ok(Ok(x)) = res_more {
+                        return Ok(x);
+                    } else {
+                        cosmos_inner.is_broken = true; // Should we check backups further?
+                    }
+                }
+            }
+            // If it gets here, all connections failed. But only furtherly handle primary errors.
+
             let e = match res {
-                Ok(Ok(x)) => return Ok(x),
                 Ok(Err(err)) => {
                     // Basic sanity check that we can still talk to the blockchain
                     match GrpcRequest::perform(
@@ -167,6 +205,7 @@ impl Cosmos {
                     cosmos_inner.is_broken = true;
                     PerformQueryError::Timeout(e)
                 }
+                _ => panic!("This cannot happen"),
             };
             if attempt >= self.first_builder.config.query_retries || !should_retry {
                 return Err(e);
@@ -345,15 +384,16 @@ impl Default for CosmosConfig {
 }
 
 impl CosmosBuilder {
-    pub async fn build(self) -> Result<Cosmos> {
-        let cosmos = self.build_lazy().await;
+    pub async fn build(self, more: Option<CosmosBuilders>) -> Result<Cosmos> {
+        let cosmos = self.build_lazy(more).await;
         // Force strict connection
+        // Retry 50 times like indexer did?
         cosmos.sanity_check().await?;
         Ok(cosmos)
     }
 
-    pub async fn build_lazy(self) -> Cosmos {
-        CosmosBuilders::from(self).build_lazy().await
+    pub async fn build_lazy(self, more: Option<CosmosBuilders>) -> Cosmos {
+        CosmosBuilders::from(self).build_lazy(more).await
     }
 }
 
@@ -366,8 +406,17 @@ impl From<CosmosBuilder> for CosmosBuilders {
     }
 }
 
+impl From<Vec<CosmosBuilder>> for CosmosBuilders {
+    fn from(v: Vec<CosmosBuilder>) -> Self {
+        CosmosBuilders {
+            builders: v.into_iter().map(|x| x.into()).collect(),
+            next_index: parking_lot::Mutex::new(0),
+        }
+    }
+}
+
 impl CosmosBuilders {
-    pub async fn build_lazy(self) -> Cosmos {
+    pub async fn build_lazy(self, more: Option<CosmosBuilders>) -> Cosmos {
         let first_builder = self.get_first_builder().clone();
         let mut builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
             first_builder.config.idle_timeout_seconds.into(),
@@ -375,12 +424,33 @@ impl CosmosBuilders {
         if let Some(count) = first_builder.config.connection_count {
             builder = builder.max_size(count);
         }
-        let pool = builder
+        let p_pool = builder
             .build(self)
             .await
             .expect("Unexpected pool build error");
+
+        let m_pool_count = more.as_ref().map(|x| x.get_count()).unwrap_or_default();
+
+        let m_pool = if let Some(more_) = more {
+            let mut builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
+                first_builder.config.idle_timeout_seconds.into(),
+            )));
+            if let Some(count) = first_builder.config.connection_count {
+                builder = builder.max_size(count);
+            }
+            Some(
+                builder
+                    .build(more_)
+                    .await
+                    .expect("Unexpected pool build error"),
+            )
+        } else {
+            None
+        };
         Cosmos {
-            pool,
+            prmary_pool: p_pool,
+            more_pool: m_pool,
+            more_pool_count: m_pool_count,
             first_builder,
         }
     }
@@ -472,7 +542,7 @@ impl FromStr for CosmosNetwork {
 
 impl CosmosNetwork {
     pub async fn connect(self) -> Result<Cosmos> {
-        self.builder().await?.build().await
+        self.builder().await?.build(None).await
     }
 
     pub async fn builder(self) -> Result<CosmosBuilder> {
