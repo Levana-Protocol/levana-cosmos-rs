@@ -1245,6 +1245,22 @@ impl TxBuilder {
         Ok(())
     }
 
+    pub fn add_migrate_message_mut(
+        &mut self,
+        contract: impl HasAddress,
+        wallet: impl HasAddress,
+        code_id: u64,
+        msg: impl serde::Serialize,
+    ) -> Result<()> {
+        self.add_message_mut(MsgMigrateContract {
+            sender: wallet.get_address_string(),
+            contract: contract.get_address_string(),
+            code_id,
+            msg: serde_json::to_vec(&msg)?,
+        });
+        Ok(())
+    }
+
     pub fn set_memo(mut self, memo: impl Into<String>) -> Self {
         self.memo = Some(memo.into());
         self
@@ -1265,21 +1281,24 @@ impl TxBuilder {
     pub async fn simulate(
         &self,
         cosmos: &Cosmos,
-        wallet: impl HasAddress,
+        wallets: &[Address],
     ) -> Result<FullSimulateResponse> {
-        let sequence = match cosmos.get_base_account(wallet.get_address()).await {
-            Ok(account) => account.sequence,
-            Err(err) => {
-                if err.to_string().contains("not found") {
-                    log::warn!(
-                        "Simulating with a non-existent wallet. Setting sequence number to 0"
-                    );
-                    0
-                } else {
-                    return Err(err);
+        let mut sequences = vec![];
+        for wallet in wallets {
+            sequences.push(match cosmos.get_base_account(wallet.get_address()).await {
+                Ok(account) => account.sequence,
+                Err(err) => {
+                    if err.to_string().contains("not found") {
+                        log::warn!(
+                            "Simulating with a non-existent wallet. Setting sequence number to 0"
+                        );
+                        0
+                    } else {
+                        return Err(err);
+                    }
                 }
-            }
-        };
+            });
+        }
 
         // Deal with account sequence errors, overall relevant issue is: https://phobosfinance.atlassian.net/browse/PERP-283
         //
@@ -1290,21 +1309,25 @@ impl TxBuilder {
         //
         // See: https://github.com/cosmos/cosmos-sdk/issues/11597
 
-        Ok(match self.simulate_inner(cosmos, sequence).await {
-            Ok(pair) => pair,
-            Err(ExpectedSequenceError::RealError(e)) => return Err(e),
+        match self.simulate_inner(cosmos, &sequences).await {
+            Ok(pair) => Ok(pair),
+            Err(ExpectedSequenceError::RealError(e)) => Err(e),
             Err(ExpectedSequenceError::NewNumber(x, e)) => {
-                log::warn!("Received an account sequence error while simulating a transaction, retrying with new number {x}: {e:?}");
-                self.simulate_inner(cosmos, x).await?
+                if sequences.len() == 1 {
+                    log::warn!("Received an account sequence error while simulating a transaction, retrying with new number {x}: {e:?}");
+                    Ok(self.simulate_inner(cosmos, &[x]).await?)
+                } else {
+                    Err(e)
+                }
             }
-        })
+        }
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
     /// the multiplier can by adjusted by calling [Cosmos::set_gas_multiplier]
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
-        let simres = self.simulate(cosmos, wallet).await?;
+        let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
         self.inner_sign_and_broadcast(
             cosmos,
             wallet,
@@ -1366,8 +1389,8 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_infos(&self, sequence: u64, wallet: Option<&Wallet>) -> Vec<SignerInfo> {
-        vec![SignerInfo {
+    fn make_signer_info(&self, sequence: u64, wallet: Option<&Wallet>) -> SignerInfo {
+        SignerInfo {
             public_key: Some(cosmos_sdk_proto::Any {
                 type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
                 value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
@@ -1390,7 +1413,7 @@ impl TxBuilder {
                 ),
             }),
             sequence,
-        }]
+        }
     }
 
     /// Make a [TxBody] for this builder
@@ -1408,7 +1431,7 @@ impl TxBuilder {
     async fn simulate_inner(
         &self,
         cosmos: &Cosmos,
-        sequence: u64,
+        sequences: &[u64],
     ) -> Result<FullSimulateResponse, ExpectedSequenceError> {
         let body = self.make_tx_body();
 
@@ -1421,9 +1444,12 @@ impl TxBuilder {
                     payer: "".to_owned(),
                     granter: "".to_owned(),
                 }),
-                signer_infos: self.make_signer_infos(sequence, None),
+                signer_infos: sequences
+                    .iter()
+                    .map(|sequence| self.make_signer_info(*sequence, None))
+                    .collect(),
             }),
-            signatures: vec![vec![]],
+            signatures: sequences.iter().map(|_| vec![]).collect(),
             body: Some(body.clone()),
         };
 
@@ -1482,7 +1508,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: self.make_signer_infos(sequence, Some(wallet)),
+                signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.first_builder.gas_coin.clone(),
@@ -1583,6 +1609,10 @@ impl TxBuilder {
             Err(AttemptError::InsufficientGas(e)) => Err(e.into()),
             Err(AttemptError::Inner(e)) => Err(e),
         }
+    }
+
+    pub fn has_messages(&self) -> bool {
+        !self.messages.is_empty()
     }
 }
 
@@ -1772,6 +1802,7 @@ mod tests {
     }
 }
 
+#[derive(Debug)]
 pub struct FullSimulateResponse {
     pub body: TxBody,
     pub simres: SimulateResponse,

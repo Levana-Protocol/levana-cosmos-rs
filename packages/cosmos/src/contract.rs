@@ -201,7 +201,7 @@ impl Contract {
             builder = builder.set_memo(memo);
         }
         builder
-            .simulate(&self.client, wallet)
+            .simulate(&self.client, &[wallet.get_address()])
             .await
             .map(|x| x.simres)
     }
