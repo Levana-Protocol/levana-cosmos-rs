@@ -609,7 +609,13 @@ impl Subcommand {
 
 fn gen_wallet(address_type: &str) -> Result<()> {
     let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressType::Cosmos)?;
+    let wallet = cosmos::Wallet::from_phrase(
+        &phrase,
+        match address_type {
+            "inj" => AddressType::Injective,
+            _ => AddressType::Cosmos,
+        },
+    )?;
     println!("Mnemonic: {phrase}");
     let address = AddressAnyHrp {
         raw_address: *wallet.address().raw(),

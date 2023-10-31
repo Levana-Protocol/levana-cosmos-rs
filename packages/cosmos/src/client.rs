@@ -38,7 +38,7 @@ use tonic::{
     Status,
 };
 
-use crate::{address::HasAddressType, Address, AddressType, HasAddress};
+use crate::{address::HasAddressType, wallet::WalletPublicKey, Address, AddressType, HasAddress};
 
 use self::query::GrpcRequest;
 
@@ -1364,7 +1364,7 @@ impl TxBuilder {
             .sign_and_broadcast_with(
                 cosmos,
                 wallet,
-                base_account.account_number,
+                &base_account,
                 base_account.sequence,
                 body.clone(),
                 gas_to_request,
@@ -1375,36 +1375,55 @@ impl TxBuilder {
             Err(ExpectedSequenceError::RealError(e)) => Err(e),
             Err(ExpectedSequenceError::NewNumber(x, e)) => {
                 log::warn!("Received an account sequence error while broadcasting a transaction, retrying with new number {x}: {e:?}");
-                self.sign_and_broadcast_with(
-                    cosmos,
-                    wallet,
-                    base_account.account_number,
-                    x,
-                    body,
-                    gas_to_request,
-                )
-                .await
-                .map_err(|x| x.into())
+                self.sign_and_broadcast_with(cosmos, wallet, &base_account, x, body, gas_to_request)
+                    .await
+                    .map_err(|x| x.into())
             }
         }
     }
 
     fn make_signer_info(&self, sequence: u64, wallet: Option<&Wallet>) -> SignerInfo {
         SignerInfo {
-            public_key: Some(cosmos_sdk_proto::Any {
-                type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
-                value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
-                    sum: Some(
-                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
-                            match wallet {
-                                None => vec![],
-                                Some(wallet) => wallet.public_key_bytes().to_owned(),
-                            },
+            public_key: match wallet {
+                // No wallet/base account. We're simulating. Fill in a dummy value.
+                None => Some(cosmos_sdk_proto::Any {
+                    type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
+                    value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                        sum: Some(
+                            cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
                         ),
-                    ),
+                    }
+                    .encode_to_vec(),
+                }),
+                Some(wallet) => {
+                    match wallet.public_key {
+                        // Use the Cosmos method of public key
+                        WalletPublicKey::Cosmos(public_key) => Some(cosmos_sdk_proto::Any {
+                            type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
+                            value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                                sum: Some(
+                                    cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                                        public_key.to_vec(),
+                                    ),
+                                ),
+                            }
+                            .encode_to_vec(),
+                        }),
+                        // Use the Injective method of public key
+                        WalletPublicKey::Ethereum(public_key) => Some(cosmos_sdk_proto::Any {
+                            type_url: "/injective.crypto.v1beta1.ethsecp256k1.PubKey".to_owned(),
+                            value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                                sum: Some(
+                                    cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                                        public_key.to_vec(),
+                                    ),
+                                ),
+                            }
+                            .encode_to_vec(),
+                        }),
+                    }
                 }
-                .encode_to_vec(),
-            }),
+            },
             mode_info: Some(ModeInfo {
                 sum: Some(
                     cosmos_sdk_proto::cosmos::tx::v1beta1::mode_info::Sum::Single(
@@ -1491,7 +1510,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         wallet: &Wallet,
-        account_number: u64,
+        base_account: &BaseAccount,
         sequence: u64,
         body: TxBody,
         gas_to_request: u64,
@@ -1524,7 +1543,7 @@ impl TxBuilder {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
                 chain_id: cosmos.first_builder.chain_id.clone(),
-                account_number,
+                account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
             let signature = wallet.sign_bytes(&sign_doc_bytes);
