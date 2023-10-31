@@ -1386,7 +1386,15 @@ impl TxBuilder {
     fn make_signer_info(&self, sequence: u64, base_account: Option<&BaseAccount>) -> SignerInfo {
         SignerInfo {
             public_key: match base_account {
-                Some(base_account) => base_account.pub_key.clone(),
+                Some(base_account) => {
+                    base_account
+                        .pub_key
+                        .as_ref()
+                        .map(|pubkey| prost_types::Any {
+                            type_url: pubkey.type_url.clone(),
+                            value: pubkey.value.clone(),
+                        })
+                }
                 None => Some(cosmos_sdk_proto::Any {
                     type_url: "/injective.crypto.v1beta1.ethsecp256k1.PubKey".to_owned(),
                     value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
@@ -1511,6 +1519,11 @@ impl TxBuilder {
                     granter: "".to_owned(),
                 }),
             };
+
+            println!(
+                "{:?}",
+                hex::encode(&auth_info.signer_infos[0].public_key.as_ref().unwrap().value)
+            );
 
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),

@@ -256,6 +256,9 @@ impl RawWallet {
                 eth_address_from_public_key(&public_key_bytes_uncompressed)
             }
         };
+        println!("public key: {public_key_bytes:?}");
+        println!("public key unc: {public_key_bytes_uncompressed:?}");
+        println!("raw address: {raw_address:?}");
         let address = RawAddress::from(raw_address).for_chain(type_);
 
         Ok(Wallet {
@@ -326,8 +329,9 @@ impl Wallet {
     }
 
     pub fn sign_bytes(&self, msg: &[u8]) -> Signature {
-        let msg = sha256::Hash::hash(msg);
-        let msg = Message::from_slice(msg.as_ref()).unwrap();
+        // let msg = sha256::Hash::hash(msg);
+        // let msg = Message::from_slice(msg.as_ref()).unwrap();
+        let msg = Message::from_slice(keccak(msg).as_slice()).unwrap();
         global_secp().sign_ecdsa(&msg, &self.privkey.private_key)
     }
 
@@ -393,6 +397,8 @@ fn cosmos_address_from_public_key(public_key: &[u8]) -> [u8; 20] {
 fn eth_address_from_public_key(public_key: &[u8; 65]) -> [u8; 20] {
     assert_eq!(public_key[0], 4);
     let hash = keccak(&public_key[1..]);
+
+    println!("hash {hash:?}");
 
     let mut output = [0u8; 20];
     output.copy_from_slice(&hash[12..]);
