@@ -15,6 +15,7 @@ use hkd32::mnemonic::Phrase;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 use rand::Rng;
+use tiny_keccak::{Hasher, Keccak};
 
 use crate::address::RawAddress;
 use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
@@ -129,7 +130,7 @@ impl DerivationPathConfig {
     }
 
     pub const fn ethereum_numbered(index: u64) -> Self {
-        DerivationPathConfig::Three([
+        DerivationPathConfig::Four([
             DerivationPathComponent {
                 value: 60,
                 hardened: true,
@@ -137,6 +138,10 @@ impl DerivationPathConfig {
             DerivationPathComponent {
                 value: 0,
                 hardened: true,
+            },
+            DerivationPathComponent {
+                value: 0,
+                hardened: false,
             },
             DerivationPathComponent {
                 value: index,
@@ -240,9 +245,16 @@ impl RawWallet {
         )?;
         let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
         let public_key = ExtendedPubKey::from_priv(secp, &privkey);
-
         let public_key_bytes = public_key.public_key.serialize();
-        let raw_address = address_from_public_key(&public_key_bytes);
+
+        let raw_address = match type_.public_key_method() {
+            crate::address::PublicKeyMethod::Cosmos => {
+                cosmos_address_from_public_key(&public_key_bytes)
+            }
+            crate::address::PublicKeyMethod::Ethereum => {
+                eth_address_from_public_key(&public_key.public_key.serialize_uncompressed())
+            }
+        };
         let address = RawAddress::from(raw_address).for_chain(type_);
 
         Ok(Wallet {
@@ -250,6 +262,8 @@ impl RawWallet {
             privkey,
             // pubkey: public_key,
             public_key_bytes,
+            #[cfg(test)]
+            public_key_bytes_uncompressed: public_key.public_key.serialize_uncompressed(),
         })
     }
 }
@@ -262,6 +276,8 @@ pub struct Wallet {
     privkey: ExtendedPrivKey,
     // pubkey: ExtendedPubKey,
     public_key_bytes: [u8; 33],
+    #[cfg(test)]
+    public_key_bytes_uncompressed: [u8; 65],
 }
 
 fn global_secp() -> &'static Secp256k1<All> {
@@ -366,9 +382,18 @@ impl Wallet {
     }
 }
 
-fn address_from_public_key(public_key: &[u8]) -> [u8; 20] {
+fn cosmos_address_from_public_key(public_key: &[u8]) -> [u8; 20] {
     let sha = sha256::Hash::hash(public_key);
     ripemd160::Hash::hash(sha.as_ref()).into_inner()
+}
+
+fn eth_address_from_public_key(public_key: &[u8; 65]) -> [u8; 20] {
+    assert_eq!(public_key[0], 4);
+    let hash = keccak(&public_key[1..]);
+
+    let mut output = [0u8; 20];
+    output.copy_from_slice(&hash[12..]);
+    output
 }
 
 impl Display for Wallet {
@@ -380,5 +405,124 @@ impl Display for Wallet {
 impl HasAddress for Wallet {
     fn get_address(&self) -> Address {
         self.address
+    }
+}
+
+fn keccak(input: &[u8]) -> [u8; 32] {
+    let mut sha3 = Keccak::v256();
+    sha3.update(input);
+    let mut output = [0; 32];
+    sha3.finalize(&mut output);
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::secp256k1::SecretKey;
+
+    use super::*;
+
+    #[test]
+    fn test_ethereum_from_seed_phrase() {
+        const PHRASE: &str =
+            "entire clap mystery embrace blame doll volcano face trust mom cruel load";
+        const ADDRESS: &str = "0x00980adc74d3d2053c011cb0528fbe1fa91a352c";
+        let address = ADDRESS.chars().skip(2).collect::<String>();
+        let wallet = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        let eth_address = eth_address_from_public_key(&wallet.public_key_bytes_uncompressed);
+        assert_eq!(address, hex::encode(eth_address));
+    }
+
+    #[test]
+    fn test_osmosis_and_injective_addresses() {
+        const PHRASE: &str =
+            "dilemma flavor noise circle voyage vacant amateur mass morning tunnel unhappy entire";
+        let expected_osmosis: Address = "osmo1t3mvqjxvfxlstyzfskl37zqgu5ftq0rttpqqc5"
+            .parse()
+            .unwrap();
+        let expected_injective: Address = "inj15sws48vv977kmgawqfegptw0pqs7cfeq7mpr4c"
+            .parse()
+            .unwrap();
+        let osmosis = Wallet::from_phrase(PHRASE, AddressType::Osmo).unwrap();
+        let injective = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        assert_eq!(expected_osmosis, osmosis.get_address());
+        assert_eq!(expected_injective, injective.get_address());
+    }
+
+    // https://www.geeksforgeeks.org/how-to-create-an-ethereum-wallet-address-from-a-private-key/
+    // Private key: 4f3edf983ac986a65a342ce7c78d9ac076d3b113bce9c46f30d7d25171b32b1d
+    // Public key: 04c1573f1528638ae14cbe04a74e6583c5562d59214223762c1a11121e24619cbc09d27a7a1cb989dd801cc028dd8225f8e2d2fd57d852b5bf697112f69b6229d1
+    // Address: 0xAf3CD5c36B97E9c28c263dC4639c6d7d53303A13
+    #[test]
+    fn test_ethereum_address() {
+        const PRIVATE_KEY: &str =
+            "4f3edf983ac986a65a342ce7c78d9ac076d3b113bce9c46f30d7d25171b32b1d";
+        const PUBLIC_KEY: &str = "04c1573f1528638ae14cbe04a74e6583c5562d59214223762c1a11121e24619cbc09d27a7a1cb989dd801cc028dd8225f8e2d2fd57d852b5bf697112f69b6229d1";
+        const ADDRESS: &str = "0xAf3CD5c36B97E9c28c263dC4639c6d7d53303A13";
+
+        let public_key_from_str = hex::decode(PUBLIC_KEY).unwrap();
+
+        let secret_key = SecretKey::from_str(PRIVATE_KEY).unwrap();
+        let secp = global_secp();
+        let public_key = secret_key.public_key(&secp);
+        let public_key_bytes = public_key.serialize_uncompressed();
+
+        assert_eq!(public_key_from_str.as_slice(), &public_key_bytes);
+
+        // https://tms-dev-blog.com/build-a-crypto-wallet-using-rust/#A_Simple_Rust_wallet
+        let eth_address = eth_address_from_public_key(&public_key_bytes);
+        assert_eq!(
+            ADDRESS
+                .chars()
+                .skip(2)
+                .map(|mut c| {
+                    c.make_ascii_lowercase();
+                    c
+                })
+                .collect::<String>(),
+            hex::encode(eth_address)
+        );
+        // debug_assert_eq!(public_key_bytes[0], 0x04);
+        // let mut sha3 = Keccak::v256();
+        // sha3.update(&public_key_bytes[1..]);
+        // let mut hash = [0u8; 32];
+        // sha3.finalize(&mut hash);
+        // panic!("{}", hex::encode(&hash));
+        // panic!("{}", hex::encode(&hash[12..]));
+    }
+
+    #[test]
+    fn test_ethereum_hashing() {
+        // https://github.com/ethereumbook/ethereumbook/blob/develop/04keys-addresses.asciidoc?ref=tms-dev-blog.com#ethereum-addresses
+        const PRIVATE_KEY_STR: &str =
+            "f8f8a2f43c8376ccb0871305060d7b27b0554d2cc72bccf41b2705608452f315";
+        const PUBLIC_KEY_STR: &str = "046e145ccef1033dea239875dd00dfb4fee6e3348b84985c92f103444683bae07b83b5c38e5e2b0c8529d7fa3f64d46daa1ece2d9ac14cab9477d042c84c32ccd0";
+        const PUBLIC_KEY_HASHED_STR: &str =
+            "2a5bc342ed616b5ba5732269001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+
+        let private_key = hex::decode(PRIVATE_KEY_STR).unwrap();
+        let private_key1 = SecretKey::from_str(PRIVATE_KEY_STR).unwrap();
+        let private_key2 = SecretKey::from_slice(&private_key).unwrap();
+        assert_eq!(private_key1, private_key2);
+
+        let secp = global_secp();
+        let public_key = private_key1.public_key(&secp);
+        let public_key_bytes = public_key.serialize_uncompressed();
+
+        assert_eq!(PUBLIC_KEY_STR, &hex::encode(&public_key_bytes));
+        assert_eq!(
+            PUBLIC_KEY_HASHED_STR,
+            hex::encode(keccak(&public_key_bytes[1..]))
+        );
+    }
+
+    #[test]
+    fn test_keccak() {
+        // https://github.com/ethereumbook/ethereumbook/blob/develop/04keys-addresses.asciidoc?ref=tms-dev-blog.com#which-hash-function-am-i-using
+        let hash = keccak(&[]);
+        assert_eq!(
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+            hex::encode(&hash)
+        );
     }
 }

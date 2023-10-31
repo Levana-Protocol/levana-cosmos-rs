@@ -172,18 +172,30 @@ impl AddressType {
         }
     }
 
-    pub fn default_derivation_path(self) -> Arc<DerivationPath> {
+    pub(crate) fn public_key_method(self) -> PublicKeyMethod {
         match self {
             AddressType::Cosmos
             | AddressType::Juno
             | AddressType::Osmo
+            | AddressType::Wasm
             | AddressType::Sei
-            | AddressType::Stargaze
-            | AddressType::Wasm => DerivationPathConfig::cosmos_numbered(0),
-            AddressType::Injective => DerivationPathConfig::ethereum_numbered(0),
+            | AddressType::Stargaze => PublicKeyMethod::Cosmos,
+            AddressType::Injective => PublicKeyMethod::Ethereum,
+        }
+    }
+
+    pub fn default_derivation_path(self) -> Arc<DerivationPath> {
+        match self.public_key_method() {
+            PublicKeyMethod::Cosmos => DerivationPathConfig::cosmos_numbered(0),
+            PublicKeyMethod::Ethereum => DerivationPathConfig::ethereum_numbered(0),
         }
         .as_derivation_path()
     }
+}
+
+pub(crate) enum PublicKeyMethod {
+    Cosmos,
+    Ethereum,
 }
 
 impl FromStr for AddressType {
