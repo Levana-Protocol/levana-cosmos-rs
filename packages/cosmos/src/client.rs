@@ -1382,11 +1382,7 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_info(
-        &self,
-        sequence: u64,
-        wallet: Option<(&Wallet, &BaseAccount)>,
-    ) -> SignerInfo {
+    fn make_signer_info(&self, sequence: u64, wallet: Option<&Wallet>) -> SignerInfo {
         SignerInfo {
             public_key: match wallet {
                 // No wallet/base account. We're simulating. Fill in a dummy value.
@@ -1399,7 +1395,7 @@ impl TxBuilder {
                     }
                     .encode_to_vec(),
                 }),
-                Some((wallet, base_account)) => {
+                Some(wallet) => {
                     match wallet.public_key {
                         // Use the Cosmos method of public key
                         WalletPublicKey::Cosmos(public_key) => Some(cosmos_sdk_proto::Any {
@@ -1413,16 +1409,18 @@ impl TxBuilder {
                             }
                             .encode_to_vec(),
                         }),
-                        // Take the public key directly from base account, used for Injective
-                        WalletPublicKey::Ethereum(_) => {
-                            base_account
-                                .pub_key
-                                .as_ref()
-                                .map(|pubkey| prost_types::Any {
-                                    type_url: pubkey.type_url.clone(),
-                                    value: pubkey.value.clone(),
-                                })
-                        }
+                        // Use the Injective method of public key
+                        WalletPublicKey::Ethereum(public_key) => Some(cosmos_sdk_proto::Any {
+                            type_url: "/injective.crypto.v1beta1.ethsecp256k1.PubKey".to_owned(),
+                            value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                                sum: Some(
+                                    cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                                        public_key.to_vec(),
+                                    ),
+                                ),
+                            }
+                            .encode_to_vec(),
+                        }),
                     }
                 }
             },
@@ -1529,7 +1527,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: vec![self.make_signer_info(sequence, Some((wallet, base_account)))],
+                signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.first_builder.gas_coin.clone(),
