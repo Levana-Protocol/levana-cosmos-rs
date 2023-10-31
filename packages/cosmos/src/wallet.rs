@@ -246,13 +246,14 @@ impl RawWallet {
         let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
         let public_key = ExtendedPubKey::from_priv(secp, &privkey);
         let public_key_bytes = public_key.public_key.serialize();
+        let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
 
         let raw_address = match type_.public_key_method() {
             crate::address::PublicKeyMethod::Cosmos => {
                 cosmos_address_from_public_key(&public_key_bytes)
             }
             crate::address::PublicKeyMethod::Ethereum => {
-                eth_address_from_public_key(&public_key.public_key.serialize_uncompressed())
+                eth_address_from_public_key(&public_key_bytes_uncompressed)
             }
         };
         let address = RawAddress::from(raw_address).for_chain(type_);
@@ -262,8 +263,7 @@ impl RawWallet {
             privkey,
             // pubkey: public_key,
             public_key_bytes,
-            #[cfg(test)]
-            public_key_bytes_uncompressed: public_key.public_key.serialize_uncompressed(),
+            public_key_bytes_uncompressed,
         })
     }
 }
@@ -276,7 +276,6 @@ pub struct Wallet {
     privkey: ExtendedPrivKey,
     // pubkey: ExtendedPubKey,
     public_key_bytes: [u8; 33],
-    #[cfg(test)]
     public_key_bytes_uncompressed: [u8; 65],
 }
 
@@ -320,6 +319,10 @@ impl Wallet {
 
     pub fn public_key_bytes(&self) -> &[u8] {
         &self.public_key_bytes
+    }
+
+    pub fn public_key_bytes_uncompressed(&self) -> &[u8] {
+        &self.public_key_bytes_uncompressed
     }
 
     pub fn sign_bytes(&self, msg: &[u8]) -> Signature {

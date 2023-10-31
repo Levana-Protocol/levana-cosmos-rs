@@ -558,6 +558,7 @@ impl Cosmos {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
                 res.account.context("no eth account found")?.value.as_ref(),
             )?;
+            println!("{eth_account:?}");
             eth_account.base_account.context("no base account found")?
         } else {
             prost::Message::decode(res.account.context("no account found")?.value.as_ref())?
@@ -1364,7 +1365,7 @@ impl TxBuilder {
             .sign_and_broadcast_with(
                 cosmos,
                 wallet,
-                base_account.account_number,
+                &base_account,
                 base_account.sequence,
                 body.clone(),
                 gas_to_request,
@@ -1375,36 +1376,27 @@ impl TxBuilder {
             Err(ExpectedSequenceError::RealError(e)) => Err(e),
             Err(ExpectedSequenceError::NewNumber(x, e)) => {
                 log::warn!("Received an account sequence error while broadcasting a transaction, retrying with new number {x}: {e:?}");
-                self.sign_and_broadcast_with(
-                    cosmos,
-                    wallet,
-                    base_account.account_number,
-                    x,
-                    body,
-                    gas_to_request,
-                )
-                .await
-                .map_err(|x| x.into())
+                self.sign_and_broadcast_with(cosmos, wallet, &base_account, x, body, gas_to_request)
+                    .await
+                    .map_err(|x| x.into())
             }
         }
     }
 
-    fn make_signer_info(&self, sequence: u64, wallet: Option<&Wallet>) -> SignerInfo {
+    fn make_signer_info(&self, sequence: u64, base_account: Option<&BaseAccount>) -> SignerInfo {
         SignerInfo {
-            public_key: Some(cosmos_sdk_proto::Any {
-                type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
-                value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
-                    sum: Some(
-                        cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
-                            match wallet {
-                                None => vec![],
-                                Some(wallet) => wallet.public_key_bytes().to_owned(),
-                            },
+            public_key: match base_account {
+                Some(base_account) => base_account.pub_key.clone(),
+                None => Some(cosmos_sdk_proto::Any {
+                    type_url: "/injective.crypto.v1beta1.ethsecp256k1.PubKey".to_owned(),
+                    value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                        sum: Some(
+                            cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
                         ),
-                    ),
-                }
-                .encode_to_vec(),
-            }),
+                    }
+                    .encode_to_vec(),
+                }),
+            },
             mode_info: Some(ModeInfo {
                 sum: Some(
                     cosmos_sdk_proto::cosmos::tx::v1beta1::mode_info::Sum::Single(
@@ -1491,7 +1483,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         wallet: &Wallet,
-        account_number: u64,
+        base_account: &BaseAccount,
         sequence: u64,
         body: TxBody,
         gas_to_request: u64,
@@ -1508,7 +1500,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
+                signer_infos: vec![self.make_signer_info(sequence, Some(base_account))],
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.first_builder.gas_coin.clone(),
@@ -1524,7 +1516,7 @@ impl TxBuilder {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
                 chain_id: cosmos.first_builder.chain_id.clone(),
-                account_number,
+                account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
             let signature = wallet.sign_bytes(&sign_doc_bytes);
