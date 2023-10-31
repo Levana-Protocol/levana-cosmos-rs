@@ -38,7 +38,7 @@ use tonic::{
     Status,
 };
 
-use crate::{address::HasAddressType, Address, AddressType, HasAddress};
+use crate::{address::HasAddressType, wallet::WalletPublicKey, Address, AddressType, HasAddress};
 
 use self::query::GrpcRequest;
 
@@ -558,7 +558,6 @@ impl Cosmos {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
                 res.account.context("no eth account found")?.value.as_ref(),
             )?;
-            println!("{eth_account:?}");
             eth_account.base_account.context("no base account found")?
         } else {
             prost::Message::decode(res.account.context("no account found")?.value.as_ref())?
@@ -1383,20 +1382,16 @@ impl TxBuilder {
         }
     }
 
-    fn make_signer_info(&self, sequence: u64, base_account: Option<&BaseAccount>) -> SignerInfo {
+    fn make_signer_info(
+        &self,
+        sequence: u64,
+        wallet: Option<(&Wallet, &BaseAccount)>,
+    ) -> SignerInfo {
         SignerInfo {
-            public_key: match base_account {
-                Some(base_account) => {
-                    base_account
-                        .pub_key
-                        .as_ref()
-                        .map(|pubkey| prost_types::Any {
-                            type_url: pubkey.type_url.clone(),
-                            value: pubkey.value.clone(),
-                        })
-                }
+            public_key: match wallet {
+                // No wallet/base account. We're simulating. Fill in a dummy value.
                 None => Some(cosmos_sdk_proto::Any {
-                    type_url: "/injective.crypto.v1beta1.ethsecp256k1.PubKey".to_owned(),
+                    type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
                     value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
                         sum: Some(
                             cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(vec![]),
@@ -1404,6 +1399,32 @@ impl TxBuilder {
                     }
                     .encode_to_vec(),
                 }),
+                Some((wallet, base_account)) => {
+                    match wallet.public_key {
+                        // Use the Cosmos method of public key
+                        WalletPublicKey::Cosmos(public_key) => Some(cosmos_sdk_proto::Any {
+                            type_url: "/cosmos.crypto.secp256k1.PubKey".to_owned(),
+                            value: cosmos_sdk_proto::tendermint::crypto::PublicKey {
+                                sum: Some(
+                                    cosmos_sdk_proto::tendermint::crypto::public_key::Sum::Ed25519(
+                                        public_key.to_vec(),
+                                    ),
+                                ),
+                            }
+                            .encode_to_vec(),
+                        }),
+                        // Take the public key directly from base account, used for Injective
+                        WalletPublicKey::Ethereum(_) => {
+                            base_account
+                                .pub_key
+                                .as_ref()
+                                .map(|pubkey| prost_types::Any {
+                                    type_url: pubkey.type_url.clone(),
+                                    value: pubkey.value.clone(),
+                                })
+                        }
+                    }
+                }
             },
             mode_info: Some(ModeInfo {
                 sum: Some(
@@ -1508,7 +1529,7 @@ impl TxBuilder {
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
-                signer_infos: vec![self.make_signer_info(sequence, Some(base_account))],
+                signer_infos: vec![self.make_signer_info(sequence, Some((wallet, base_account)))],
                 fee: Some(Fee {
                     amount: vec![Coin {
                         denom: cosmos.first_builder.gas_coin.clone(),
@@ -1519,11 +1540,6 @@ impl TxBuilder {
                     granter: "".to_owned(),
                 }),
             };
-
-            println!(
-                "{:?}",
-                hex::encode(&auth_info.signer_infos[0].public_key.as_ref().unwrap().value)
-            );
 
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),

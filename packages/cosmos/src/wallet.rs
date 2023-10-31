@@ -248,25 +248,22 @@ impl RawWallet {
         let public_key_bytes = public_key.public_key.serialize();
         let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
 
-        let raw_address = match type_.public_key_method() {
-            crate::address::PublicKeyMethod::Cosmos => {
-                cosmos_address_from_public_key(&public_key_bytes)
-            }
-            crate::address::PublicKeyMethod::Ethereum => {
-                eth_address_from_public_key(&public_key_bytes_uncompressed)
-            }
+        let (raw_address, public_key) = match type_.public_key_method() {
+            crate::address::PublicKeyMethod::Cosmos => (
+                cosmos_address_from_public_key(&public_key_bytes),
+                WalletPublicKey::Cosmos(public_key_bytes),
+            ),
+            crate::address::PublicKeyMethod::Ethereum => (
+                eth_address_from_public_key(&public_key_bytes_uncompressed),
+                WalletPublicKey::Ethereum(public_key_bytes_uncompressed),
+            ),
         };
-        println!("public key: {public_key_bytes:?}");
-        println!("public key unc: {public_key_bytes_uncompressed:?}");
-        println!("raw address: {raw_address:?}");
         let address = RawAddress::from(raw_address).for_chain(type_);
 
         Ok(Wallet {
             address,
             privkey,
-            // pubkey: public_key,
-            public_key_bytes,
-            public_key_bytes_uncompressed,
+            public_key,
         })
     }
 }
@@ -277,9 +274,13 @@ impl RawWallet {
 pub struct Wallet {
     address: Address,
     privkey: ExtendedPrivKey,
-    // pubkey: ExtendedPubKey,
-    public_key_bytes: [u8; 33],
-    public_key_bytes_uncompressed: [u8; 65],
+    pub(crate) public_key: WalletPublicKey,
+}
+
+#[derive(Clone)]
+pub(crate) enum WalletPublicKey {
+    Cosmos([u8; 33]),
+    Ethereum([u8; 65]),
 }
 
 fn global_secp() -> &'static Secp256k1<All> {
@@ -321,17 +322,18 @@ impl Wallet {
     }
 
     pub fn public_key_bytes(&self) -> &[u8] {
-        &self.public_key_bytes
-    }
-
-    pub fn public_key_bytes_uncompressed(&self) -> &[u8] {
-        &self.public_key_bytes_uncompressed
+        match &self.public_key {
+            WalletPublicKey::Cosmos(public_key) => public_key,
+            WalletPublicKey::Ethereum(public_key) => public_key,
+        }
     }
 
     pub fn sign_bytes(&self, msg: &[u8]) -> Signature {
-        // let msg = sha256::Hash::hash(msg);
-        // let msg = Message::from_slice(msg.as_ref()).unwrap();
-        let msg = Message::from_slice(keccak(msg).as_slice()).unwrap();
+        let msg = match self.public_key {
+            WalletPublicKey::Cosmos(_) => sha256::Hash::hash(msg).into_inner(),
+            WalletPublicKey::Ethereum(_) => keccak(msg),
+        };
+        let msg = Message::from_slice(msg.as_ref()).unwrap();
         global_secp().sign_ecdsa(&msg, &self.privkey.private_key)
     }
 
@@ -397,9 +399,6 @@ fn cosmos_address_from_public_key(public_key: &[u8]) -> [u8; 20] {
 fn eth_address_from_public_key(public_key: &[u8; 65]) -> [u8; 20] {
     assert_eq!(public_key[0], 4);
     let hash = keccak(&public_key[1..]);
-
-    println!("hash {hash:?}");
-
     let mut output = [0u8; 20];
     output.copy_from_slice(&hash[12..]);
     output
@@ -438,7 +437,10 @@ mod tests {
         const ADDRESS: &str = "0x00980adc74d3d2053c011cb0528fbe1fa91a352c";
         let address = ADDRESS.chars().skip(2).collect::<String>();
         let wallet = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
-        let eth_address = eth_address_from_public_key(&wallet.public_key_bytes_uncompressed);
+        let eth_address = eth_address_from_public_key(match &wallet.public_key {
+            WalletPublicKey::Cosmos(_) => panic!("Should not be Cosmos"),
+            WalletPublicKey::Ethereum(public_key) => public_key,
+        });
         assert_eq!(address, hex::encode(eth_address));
     }
 
@@ -459,9 +461,6 @@ mod tests {
     }
 
     // https://www.geeksforgeeks.org/how-to-create-an-ethereum-wallet-address-from-a-private-key/
-    // Private key: 4f3edf983ac986a65a342ce7c78d9ac076d3b113bce9c46f30d7d25171b32b1d
-    // Public key: 04c1573f1528638ae14cbe04a74e6583c5562d59214223762c1a11121e24619cbc09d27a7a1cb989dd801cc028dd8225f8e2d2fd57d852b5bf697112f69b6229d1
-    // Address: 0xAf3CD5c36B97E9c28c263dC4639c6d7d53303A13
     #[test]
     fn test_ethereum_address() {
         const PRIVATE_KEY: &str =
@@ -491,13 +490,6 @@ mod tests {
                 .collect::<String>(),
             hex::encode(eth_address)
         );
-        // debug_assert_eq!(public_key_bytes[0], 0x04);
-        // let mut sha3 = Keccak::v256();
-        // sha3.update(&public_key_bytes[1..]);
-        // let mut hash = [0u8; 32];
-        // sha3.finalize(&mut hash);
-        // panic!("{}", hex::encode(&hash));
-        // panic!("{}", hex::encode(&hash[12..]));
     }
 
     #[test]
