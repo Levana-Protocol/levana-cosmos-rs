@@ -325,6 +325,8 @@ pub struct CosmosConfig {
     /// Defaults to 5 seconds
     connection_timeout: std::time::Duration,
 
+    retry_connection: Option<bool>,
+
     /// Sets the number of seconds before an idle connection is reaped
     ///
     /// Defaults to 20 seconds
@@ -357,6 +359,7 @@ impl Default for CosmosConfig {
             referer_header: None,
             connection_count: None,
             connection_timeout: Duration::from_secs(5),
+            retry_connection: None,
             idle_timeout_seconds: 20,
             query_timeout_seconds: 5,
             query_retries: 3,
@@ -396,6 +399,9 @@ impl CosmosBuilders {
             builder = builder.max_size(count);
         }
         builder = builder.connection_timeout(first_builder.config.connection_timeout);
+        if let Some(retry_connection) = first_builder.config.retry_connection {
+            builder = builder.retry_connection(retry_connection);
+        }
         let pool = builder
             .build(self)
             .await
@@ -975,8 +981,14 @@ impl CosmosBuilder {
         self.config.connection_count = Some(count);
     }
 
+    /// See <https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.connection_timeout>
     pub fn set_connection_timeout(&mut self, timeout: Duration) {
         self.config.connection_timeout = timeout;
+    }
+
+    /// See https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.retry_connection
+    pub fn set_retry_connection(&mut self, retry_connection: bool) {
+        self.config.retry_connection = Some(retry_connection);
     }
 
     pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
@@ -1850,7 +1862,7 @@ mod tests {
     async fn lazy_load() {
         let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
         builder.set_query_retries(0);
-        builder.set_connection_timeout(Duration::from_millis(50));
+        builder.set_retry_connection(false);
         // something that clearly won't work
         builder.grpc_url = "https://0.0.0.0:0".to_owned();
 
