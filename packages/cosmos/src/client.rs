@@ -322,6 +322,9 @@ pub struct CosmosConfig {
     ///
     /// Defaults to 3
     query_retries: u32,
+
+    /// Should we automatically retry transactions with corrected sequence numbers?
+    autofix_sequence_mismatch: bool,
 }
 
 impl Default for CosmosConfig {
@@ -340,6 +343,7 @@ impl Default for CosmosConfig {
             idle_timeout_seconds: 20,
             query_timeout_seconds: 5,
             query_retries: 3,
+            autofix_sequence_mismatch: false,
         }
     }
 }
@@ -966,6 +970,10 @@ impl CosmosBuilder {
         self.config.query_retries = retries;
     }
 
+    pub fn set_autofix_sequence_mismatch(&mut self, value: bool) {
+        self.config.autofix_sequence_mismatch = value;
+    }
+
     fn new_juno_testnet() -> CosmosBuilder {
         CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
@@ -1483,7 +1491,7 @@ impl TxBuilder {
         let simres = match simres {
             Ok(simres) => simres.into_inner(),
             Err(PerformQueryError::Tonic(e)) => {
-                let is_sequence = get_expected_sequence(e.message());
+                let is_sequence = cosmos.get_expected_sequence(e.message());
                 let e = anyhow::Error::from(e).context("Unable to simulate transaction");
                 return match is_sequence {
                     None => Err(ExpectedSequenceError::RealError(e)),
@@ -1578,7 +1586,7 @@ impl TxBuilder {
                 if res.code == 13 {
                     return Err(AttemptError::InsufficientGas(e));
                 }
-                let is_sequence = get_expected_sequence(&res.raw_log);
+                let is_sequence = cosmos.get_expected_sequence(&res.raw_log);
                 return Err(AttemptError::Inner(match is_sequence {
                     None => ExpectedSequenceError::RealError(e),
                     Some(number) => ExpectedSequenceError::NewNumber(number, e),
@@ -1717,8 +1725,20 @@ impl<T: HasCosmos> HasCosmos for &T {
     }
 }
 
-/// Returned the expected account sequence mismatch based on an error message, if present
-fn get_expected_sequence(message: &str) -> Option<u64> {
+/// Returned the expected account sequence mismatch based on an error message, if present.
+///
+/// Always returns [None] if autofix_sequence_mismatch is disabled (the default).
+impl Cosmos {
+    fn get_expected_sequence(&self, message: &str) -> Option<u64> {
+        if self.get_config().autofix_sequence_mismatch {
+            get_expected_sequence_inner(message)
+        } else {
+            None
+        }
+    }
+}
+
+fn get_expected_sequence_inner(message: &str) -> Option<u64> {
     for line in message.lines() {
         if let Some(x) = get_expected_sequence_single(line) {
             return Some(x);
@@ -1761,15 +1781,15 @@ mod tests {
     #[test]
     fn get_expected_sequence_good() {
         assert_eq!(
-            get_expected_sequence("account sequence mismatch, expected 5, got 0"),
+            get_expected_sequence_inner("account sequence mismatch, expected 5, got 0"),
             Some(5)
         );
         assert_eq!(
-            get_expected_sequence("account sequence mismatch, expected 2, got 7"),
+            get_expected_sequence_inner("account sequence mismatch, expected 2, got 7"),
             Some(2)
         );
         assert_eq!(
-            get_expected_sequence("account sequence mismatch, expected 20000001, got 7"),
+            get_expected_sequence_inner("account sequence mismatch, expected 20000001, got 7"),
             Some(20000001)
         );
     }
@@ -1777,17 +1797,19 @@ mod tests {
     #[test]
     fn get_expected_sequence_extra_prelude() {
         assert_eq!(
-            get_expected_sequence("blah blah blah\n\naccount sequence mismatch, expected 5, got 0"),
+            get_expected_sequence_inner(
+                "blah blah blah\n\naccount sequence mismatch, expected 5, got 0"
+            ),
             Some(5)
         );
         assert_eq!(
-            get_expected_sequence(
+            get_expected_sequence_inner(
                 "foajodifjaolkdfjas aiodjfaof\n\n\naccount sequence mismatch, expected 2, got 7"
             ),
             Some(2)
         );
         assert_eq!(
-            get_expected_sequence(
+            get_expected_sequence_inner(
                 "iiiiiiiiiiiiii\n\naccount sequence mismatch, expected 20000001, got 7"
             ),
             Some(20000001)
@@ -1797,11 +1819,11 @@ mod tests {
     #[test]
     fn get_expected_sequence_bad() {
         assert_eq!(
-            get_expected_sequence("Totally different error message"),
+            get_expected_sequence_inner("Totally different error message"),
             None
         );
         assert_eq!(
-            get_expected_sequence("account sequence mismatch, expected XXXXX, got 7"),
+            get_expected_sequence_inner("account sequence mismatch, expected XXXXX, got 7"),
             None
         );
     }
