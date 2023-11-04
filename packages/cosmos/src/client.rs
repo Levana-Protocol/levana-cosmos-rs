@@ -50,6 +50,15 @@ pub struct Cosmos {
     first_builder: Arc<CosmosBuilder>,
 }
 
+impl std::fmt::Debug for Cosmos {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Cosmos")
+            .field("grpc_url", &self.get_grpc_url())
+            .field("network", &self.get_network())
+            .finish()
+    }
+}
+
 /// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
 pub struct CosmosBuilders {
     builders: Vec<Arc<CosmosBuilder>>,
@@ -202,6 +211,11 @@ impl Cosmos {
             ))
         }
     }
+
+    /// Get the gRPC endpoint used here
+    pub fn get_grpc_url(&self) -> &str {
+        &self.get_first_builder().grpc_url
+    }
 }
 
 impl HasAddressType for Cosmos {
@@ -306,6 +320,13 @@ pub struct CosmosConfig {
     /// Set the number of bb8 connections
     connection_count: Option<u32>,
 
+    /// Sets the duration to wait for a connection.
+    ///
+    /// Defaults to 5 seconds
+    connection_timeout: std::time::Duration,
+
+    retry_connection: Option<bool>,
+
     /// Sets the number of seconds before an idle connection is reaped
     ///
     /// Defaults to 20 seconds
@@ -337,6 +358,8 @@ impl Default for CosmosConfig {
             transaction_attempts: 30,
             referer_header: None,
             connection_count: None,
+            connection_timeout: Duration::from_secs(5),
+            retry_connection: None,
             idle_timeout_seconds: 20,
             query_timeout_seconds: 5,
             query_retries: 3,
@@ -374,6 +397,10 @@ impl CosmosBuilders {
         )));
         if let Some(count) = first_builder.config.connection_count {
             builder = builder.max_size(count);
+        }
+        builder = builder.connection_timeout(first_builder.config.connection_timeout);
+        if let Some(retry_connection) = first_builder.config.retry_connection {
+            builder = builder.retry_connection(retry_connection);
         }
         let pool = builder
             .build(self)
@@ -952,6 +979,16 @@ impl CosmosBuilder {
 
     pub fn set_connection_count(&mut self, count: u32) {
         self.config.connection_count = Some(count);
+    }
+
+    /// See <https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.connection_timeout>
+    pub fn set_connection_timeout(&mut self, timeout: Duration) {
+        self.config.connection_timeout = timeout;
+    }
+
+    /// See https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.retry_connection
+    pub fn set_retry_connection(&mut self, retry_connection: bool) {
+        self.config.retry_connection = Some(retry_connection);
     }
 
     pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
@@ -1818,6 +1855,20 @@ mod tests {
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 1604);
         cosmos.config.gas_estimate_multiplier = 4.2;
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 5182);
+    }
+
+    #[tokio::test]
+
+    async fn lazy_load() {
+        let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
+        builder.set_query_retries(0);
+        builder.set_retry_connection(false);
+        // something that clearly won't work
+        builder.grpc_url = "https://0.0.0.0:0".to_owned();
+
+        builder.clone().build().await.unwrap_err();
+        let cosmos = builder.build_lazy().await;
+        cosmos.get_latest_block_info().await.unwrap_err();
     }
 }
 
