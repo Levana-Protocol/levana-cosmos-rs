@@ -395,7 +395,7 @@ mod tests {
     impl Arbitrary for AddressHrp {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
             AddressHrp::from_static(
-                *g.choose(&["juno", "stars", "osmo", "wasm", "inj", "cosmos"])
+                g.choose(&["juno", "stars", "osmo", "wasm", "inj", "cosmos"])
                     .unwrap(),
             )
         }

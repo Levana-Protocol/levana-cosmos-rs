@@ -470,7 +470,7 @@ mod tests {
 
         let secret_key = SecretKey::from_str(PRIVATE_KEY).unwrap();
         let secp = global_secp();
-        let public_key = secret_key.public_key(&secp);
+        let public_key = secret_key.public_key(secp);
         let public_key_bytes = public_key.serialize_uncompressed();
 
         assert_eq!(public_key_from_str.as_slice(), &public_key_bytes);
@@ -505,10 +505,10 @@ mod tests {
         assert_eq!(private_key1, private_key2);
 
         let secp = global_secp();
-        let public_key = private_key1.public_key(&secp);
+        let public_key = private_key1.public_key(secp);
         let public_key_bytes = public_key.serialize_uncompressed();
 
-        assert_eq!(PUBLIC_KEY_STR, &hex::encode(&public_key_bytes));
+        assert_eq!(PUBLIC_KEY_STR, &hex::encode(public_key_bytes));
         assert_eq!(
             PUBLIC_KEY_HASHED_STR,
             hex::encode(keccak(&public_key_bytes[1..]))
@@ -521,7 +521,7 @@ mod tests {
         let hash = keccak(&[]);
         assert_eq!(
             "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-            hex::encode(&hash)
+            hex::encode(hash)
         );
     }
 }

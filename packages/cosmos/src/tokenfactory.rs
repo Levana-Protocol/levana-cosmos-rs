@@ -86,7 +86,7 @@ impl TokenFactory {
 }
 
 fn type_url(hrp: AddressHrp, s: &str) -> Result<String> {
-    match &*hrp.as_str() {
+    match hrp.as_str() {
         "osmo" => Ok(format!("/osmosis.tokenfactory.v1beta1.{s}")),
         "sei" => Ok(format!("/seiprotocol.seichain.tokenfactory.{s}")),
         _ => Err(anyhow::anyhow!(
