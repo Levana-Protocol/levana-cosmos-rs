@@ -68,7 +68,7 @@ impl SeedPhrase {
     /// Generate a new [Wallet] with the given HRP.
     ///
     /// If no public key method is provided, the default for the given HRP is
-    /// used. Similarly, if [self] does not include a derivation path, the
+    /// used. Similarly, if `self` does not include a derivation path, the
     /// default for the HRP is used.
     pub fn with_hrp(
         &self,
