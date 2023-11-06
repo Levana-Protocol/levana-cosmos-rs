@@ -22,8 +22,8 @@ use cosmos::{
         },
         traits::Message,
     },
-    Address, AddressHrp, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress, HasAddressHrp,
-    RawAddress, SeedPhrase, TxBuilder, Wallet,
+    Address, AddressHrp, BlockInfo, Coin, ContractAdmin, HasAddress, HasAddressHrp, RawAddress,
+    SeedPhrase, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -300,8 +300,9 @@ impl Subcommand {
             } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_hrp();
-                let contract = CodeId::new(cosmos, code_id)
-                    .instantiate_binary(
+                let contract = cosmos
+                    .make_code_id(code_id)
+                    .instantiate_rendered(
                         &tx_opt.get_wallet(address_type)?,
                         label,
                         vec![],
@@ -363,7 +364,7 @@ impl Subcommand {
             } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_hrp();
-                let contract = cosmos::Contract::new(cosmos, address);
+                let contract = cosmos.make_contract(address);
                 contract
                     .migrate_binary(&tx_opt.get_wallet(address_type)?, code_id, msg)
                     .await?;
@@ -377,7 +378,7 @@ impl Subcommand {
             } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_hrp();
-                let contract = cosmos::Contract::new(cosmos.clone(), address);
+                let contract = cosmos.make_contract(address);
                 let amount = match amount {
                     Some(funds) => {
                         let coin = ParsedCoin::from_str(&funds)?.into();
@@ -534,7 +535,7 @@ impl Subcommand {
             } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_hrp();
-                let contract = cosmos::Contract::new(cosmos.clone(), address);
+                let contract = cosmos.make_contract(address);
                 let amount = match funds {
                     Some(funds) => {
                         let coin = ParsedCoin::from_str(&funds)?.into();

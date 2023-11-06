@@ -16,14 +16,12 @@ pub struct CodeId {
 }
 
 impl CodeId {
-    pub fn new(client: Cosmos, code_id: u64) -> Self {
-        CodeId { code_id, client }
-    }
-
+    /// Get the underlying numeric code ID.
     pub fn get_code_id(&self) -> u64 {
         self.code_id
     }
 
+    /// Download the WASM content of this code ID.
     pub async fn download(&self) -> Result<Vec<u8>> {
         self.client.code_info(self.code_id).await
     }

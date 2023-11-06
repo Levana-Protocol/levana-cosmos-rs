@@ -25,12 +25,6 @@ pub struct Contract {
     client: Cosmos,
 }
 
-impl Contract {
-    pub fn new(client: Cosmos, address: Address) -> Self {
-        Contract { address, client }
-    }
-}
-
 pub trait HasContract: HasAddress + HasCosmos {
     fn get_contract(&self) -> &Contract;
 }
@@ -48,6 +42,7 @@ impl<T: HasContract> HasContract for &T {
 }
 
 impl Cosmos {
+    /// Make a new [Contract] for the given smart contract address.
     pub fn make_contract(&self, address: Address) -> Contract {
         Contract {
             address,
@@ -55,6 +50,7 @@ impl Cosmos {
         }
     }
 
+    /// Make a new [CodeId] for the given numeric ID.
     pub fn make_code_id(&self, code_id: u64) -> CodeId {
         CodeId {
             client: self.clone(),
@@ -64,6 +60,7 @@ impl Cosmos {
 }
 
 impl CodeId {
+    /// Instantiate a new contract with the given parameters.
     pub async fn instantiate(
         &self,
         wallet: &Wallet,
@@ -72,19 +69,20 @@ impl CodeId {
         msg: impl serde::Serialize,
         admin: ContractAdmin,
     ) -> Result<Contract> {
-        self.instantiate_binary(wallet, label, funds, serde_json::to_vec(&msg)?, admin)
+        self.instantiate_rendered(wallet, label, funds, serde_json::to_string(&msg)?, admin)
             .await
     }
 
-    /// Same as [CodeId::instantiate] but the message is already in binary.
-    pub async fn instantiate_binary(
+    /// Same as [CodeId::instantiate] but the message is already rendered to text.
+    pub async fn instantiate_rendered(
         &self,
         wallet: &Wallet,
         label: impl Into<String>,
         funds: Vec<Coin>,
-        msg: impl Into<Vec<u8>>,
+        msg: impl Into<String>,
         admin: ContractAdmin,
     ) -> Result<Contract> {
+        let msg = msg.into();
         let msg = MsgInstantiateContract {
             sender: wallet.address().to_string(),
             admin: match admin {
@@ -94,7 +92,7 @@ impl CodeId {
             },
             code_id: self.code_id,
             label: label.into(),
-            msg: msg.into(),
+            msg: msg.into_bytes(),
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
@@ -103,6 +101,7 @@ impl CodeId {
 }
 
 impl Cosmos {
+    /// Parse the contract address from the given [TxResponse].
     pub fn parse_contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
         for log in &res.logs {
             for event in &log.events {
@@ -132,30 +131,15 @@ impl Cosmos {
 }
 
 impl Contract {
+    /// Execute a message against the smart contract.
     pub async fn execute(
         &self,
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
     ) -> Result<TxResponse> {
-        self.execute_binary(wallet, funds, serde_json::to_vec(&msg)?)
+        self.execute_rendered(wallet, funds, serde_json::to_string(&msg)?)
             .await
-    }
-
-    pub fn add_message(
-        &self,
-        txbuilder: &mut TxBuilder,
-        wallet: &Wallet,
-        funds: Vec<Coin>,
-        msg: impl serde::Serialize,
-    ) -> Result<()> {
-        txbuilder.add_message_mut(MsgExecuteContract {
-            sender: wallet.get_address_string(),
-            contract: self.get_address_string(),
-            msg: serde_json::to_vec(&msg)?,
-            funds,
-        });
-        Ok(())
     }
 
     pub async fn simulate(
@@ -170,7 +154,7 @@ impl Contract {
     }
 
     /// Same as [Contract::execute] but the msg is serialized
-    pub async fn execute_binary(
+    pub async fn execute_rendered(
         &self,
         wallet: &Wallet,
         funds: Vec<Coin>,

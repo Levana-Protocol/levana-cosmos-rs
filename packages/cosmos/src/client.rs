@@ -1171,12 +1171,18 @@ impl CosmosBuilder {
     }
 }
 
+/// Information on a block.
 #[derive(Debug)]
 pub struct BlockInfo {
+    /// Block height
     pub height: i64,
+    /// Hash of the block
     pub block_hash: String,
+    /// Timestamp of the block
     pub timestamp: DateTime<Utc>,
+    /// Transaction hashes contained in this block
     pub txhashes: Vec<String>,
+    /// Chain ID this block is associated with
     pub chain_id: String,
 }
 
