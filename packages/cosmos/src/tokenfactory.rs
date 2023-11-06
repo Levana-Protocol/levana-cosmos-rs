@@ -1,4 +1,7 @@
-use crate::{AddressType, Cosmos, HasAddressType, TypedMessage, Wallet};
+use crate::{
+    address::{AddressHrp, HasAddressHrp},
+    Cosmos, TypedMessage, Wallet,
+};
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
     bank::v1beta1::Metadata,
@@ -21,7 +24,7 @@ impl TokenFactory {
             sender: self.wallet.address().to_string(),
             subdenom,
         }
-        .into_typed_message(self.client.get_address_type())?;
+        .into_typed_message(self.client.get_address_hrp())?;
 
         let res = self.wallet.broadcast_message(&self.client, msg).await?;
 
@@ -54,7 +57,7 @@ impl TokenFactory {
                 amount: amount.to_string(),
             }),
         }
-        .into_typed_message(self.client.get_address_type())?;
+        .into_typed_message(self.client.get_address_hrp())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 
@@ -67,7 +70,7 @@ impl TokenFactory {
                 amount: amount.to_string(),
             }),
         }
-        .into_typed_message(self.client.get_address_type())?;
+        .into_typed_message(self.client.get_address_hrp())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 
@@ -77,23 +80,23 @@ impl TokenFactory {
             denom: denom.clone(),
             new_admin: addr,
         }
-        .into_typed_message(self.client.get_address_type())?;
+        .into_typed_message(self.client.get_address_hrp())?;
         self.wallet.broadcast_message(&self.client, msg).await
     }
 }
 
-fn type_url(address_type: AddressType, s: &str) -> Result<String> {
-    match address_type {
-        AddressType::Osmo => Ok(format!("/osmosis.tokenfactory.v1beta1.{s}")),
-        AddressType::Sei => Ok(format!("/seiprotocol.seichain.tokenfactory.{s}")),
+fn type_url(hrp: AddressHrp, s: &str) -> Result<String> {
+    match &*hrp.as_str() {
+        "osmo" => Ok(format!("/osmosis.tokenfactory.v1beta1.{s}")),
+        "sei" => Ok(format!("/seiprotocol.seichain.tokenfactory.{s}")),
         _ => Err(anyhow::anyhow!(
-            "cosmos-rs does not support tokenfactory for address type {address_type:?}"
+            "cosmos-rs does not support tokenfactory for address type {hrp}"
         )),
     }
 }
 
 fn into_typed_message<T: prost::Message>(
-    address_type: AddressType,
+    address_type: AddressHrp,
     type_url_suffix: &str,
     msg: T,
 ) -> Result<TypedMessage> {
@@ -104,25 +107,25 @@ fn into_typed_message<T: prost::Message>(
 }
 
 impl MsgCreateDenom {
-    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
         into_typed_message(address_type, "MsgCreateDenom", self)
     }
 }
 
 impl MsgMint {
-    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
         into_typed_message(address_type, "MsgMint", self)
     }
 }
 
 impl MsgBurn {
-    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
         into_typed_message(address_type, "MsgBurn", self)
     }
 }
 
 impl MsgChangeAdmin {
-    pub(crate) fn into_typed_message(self, address_type: AddressType) -> Result<TypedMessage> {
+    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
         into_typed_message(address_type, "MsgChangeAdmin", self)
     }
 }

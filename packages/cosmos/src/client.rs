@@ -38,7 +38,11 @@ use tonic::{
     Status,
 };
 
-use crate::{address::HasAddressType, wallet::WalletPublicKey, Address, AddressType, HasAddress};
+use crate::{
+    address::{AddressHrp, HasAddressHrp},
+    wallet::WalletPublicKey,
+    Address, HasAddress,
+};
 
 use self::query::GrpcRequest;
 
@@ -154,12 +158,12 @@ impl Cosmos {
         }
     }
 
-    pub fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
+    pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
         &self.builder
     }
 
     pub fn get_network(&self) -> CosmosNetwork {
-        self.get_first_builder().network
+        self.get_cosmos_builder().network
     }
 
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
@@ -167,7 +171,7 @@ impl Cosmos {
     /// Called automatically by [CosmosBuilder::build], but not by [CosmosBuilder::build_lazy].
     pub async fn sanity_check(&self) -> Result<()> {
         let actual = &self.get_latest_block_info().await?.chain_id;
-        let expected = &self.get_first_builder().chain_id;
+        let expected = &self.get_cosmos_builder().chain_id;
         if actual == expected {
             Ok(())
         } else {
@@ -179,13 +183,7 @@ impl Cosmos {
 
     /// Get the gRPC endpoint used here
     pub fn get_grpc_url(&self) -> &str {
-        &self.get_first_builder().grpc_url
-    }
-}
-
-impl HasAddressType for Cosmos {
-    fn get_address_type(&self) -> AddressType {
-        self.get_first_builder().address_type
+        &self.get_cosmos_builder().grpc_url
     }
 }
 
@@ -249,10 +247,11 @@ pub enum CosmosNetwork {
 /// Build a connection
 #[derive(Clone)]
 pub struct CosmosBuilder {
+    // FIXME review these, decide if they should be pub, decide on CosmosNetwork future
     pub grpc_url: String,
     pub chain_id: String,
     pub gas_coin: String,
-    pub address_type: AddressType,
+    pub hrp: AddressHrp,
     pub config: CosmosConfig,
     pub network: CosmosNetwork,
 }
@@ -537,7 +536,7 @@ impl Cosmos {
             .await?
             .into_inner();
 
-        let base_account = if self.get_address_type() == AddressType::Injective {
+        let base_account = if self.get_address_hrp().as_str() == "inj" {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
                 res.account.context("no eth account found")?.value.as_ref(),
             )?;
@@ -968,7 +967,7 @@ impl CosmosBuilder {
             grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
             chain_id: "uni-6".to_owned(),
             gas_coin: "ujunox".to_owned(),
-            address_type: AddressType::Juno,
+            hrp: AddressHrp::from_static("juno"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::JunoTestnet,
         }
@@ -979,7 +978,7 @@ impl CosmosBuilder {
             grpc_url: "http://localhost:9090".to_owned(),
             chain_id: "testing".to_owned(),
             gas_coin: "ujunox".to_owned(),
-            address_type: AddressType::Juno,
+            hrp: AddressHrp::from_static("juno"),
             config: CosmosConfig {
                 transaction_attempts: 3, // fail faster during testing
                 ..CosmosConfig::default()
@@ -994,7 +993,7 @@ impl CosmosBuilder {
             grpc_url: "http://juno-grpc.polkachu.com:12690".to_owned(),
             chain_id: "juno-1".to_owned(),
             gas_coin: "ujuno".to_owned(),
-            address_type: AddressType::Juno,
+            hrp: AddressHrp::from_static("juno"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::JunoMainnet,
         }
@@ -1006,7 +1005,7 @@ impl CosmosBuilder {
             grpc_url: "http://grpc.osmosis.zone:9090".to_owned(),
             chain_id: "osmosis-1".to_owned(),
             gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
+            hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::OsmosisMainnet,
         }
@@ -1018,7 +1017,7 @@ impl CosmosBuilder {
             grpc_url: "https://grpc.osmotest5.osmosis.zone".to_owned(),
             chain_id: "osmo-test-5".to_owned(),
             gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
+            hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::OsmosisTestnet,
         }
@@ -1029,7 +1028,7 @@ impl CosmosBuilder {
             grpc_url: "http://localhost:9090".to_owned(),
             chain_id: "localosmosis".to_owned(),
             gas_coin: "uosmo".to_owned(),
-            address_type: AddressType::Osmo,
+            hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::OsmosisLocal,
         }
@@ -1040,7 +1039,7 @@ impl CosmosBuilder {
             grpc_url: "http://localhost:9090".to_owned(),
             chain_id: "localwasmd".to_owned(),
             gas_coin: "uwasm".to_owned(),
-            address_type: AddressType::Wasm,
+            hrp: AddressHrp::from_static("wasm"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::WasmdLocal,
         }
@@ -1065,7 +1064,7 @@ impl CosmosBuilder {
             grpc_url: "https://grpc.sei-apis.com".to_owned(),
             chain_id: "pacific-1".to_owned(),
             gas_coin: "usei".to_owned(),
-            address_type: AddressType::Sei,
+            hrp: AddressHrp::from_static("sei"),
             config: CosmosConfig {
                 gas_price_low: gas_config.pacific_1.min_gas_price,
                 gas_price_high: gas_config.pacific_1.min_gas_price * 2.0,
@@ -1094,7 +1093,7 @@ impl CosmosBuilder {
             grpc_url: "https://grpc-testnet.sei-apis.com".to_owned(),
             chain_id: "atlantic-2".to_owned(),
             gas_coin: "usei".to_owned(),
-            address_type: AddressType::Sei,
+            hrp: AddressHrp::from_static("sei"),
             config: CosmosConfig {
                 gas_price_low: gas_config.atlantic_2.min_gas_price,
                 gas_price_high: gas_config.atlantic_2.min_gas_price * 2.0,
@@ -1112,7 +1111,7 @@ impl CosmosBuilder {
             chain_id: "elgafar-1".to_owned(),
             // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/assetlist.json
             gas_coin: "ustars".to_owned(),
-            address_type: AddressType::Stargaze,
+            hrp: AddressHrp::from_static("stars"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::StargazeTestnet,
         }
@@ -1125,7 +1124,7 @@ impl CosmosBuilder {
             chain_id: "stargaze-1".to_owned(),
             // https://github.com/cosmos/chain-registry/blob/master/stargaze/assetlist.json
             gas_coin: "ustars".to_owned(),
-            address_type: AddressType::Stargaze,
+            hrp: AddressHrp::from_static("stars"),
             config: CosmosConfig::default(),
             network: CosmosNetwork::StargazeMainnet,
         }
@@ -1138,7 +1137,7 @@ impl CosmosBuilder {
             grpc_url: "https://testnet.sentry.chain.grpc.injective.network:443".to_owned(),
             chain_id: "injective-888".to_owned(),
             gas_coin: "inj".to_owned(),
-            address_type: AddressType::Injective,
+            hrp: AddressHrp::from_static("inj"),
             config: CosmosConfig {
                 gas_price_low: 500000000.0,
                 gas_price_high: 900000000.0,
@@ -1155,7 +1154,7 @@ impl CosmosBuilder {
             grpc_url: "https://sentry.chain.grpc.injective.network:443".to_owned(),
             chain_id: "injective-1".to_owned(),
             gas_coin: "inj".to_owned(),
-            address_type: AddressType::Injective,
+            hrp: AddressHrp::from_static("inj"),
             config: CosmosConfig {
                 gas_price_low: 500000000.0,
                 gas_price_high: 900000000.0,
@@ -1163,6 +1162,12 @@ impl CosmosBuilder {
             },
             network: CosmosNetwork::InjectiveMainnet,
         }
+    }
+
+    /// Set the human-readable part (HRP) for the network.
+    pub fn set_address_hrp(&mut self, hrp: AddressHrp) -> &mut Self {
+        self.hrp = hrp;
+        self
     }
 }
 
@@ -1603,7 +1608,7 @@ impl TxBuilder {
             Ok(res)
         };
 
-        let attempts = cosmos.get_first_builder().config.gas_price_retry_attempts;
+        let attempts = cosmos.get_cosmos_builder().config.gas_price_retry_attempts;
         for attempt_number in 0..attempts {
             let amount = cosmos
                 .gas_to_coins(gas_to_request, attempt_number)

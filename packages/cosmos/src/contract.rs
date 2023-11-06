@@ -12,7 +12,10 @@ use cosmos_sdk_proto::{
     },
 };
 
-use crate::{address::HasAddressType, codeid::strip_quotes};
+use crate::{
+    address::{AddressHrp, HasAddressHrp},
+    codeid::strip_quotes,
+};
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
 /// A Cosmos smart contract
@@ -109,7 +112,7 @@ impl Cosmos {
                     for attr in &event.attributes {
                         if attr.key == "_contract_address" || attr.key == "contract_address" {
                             let address: Address = strip_quotes(&attr.value).parse()?;
-                            anyhow::ensure!(address.get_address_type() == self.get_address_type());
+                            anyhow::ensure!(address.get_address_hrp() == self.get_address_hrp());
                             return Ok(Contract {
                                 address,
                                 client: self.clone(),
@@ -298,6 +301,12 @@ impl Contract {
 impl Display for Contract {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.address)
+    }
+}
+
+impl HasAddressHrp for Contract {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.get_address().get_address_hrp()
     }
 }
 

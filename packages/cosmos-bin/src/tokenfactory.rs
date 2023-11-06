@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cosmos::{Cosmos, HasAddressType, RawWallet, TokenFactory};
+use cosmos::{Cosmos, HasAddressHrp, RawWallet, TokenFactory};
 
 #[derive(clap::Parser)]
 pub enum Command {
@@ -13,7 +13,7 @@ pub enum Command {
 }
 
 pub(crate) async fn go(cosmos: Cosmos, raw_wallet: RawWallet, cmd: Command) -> Result<()> {
-    let wallet = raw_wallet.for_chain(cosmos.get_address_type())?;
+    let wallet = raw_wallet.with_hrp(cosmos.get_address_hrp())?;
     let tokenfactory = TokenFactory::new(cosmos, wallet);
 
     match cmd {

@@ -17,8 +17,8 @@ use parking_lot::Mutex;
 use rand::Rng;
 use tiny_keccak::{Hasher, Keccak};
 
-use crate::address::RawAddress;
-use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
+use crate::address::{AddressHrp, HasAddressHrp, RawAddress};
+use crate::{Address, Cosmos, HasAddress, TxBuilder, TypedMessage};
 
 /// A seed phrase for a wallet
 #[derive(Clone)]
@@ -204,8 +204,6 @@ impl Display for DerivationPathComponent {
 const JUNO_LOCAL_PHRASE: &str = "clip hire initial neck maid actor venue client foam budget lock catalog sweet steak waste crater broccoli pipe steak sister coyote moment obvious choose";
 const OSMO_LOCAL_PHRASE: &str = "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius";
 
-// fn make_derivation_path()
-
 impl RawWallet {
     /// Generate the special Juno Local wallet
     pub fn juno_local() -> Self {
@@ -232,12 +230,13 @@ impl RawWallet {
         })
     }
 
-    pub fn for_chain(&self, type_: AddressType) -> Result<Wallet> {
+    pub fn with_hrp(&self, hrp: AddressHrp) -> Result<Wallet> {
         let secp = global_secp();
         let derivation_path = self
             .derivation_path
             .clone()
-            .unwrap_or_else(|| type_.default_derivation_path());
+            // FIXME split up RawWallet into multiple stages, like SeedPhrase
+            .unwrap_or_else(|| hrp.default_derivation_path());
 
         let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
             bitcoin::Network::Bitcoin,
@@ -248,7 +247,7 @@ impl RawWallet {
         let public_key_bytes = public_key.public_key.serialize();
         let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
 
-        let (raw_address, public_key) = match type_.public_key_method() {
+        let (raw_address, public_key) = match hrp.default_public_key_method() {
             crate::address::PublicKeyMethod::Cosmos => (
                 cosmos_address_from_public_key(&public_key_bytes),
                 WalletPublicKey::Cosmos(public_key_bytes),
@@ -258,7 +257,7 @@ impl RawWallet {
                 WalletPublicKey::Ethereum(public_key_bytes_uncompressed),
             ),
         };
-        let address = RawAddress::from(raw_address).for_chain(type_);
+        let address = RawAddress::from(raw_address).with_hrp(hrp);
 
         Ok(Wallet {
             address,
@@ -300,24 +299,24 @@ impl Wallet {
     }
 
     /// Generate a random wallet
-    pub fn generate(type_: AddressType) -> Result<Self> {
+    pub fn generate(hrp: AddressHrp) -> Result<Self> {
         RawWallet {
             seed_phrase: SeedPhrase::random(),
             derivation_path: None,
         }
-        .for_chain(type_)
+        .with_hrp(hrp)
     }
 
     /// Generate the special Juno Local wallet
     pub fn juno_local() -> Self {
         RawWallet::juno_local()
-            .for_chain(AddressType::Juno)
+            .with_hrp(AddressHrp::from_static("juno"))
             .unwrap()
     }
 
-    pub fn from_phrase(phrase: &str, type_: AddressType) -> Result<Self> {
+    pub fn from_phrase(phrase: &str, type_: AddressHrp) -> Result<Self> {
         RawWallet::from_phrase(phrase)
-            .map(|raw| raw.for_chain(type_))
+            .map(|raw| raw.with_hrp(type_))
             .unwrap()
     }
 
@@ -410,6 +409,12 @@ impl Display for Wallet {
     }
 }
 
+impl HasAddressHrp for Wallet {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.address.get_address_hrp()
+    }
+}
+
 impl HasAddress for Wallet {
     fn get_address(&self) -> Address {
         self.address
@@ -436,7 +441,7 @@ mod tests {
             "entire clap mystery embrace blame doll volcano face trust mom cruel load";
         const ADDRESS: &str = "0x00980adc74d3d2053c011cb0528fbe1fa91a352c";
         let address = ADDRESS.chars().skip(2).collect::<String>();
-        let wallet = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        let wallet = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
         let eth_address = eth_address_from_public_key(match &wallet.public_key {
             WalletPublicKey::Cosmos(_) => panic!("Should not be Cosmos"),
             WalletPublicKey::Ethereum(public_key) => public_key,
@@ -454,8 +459,8 @@ mod tests {
         let expected_injective: Address = "inj15sws48vv977kmgawqfegptw0pqs7cfeq7mpr4c"
             .parse()
             .unwrap();
-        let osmosis = Wallet::from_phrase(PHRASE, AddressType::Osmo).unwrap();
-        let injective = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        let osmosis = Wallet::from_phrase(PHRASE, AddressHrp::from_static("osmo")).unwrap();
+        let injective = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
         assert_eq!(expected_osmosis, osmosis.get_address());
         assert_eq!(expected_injective, injective.get_address());
     }

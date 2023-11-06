@@ -22,8 +22,8 @@ use cosmos::{
         },
         traits::Message,
     },
-    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress,
-    HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
+    Address, AddressHrp, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress, HasAddressHrp,
+    RawAddress, RawWallet, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -67,8 +67,8 @@ struct TxOpt {
 }
 
 impl TxOpt {
-    pub(crate) fn get_wallet(&self, address_type: AddressType) -> Result<Wallet> {
-        self.wallet.for_chain(address_type)
+    pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
+        self.wallet.with_hrp(hrp)
     }
 }
 
@@ -177,8 +177,8 @@ enum Subcommand {
     },
     /// Print the address for the given phrase
     PrintAddress {
-        /// Address type: One of cosmos, juno, osmo or levana
-        address_type: AddressType,
+        /// HRP (human readable part) of the address, e.g. osmo, inj
+        hrp: AddressHrp,
         /// Phrase
         phrase: RawWallet,
     },
@@ -230,8 +230,8 @@ enum Subcommand {
     ChangeAddressType {
         /// Original address
         orig: RawAddress,
-        /// Destination address type
-        address_type: AddressType,
+        /// Destination address HRP (human-readable part)
+        hrp: AddressHrp,
     },
     /// NFT focused subcommands
     Nft {
@@ -286,7 +286,7 @@ impl Subcommand {
             }
             Subcommand::StoreCode { tx_opt, file } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let wallet = tx_opt.get_wallet(address_type)?;
                 let codeid = cosmos.store_code_path(&wallet, &file).await?;
                 println!("Code ID: {codeid}");
@@ -299,7 +299,7 @@ impl Subcommand {
                 admin,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let contract = CodeId::new(cosmos, code_id)
                     .instantiate_binary(
                         &tx_opt.get_wallet(address_type)?,
@@ -362,7 +362,7 @@ impl Subcommand {
                 msg,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let contract = cosmos::Contract::new(cosmos, address);
                 contract
                     .migrate_binary(&tx_opt.get_wallet(address_type)?, code_id, msg)
@@ -376,7 +376,7 @@ impl Subcommand {
                 skip_simulate,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let contract = cosmos::Contract::new(cosmos.clone(), address);
                 let amount = match amount {
                     Some(funds) => {
@@ -410,10 +410,10 @@ impl Subcommand {
             }
             Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
             Subcommand::PrintAddress {
-                address_type,
+                hrp: address_type,
                 phrase,
             } => {
-                println!("{}", phrase.for_chain(address_type)?);
+                println!("{}", phrase.with_hrp(address_type)?);
             }
             Subcommand::SendCoins {
                 tx_opt,
@@ -421,7 +421,7 @@ impl Subcommand {
                 coins,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let txres = tx_opt
                     .get_wallet(address_type)?
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
@@ -536,7 +536,7 @@ impl Subcommand {
                 funds,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let contract = cosmos::Contract::new(cosmos.clone(), address);
                 let amount = match funds {
                     Some(funds) => {
@@ -546,7 +546,7 @@ impl Subcommand {
                     None => vec![],
                 };
                 let simres = contract
-                    .simulate_binary(sender.for_chain(address_type), amount, msg, memo)
+                    .simulate_binary(sender.with_hrp(address_type), amount, msg, memo)
                     .await?;
                 println!("{simres:?}");
             }
@@ -567,8 +567,11 @@ impl Subcommand {
                     println!("Transaction #{}: {txhash}", idx + 1);
                 }
             }
-            Subcommand::ChangeAddressType { orig, address_type } => {
-                println!("{}", orig.for_chain(address_type));
+            Subcommand::ChangeAddressType {
+                orig,
+                hrp: address_type,
+            } => {
+                println!("{}", orig.with_hrp(address_type));
             }
             Subcommand::Nft {
                 opt: inner,
@@ -607,20 +610,11 @@ impl Subcommand {
     }
 }
 
-fn gen_wallet(address_type: &str) -> Result<()> {
+fn gen_wallet(hrp: &str) -> Result<()> {
     let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(
-        &phrase,
-        match address_type {
-            "inj" => AddressType::Injective,
-            _ => AddressType::Cosmos,
-        },
-    )?;
+    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressHrp::new(hrp))?;
     println!("Mnemonic: {phrase}");
-    let address = AddressAnyHrp {
-        raw_address: *wallet.address().raw(),
-        hrp: address_type,
-    };
+    let address = wallet.address().raw().with_hrp(AddressHrp::new(hrp));
     println!("Address: {address}");
     Ok(())
 }

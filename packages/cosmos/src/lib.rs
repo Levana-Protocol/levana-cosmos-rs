@@ -1,6 +1,4 @@
-pub use address::{
-    parse_raw_address, Address, AddressAnyHrp, AddressType, HasAddress, HasAddressType, RawAddress,
-};
+pub use address::{Address, AddressHrp, HasAddress, HasAddressHrp, RawAddress};
 pub use authz::MsgGrantHelper;
 pub use client::{
     BlockInfo, Cosmos, CosmosBuilder, CosmosNetwork, HasCosmos, TxBuilder, TypedMessage,
