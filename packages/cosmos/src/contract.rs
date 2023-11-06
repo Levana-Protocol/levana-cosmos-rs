@@ -1,19 +1,44 @@
-use std::{fmt::Display, str::FromStr};
+use std::{convert::Infallible, fmt::Display, str::FromStr};
 
-use anyhow::{anyhow, Context, Result};
 use cosmos_sdk_proto::{
     cosmos::{
-        base::{abci::v1beta1::TxResponse, v1beta1::Coin},
+        base::{
+            abci::v1beta1::{AbciMessageLog, TxResponse},
+            v1beta1::Coin,
+        },
         tx::v1beta1::SimulateResponse,
     },
     cosmwasm::wasm::v1::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract,
-        QueryContractHistoryResponse,
+        QueryContractHistoryResponse, QuerySmartContractStateRequest,
     },
 };
 
-use crate::{address::HasAddressType, codeid::strip_quotes};
+use crate::{
+    address::HasAddressType, codeid::strip_quotes, error::Action, AddressType, ClientError,
+    ConversionError,
+};
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
+
+#[derive(thiserror::Error, Debug)]
+pub enum ContractError {
+    #[error("Missing _contract_address in instantiate_contract response {txhash}: {logs:#?}")]
+    InstantiatedContractNotFound {
+        txhash: String,
+        logs: Vec<AbciMessageLog>,
+    },
+    #[error(
+        "Address type for instantiated contract invalid. Expected: {expected:?}. Actual: {actual:?}."
+    )]
+    MismatchedAddressType {
+        expected: AddressType,
+        actual: AddressType,
+    },
+    #[error(
+        "Invalid contract admin. Must be 'no-admin', 'sender', or a valid address. Received: {0:?}"
+    )]
+    InvalidContractAdmin(String),
+}
 
 /// A Cosmos smart contract
 #[derive(Clone)]
@@ -68,9 +93,20 @@ impl CodeId {
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
         admin: ContractAdmin,
-    ) -> Result<Contract> {
-        self.instantiate_binary(wallet, label, funds, serde_json::to_vec(&msg)?, admin)
-            .await
+    ) -> crate::Result<Contract> {
+        self.instantiate_binary(
+            wallet,
+            label,
+            funds,
+            serde_json::to_vec(&msg).map_err(|source| ConversionError::RenderJson {
+                action: crate::error::Action::Instantiate {
+                    code_id: self.code_id,
+                },
+                source,
+            })?,
+            admin,
+        )
+        .await
     }
 
     /// Same as [CodeId::instantiate] but the message is already in binary.
@@ -81,7 +117,7 @@ impl CodeId {
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
         admin: ContractAdmin,
-    ) -> Result<Contract> {
+    ) -> crate::Result<Contract> {
         let msg = MsgInstantiateContract {
             sender: wallet.address().to_string(),
             admin: match admin {
@@ -100,7 +136,10 @@ impl CodeId {
 }
 
 impl Cosmos {
-    pub fn parse_contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
+    pub fn parse_contract_address_from_instantiate(
+        &self,
+        res: &TxResponse,
+    ) -> Result<Contract, ContractError> {
         for log in &res.logs {
             for event in &log.events {
                 if event.r#type == "instantiate"
@@ -109,7 +148,12 @@ impl Cosmos {
                     for attr in &event.attributes {
                         if attr.key == "_contract_address" || attr.key == "contract_address" {
                             let address: Address = strip_quotes(&attr.value).parse()?;
-                            anyhow::ensure!(address.get_address_type() == self.get_address_type());
+                            if address.get_address_type() != self.get_address_type() {
+                                return Err(ContractError::MismatchedAddressType {
+                                    expected: self.get_address_type(),
+                                    actual: address.get_address_type(),
+                                });
+                            }
                             return Ok(Contract {
                                 address,
                                 client: self.clone(),
@@ -120,11 +164,10 @@ impl Cosmos {
             }
         }
 
-        Err(anyhow!(
-            "Missing _contract_address in instantiate_contract response {}: {:#?}",
-            res.txhash,
-            res.logs
-        ))
+        Err(ContractError::InstantiatedContractNotFound {
+            txhash: res.txhash,
+            logs: res.logs,
+        })
     }
 }
 
@@ -134,7 +177,7 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         self.execute_binary(wallet, funds, serde_json::to_vec(&msg)?)
             .await
     }
@@ -145,7 +188,7 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
+    ) -> Result<(), Infallible> {
         txbuilder.add_message_mut(MsgExecuteContract {
             sender: wallet.get_address_string(),
             contract: self.get_address_string(),
@@ -161,7 +204,7 @@ impl Contract {
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
         memo: Option<String>,
-    ) -> Result<SimulateResponse> {
+    ) -> Result<SimulateResponse, Infallible> {
         self.simulate_binary(wallet, funds, serde_json::to_vec(&msg)?, memo)
             .await
     }
@@ -172,7 +215,7 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         let msg = MsgExecuteContract {
             sender: wallet.address().to_string(),
             contract: self.address.to_string(),
@@ -189,7 +232,7 @@ impl Contract {
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
         memo: Option<String>,
-    ) -> Result<SimulateResponse> {
+    ) -> Result<SimulateResponse, Infallible> {
         let msg = MsgExecuteContract {
             sender: wallet.get_address().to_string(),
             contract: self.address.to_string(),
@@ -207,7 +250,7 @@ impl Contract {
     }
 
     /// Perform a raw query
-    pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+    pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>, Infallible> {
         self.client.wasm_raw_query(self.address, key).await
     }
 
@@ -216,17 +259,36 @@ impl Contract {
         &self,
         key: impl Into<Vec<u8>>,
         height: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, Infallible> {
         self.client
             .wasm_raw_query_at_height(self.address, key, height)
             .await
     }
 
     /// Perform a query and return the raw unparsed JSON bytes.
-    pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
+    pub async fn query_bytes(&self, msg: impl serde::Serialize) -> crate::Result<Vec<u8>> {
+        let action = Action::QueryContract {
+            contract: self.address,
+            msg: None,
+        };
+        let msg = serde_json::to_string(&msg)
+            .map_err(|source| ConversionError::ParseJson { action, source })?;
+        let action = Action::QueryContract {
+            contract: self.address,
+            msg: Some(msg.clone()),
+        };
         self.client
-            .wasm_query(self.address, serde_json::to_vec(&msg)?)
+            .perform_query(
+                None,
+                QuerySmartContractStateRequest {
+                    address: self.address.into(),
+                    query_data: msg.into_bytes(),
+                },
+                true,
+            )
             .await
+            .map(|res| res.into_inner().data)
+            .map_err(|source| ClientError::Query { action, source }.into())
     }
 
     /// Perform a query at a given block height and return the raw unparsed JSON bytes.
@@ -234,25 +296,40 @@ impl Contract {
         &self,
         msg: impl serde::Serialize,
         height: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, ConversionError> {
         self.client
-            .wasm_query_at_height(self.address, serde_json::to_vec(&msg)?, height)
+            .wasm_query_at_height(
+                self.address,
+                serde_json::to_vec(&msg).map_err(|source| ConversionError::ParseJson {
+                    action: Action::QueryContract {
+                        contract: self.address,
+                    },
+                    source,
+                })?,
+                height,
+            )
             .await
     }
 
     pub async fn query<T: serde::de::DeserializeOwned>(
         &self,
         msg: impl serde::Serialize,
-    ) -> Result<T> {
-        serde_json::from_slice(&self.query_bytes(msg).await?)
-            .context("Invalid JSON response from smart contract query")
+    ) -> Result<T, ConversionError> {
+        serde_json::from_slice(&self.query_bytes(msg).await?).map_err(|source| {
+            ConversionError::ParseJson {
+                action: Action::QueryContract {
+                    contract: self.address,
+                },
+                source,
+            }
+        })
     }
 
     pub async fn query_at_height<T: serde::de::DeserializeOwned>(
         &self,
         msg: impl serde::Serialize,
         height: u64,
-    ) -> Result<T> {
+    ) -> Result<T, Infallible> {
         serde_json::from_slice(&self.query_bytes_at_height(msg, height).await?)
             .context("Invalid JSON response from smart contract query")
     }
@@ -262,9 +339,19 @@ impl Contract {
         wallet: &Wallet,
         code_id: u64,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
-        self.migrate_binary(wallet, code_id, serde_json::to_vec(&msg)?)
-            .await
+    ) -> crate::Result<()> {
+        self.migrate_binary(
+            wallet,
+            code_id,
+            serde_json::to_vec(&msg).map_err(|source| crate::Error::RenderJson {
+                action: crate::error::Action::Migrate {
+                    code_id,
+                    contract: self.address,
+                },
+                source,
+            })?,
+        )
+        .await
     }
 
     /// Same as [Contract::migrate] but the msg is serialized
@@ -273,7 +360,7 @@ impl Contract {
         wallet: &Wallet,
         code_id: u64,
         msg: impl Into<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> Result<(), Infallible> {
         let msg = MsgMigrateContract {
             sender: wallet.address().to_string(),
             contract: self.address.to_string(),
@@ -285,12 +372,12 @@ impl Contract {
     }
 
     /// Get the contract info metadata
-    pub async fn info(&self) -> Result<ContractInfo> {
+    pub async fn info(&self) -> Result<ContractInfo, Infallible> {
         self.client.contract_info(&self.address).await
     }
 
     /// Get the contract history
-    pub async fn history(&self) -> Result<QueryContractHistoryResponse> {
+    pub async fn history(&self) -> Result<QueryContractHistoryResponse, Infallible> {
         self.client.contract_history(&self.address).await
     }
 }
@@ -322,13 +409,16 @@ pub enum ContractAdmin {
 }
 
 impl FromStr for ContractAdmin {
-    type Err = anyhow::Error;
+    type Err = ContractError;
 
-    fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "no-admin" => Ok(ContractAdmin::NoAdmin),
             "sender" => Ok(ContractAdmin::Sender),
-            _ => s.parse().map(ContractAdmin::Addr).map_err(|_| anyhow::anyhow!("Invalid contract admin. Must be 'no-admin', 'sender', or a valid address. Received: {s:?}"))
+            _ => s
+                .parse()
+                .map(ContractAdmin::Addr)
+                .map_err(|_| ContractError::InvalidContractAdmin(s.to_owned())),
         }
     }
 }

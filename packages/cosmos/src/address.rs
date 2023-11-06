@@ -5,12 +5,35 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
 use bech32::{FromBase32, ToBase32};
 use bitcoin::util::bip32::DerivationPath;
 use serde::de::Visitor;
 
 use crate::{wallet::DerivationPathConfig, CosmosNetwork};
+
+#[derive(thiserror::Error, Debug)]
+pub enum AddressError {
+    #[error("The addressed provided used the Bech32m variant, only Bech32 is supported")]
+    UsedBech32mVariant,
+    #[error("Unsupported address type {0}")]
+    InvalidAddressType(String),
+    #[error("Invalid bech32 in supplied address {address}: {source:?}")]
+    InvalidBech32 {
+        address: String,
+        #[source]
+        source: bech32::Error,
+    },
+    #[error("Invalid base32 data in supplied address {address}: {source:?}")]
+    InvalidBase32 {
+        address: String,
+        #[source]
+        source: bech32::Error,
+    },
+    #[error("Invalid byte count in supplied address {address}")]
+    InvalidByteCount { address: String },
+    #[error("Invalid byte count in supplied address bytes {bytes:?}")]
+    InvalidByteCountBytes { bytes: Vec<u8> },
+}
 
 /// A raw address value not connected to a specific blockchain. You usually want [Address].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -20,23 +43,33 @@ pub enum RawAddress {
 }
 
 /// Parse a raw address and its HRP from a string. Supports any Cosmos-compatible blockchain.
-pub fn parse_raw_address(s: &str) -> Result<(String, RawAddress)> {
-    let (hrp, data, variant) = bech32::decode(s).context("Invalid bech32 data")?;
+pub fn parse_raw_address(s: &str) -> Result<(String, RawAddress), AddressError> {
+    let (hrp, data, variant) = bech32::decode(s).map_err(|source| AddressError::InvalidBech32 {
+        address: s.to_owned(),
+        source,
+    })?;
     match variant {
         bech32::Variant::Bech32 => (),
-        bech32::Variant::Bech32m => anyhow::bail!("Must use Bech32 variant"),
+        bech32::Variant::Bech32m => return Err(AddressError::UsedBech32mVariant),
     }
-    let data = Vec::<u8>::from_base32(&data)?;
-    let raw_address = data
-        .as_slice()
-        .try_into()
-        .with_context(|| format!("Total bytes found: {}", data.len()))?;
+    let data = Vec::<u8>::from_base32(&data).map_err(|source| AddressError::InvalidBase32 {
+        address: s.to_owned(),
+        source,
+    })?;
+    let raw_address = match data.as_slice().try_into() {
+        Ok(raw_address) => raw_address,
+        Err(_) => {
+            return Err(AddressError::InvalidByteCount {
+                address: s.to_owned(),
+            })
+        }
+    };
     Ok((hrp, raw_address))
 }
 
 /// Note that using this instance throws away the Human Readable Parse (HRP) of the address!
 impl FromStr for RawAddress {
-    type Err = anyhow::Error;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_raw_address(s).map(|x| x.1)
@@ -92,7 +125,7 @@ impl From<[u8; 32]> for RawAddress {
 }
 
 impl TryFrom<&[u8]> for RawAddress {
-    type Error = anyhow::Error;
+    type Error = AddressError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         match value.try_into().ok() {
@@ -100,7 +133,9 @@ impl TryFrom<&[u8]> for RawAddress {
             None => value
                 .try_into()
                 .map(|raw_address| RawAddress::ThirtyTwo { raw_address })
-                .context("Invalid data size for a RawAddress, need either 20 or 32 bytes"),
+                .map_err(|_| AddressError::InvalidByteCountBytes {
+                    bytes: value.to_owned(),
+                }),
         }
     }
 }
@@ -199,7 +234,7 @@ pub(crate) enum PublicKeyMethod {
 }
 
 impl FromStr for AddressType {
-    type Err = anyhow::Error;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -211,7 +246,7 @@ impl FromStr for AddressType {
             // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
             "stars" => Ok(AddressType::Stargaze),
             "inj" => Ok(AddressType::Injective),
-            _ => Err(anyhow::anyhow!("Invalid address type {s:?}")),
+            _ => Err(AddressError::InvalidAddressType(s.to_owned())),
         }
     }
 }
@@ -256,14 +291,11 @@ impl From<&Address> for String {
 }
 
 impl FromStr for Address {
-    type Err = anyhow::Error;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        (|| {
-            let (hrp, raw_address) = parse_raw_address(s)?;
-            hrp.parse().map(|type_| Address { raw_address, type_ })
-        })()
-        .with_context(|| format!("Unable to parse Cosmos address {s}"))
+        let (hrp, raw_address) = parse_raw_address(s)?;
+        hrp.parse().map(|type_| Address { raw_address, type_ })
     }
 }
 
@@ -413,96 +445,7 @@ impl<'de> Visitor<'de> for AddressVisitor {
     }
 }
 
-/// An address where the [AddressType] is known to be Juno.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct JunoAddress {
-    raw_address: RawAddress,
-}
-
-impl From<JunoAddress> for Address {
-    fn from(JunoAddress { raw_address }: JunoAddress) -> Self {
-        raw_address.for_chain(AddressType::Juno)
-    }
-}
-
-impl From<RawAddress> for JunoAddress {
-    fn from(raw_address: RawAddress) -> Self {
-        JunoAddress { raw_address }
-    }
-}
-
-impl TryFrom<Address> for JunoAddress {
-    type Error = anyhow::Error;
-
-    fn try_from(Address { raw_address, type_ }: Address) -> Result<Self, Self::Error> {
-        if let AddressType::Juno = type_ {
-            Ok(JunoAddress { raw_address })
-        } else {
-            Err(anyhow::anyhow!(
-                "Cannot convert to JunoAddress from {type_:?}"
-            ))
-        }
-    }
-}
-
-impl Display for JunoAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            Address {
-                raw_address: self.raw_address,
-                type_: AddressType::Juno
-            }
-        )
-    }
-}
-
-impl FromStr for JunoAddress {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse()? {
-            Address {
-                raw_address,
-                type_: AddressType::Juno,
-            } => Ok(JunoAddress { raw_address }),
-            _ => Err(anyhow::anyhow!("Expected a Juno address")),
-        }
-    }
-}
-
-impl serde::Serialize for JunoAddress {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for JunoAddress {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error;
-
-        let Address { raw_address, type_ } = Address::deserialize(deserializer)?;
-        match type_ {
-            AddressType::Juno => Ok(JunoAddress { raw_address }),
-            _ => Err(D::Error::custom("Expecting a Juno address")),
-        }
-    }
-}
-
 impl Debug for Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\"{self}\"")
-    }
-}
-
-impl Debug for JunoAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"{self}\"")
     }

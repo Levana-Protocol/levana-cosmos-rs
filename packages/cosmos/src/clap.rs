@@ -1,6 +1,18 @@
-use anyhow::{Context, Result};
-
 use crate::{Cosmos, CosmosBuilder, CosmosNetwork};
+
+#[derive(thiserror::Error, Debug)]
+pub enum CliError {
+    #[error("No network specified, either provide the COSMOS_NETWORK env var or --network option")]
+    NoNetwork,
+    #[error("{0}")]
+    Client(crate::ClientError),
+}
+
+impl From<crate::ClientError> for CliError {
+    fn from(e: crate::ClientError) -> Self {
+        CliError::Client(e)
+    }
+}
 
 /// Command line options for connecting to a Cosmos network
 #[derive(clap::Parser, Clone, Debug)]
@@ -23,11 +35,11 @@ pub struct CosmosOpt {
 }
 
 impl CosmosOpt {
-    pub async fn builder(&self) -> Result<CosmosBuilder> {
+    pub async fn builder(&self) -> Result<CosmosBuilder, CliError> {
         self.clone().into_builder().await
     }
 
-    pub async fn into_builder(self) -> Result<CosmosBuilder> {
+    pub async fn into_builder(self) -> Result<CosmosBuilder, CliError> {
         let CosmosOpt {
             network,
             cosmos_grpc,
@@ -36,7 +48,8 @@ impl CosmosOpt {
             referer_header,
         } = self;
 
-        let mut builder = network.context("No network specified, either provide the COSMOS_NETWORK env var or --network option")?.builder().await?;
+        let network = network.ok_or(CliError::NoNetwork)?;
+        let mut builder = network.builder().await?;
         if let Some(grpc) = cosmos_grpc {
             builder.grpc_url = grpc;
         }
@@ -55,11 +68,11 @@ impl CosmosOpt {
         Ok(builder)
     }
 
-    pub async fn build(&self) -> Result<Cosmos> {
+    pub async fn build(&self) -> Result<Cosmos, CliError> {
         self.builder().await?.build().await
     }
 
-    pub async fn build_lazy(&self) -> Result<Cosmos> {
+    pub async fn build_lazy(&self) -> Result<Cosmos, CliError> {
         Ok(self.builder().await?.build_lazy().await)
     }
 }

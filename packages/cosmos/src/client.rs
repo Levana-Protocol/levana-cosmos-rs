@@ -1,8 +1,7 @@
 mod query;
 
-use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
+use std::{convert::Infallible, fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
@@ -28,6 +27,7 @@ use cosmos_sdk_proto::{
     },
     traits::Message,
 };
+use reqwest::Client;
 use serde::{de::Visitor, Deserialize};
 use tokio::time::error::Elapsed;
 use tonic::{
@@ -38,7 +38,10 @@ use tonic::{
     Status,
 };
 
-use crate::{address::HasAddressType, wallet::WalletPublicKey, Address, AddressType, HasAddress};
+use crate::{
+    address::HasAddressType, error::Action, wallet::WalletPublicKey, Address, AddressType,
+    HasAddress,
+};
 
 use self::query::GrpcRequest;
 
@@ -48,6 +51,28 @@ use super::Wallet;
 pub struct Cosmos {
     pool: Pool<CosmosBuilders>,
     first_builder: Arc<CosmosBuilder>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ClientError {
+    #[error("Unable to load gas config from {url}: {source:?}")]
+    LoadGasConfig {
+        url: &'static str,
+        source: reqwest::Error,
+    },
+    #[error("Mismatched chain IDs. Expected: {expected}. Actual: {actual}.")]
+    MismatchedChainIds { actual: String, expected: String },
+    #[error("Failed performing query during {action}. {source:?}")]
+    Query {
+        action: Action,
+        source: PerformQueryError,
+    },
+}
+
+impl From<ClientError> for crate::Error {
+    fn from(e: ClientError) -> Self {
+        crate::Error::Client(e)
+    }
 }
 
 impl std::fmt::Debug for Cosmos {
@@ -77,19 +102,39 @@ impl CosmosBuilders {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+enum CosmosBuildersError {
+    #[error("Connection is marked as broken")]
+    MarkedAsBroken,
+    #[error("Invalid gRPC URL provided: {grpc_url}. {source:?}")]
+    InvalidGrpcUrl {
+        grpc_url: String,
+        source: tonic::transport::Error,
+    },
+    #[error("Error configuring TLS: {source:?}")]
+    TlsConfig { source: tonic::transport::Error },
+    #[error("Could not connect to gRPC endpoint {grpc_url}. {source:?}")]
+    CouldNotConnect {
+        grpc_url: String,
+        source: tonic::transport::Error,
+    },
+    #[error("Connection timed out to {grpc_url}")]
+    ConnectionTimedOut { grpc_url: String },
+}
+
 #[async_trait]
 impl ManageConnection for CosmosBuilders {
     type Connection = CosmosInner;
 
-    type Error = anyhow::Error;
+    type Error = CosmosBuildersError;
 
-    async fn connect(&self) -> Result<Self::Connection> {
+    async fn connect(&self) -> Result<Self::Connection, Self::Error> {
         self.get_next_builder().build_inner().await
     }
 
-    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
+    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), Self::Error> {
         if inner.is_broken {
-            Err(anyhow::anyhow!("Connection is marked as broken"))
+            Err(CosmosBuildersError::MarkedAsBroken)
         } else {
             Ok(())
         }
@@ -121,13 +166,13 @@ impl CosmosBuilders {
 #[async_trait]
 trait WithCosmosInner {
     type Output;
-    async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
+    async fn call(self, inner: &CosmosInner) -> Result<Self::Output, Infallible>;
 }
 
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum PerformQueryError {
     #[error("Error getting a gRPC connection from the pool: {0:?}")]
-    Pool(bb8::RunError<anyhow::Error>),
+    Pool(bb8::RunError<CosmosBuildersError>),
     #[error("Error response from gRPC endpoint: {0:?}")]
     Tonic(tonic::Status),
     #[error("Query timed out, total elapsed time: {0}")]
@@ -200,15 +245,16 @@ impl Cosmos {
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
     ///
     /// Called automatically by [Cosmos::build], but not by [Cosmos::build_lazy].
-    pub async fn sanity_check(&self) -> Result<()> {
-        let actual = &self.get_latest_block_info().await?.chain_id;
+    pub async fn sanity_check(&self) -> Result<(), ClientError> {
+        let actual = self.get_latest_block_info().await?.chain_id;
         let expected = &self.get_first_builder().chain_id;
-        if actual == expected {
+        if &actual == expected {
             Ok(())
         } else {
-            Err(anyhow::anyhow!(
-                "Mismatched chain IDs. Actual: {actual}. Expected: {expected}."
-            ))
+            Err(ClientError::MismatchedChainIds {
+                actual,
+                expected: expected.clone(),
+            })
         }
     }
 
@@ -372,7 +418,7 @@ impl Default for CosmosConfig {
 }
 
 impl CosmosBuilder {
-    pub async fn build(self) -> Result<Cosmos> {
+    pub async fn build(self) -> Result<Cosmos, ClientError> {
         let cosmos = self.build_lazy().await;
         // Force strict connection
         cosmos.sanity_check().await?;
@@ -479,7 +525,7 @@ impl Display for CosmosNetwork {
 }
 
 impl FromStr for CosmosNetwork {
-    type Err = anyhow::Error;
+    type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -502,11 +548,11 @@ impl FromStr for CosmosNetwork {
 }
 
 impl CosmosNetwork {
-    pub async fn connect(self) -> Result<Cosmos> {
+    pub async fn connect(self) -> Result<Cosmos, ClientError> {
         self.builder().await?.build().await
     }
 
-    pub async fn builder(self) -> Result<CosmosBuilder> {
+    pub async fn builder(self) -> Result<CosmosBuilder, ClientError> {
         Ok(match self {
             CosmosNetwork::JunoTestnet => CosmosBuilder::new_juno_testnet(),
             CosmosNetwork::JunoMainnet => CosmosBuilder::new_juno_mainnet(),
@@ -526,11 +572,19 @@ impl CosmosNetwork {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(self: Arc<Self>) -> Result<CosmosInner> {
+    async fn build_inner(self: Arc<Self>) -> Result<CosmosInner, CosmosBuildersError> {
         let grpc_url = &self.grpc_url;
-        let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
+        let grpc_endpoint =
+            grpc_url
+                .parse::<Endpoint>()
+                .map_err(|source| CosmosBuildersError::InvalidGrpcUrl {
+                    grpc_url: grpc_url.clone(),
+                    source,
+                })?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
-            grpc_endpoint.tls_config(ClientTlsConfig::new())?
+            grpc_endpoint
+                .tls_config(ClientTlsConfig::new())
+                .map_err(|source| CosmosBuildersError::TlsConfig { source })?
         } else {
             grpc_endpoint
         };
@@ -540,9 +594,18 @@ impl CosmosBuilder {
         )
         .await
         {
-            Ok(grpc_channel) => grpc_channel
-                .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
-            Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
+            Ok(Ok(grpc_channel)) => grpc_channel,
+            Ok(Err(source)) => {
+                return Err(CosmosBuildersError::CouldNotConnect {
+                    source,
+                    grpc_url: grpc_url.clone(),
+                })
+            }
+            Err(_) => {
+                return Err(CosmosBuildersError::ConnectionTimedOut {
+                    grpc_url: grpc_url.clone(),
+                })
+            }
         };
 
         let referer_header = self.config.referer_header.clone();
@@ -573,7 +636,10 @@ impl Cosmos {
         &self.first_builder.config
     }
 
-    pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
+    pub async fn get_base_account(
+        &self,
+        address: impl Into<String>,
+    ) -> Result<BaseAccount, Infallible> {
         let res = self
             .perform_query(
                 None,
@@ -596,7 +662,7 @@ impl Cosmos {
         Ok(base_account)
     }
 
-    pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>> {
+    pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>, Infallible> {
         self.all_balances_at(address, None).await
     }
 
@@ -604,7 +670,7 @@ impl Cosmos {
         &self,
         address: impl Into<String>,
         height: Option<u64>,
-    ) -> Result<Vec<Coin>> {
+    ) -> Result<Vec<Coin>, Infallible> {
         let address = address.into();
         let mut coins = Vec::new();
         let mut pagination = None;
@@ -636,31 +702,12 @@ impl Cosmos {
         }
     }
 
-    pub async fn wasm_query(
-        &self,
-        address: impl Into<String>,
-        query_data: impl Into<Vec<u8>>,
-    ) -> Result<Vec<u8>> {
-        let res = self
-            .perform_query(
-                None,
-                QuerySmartContractStateRequest {
-                    address: address.into(),
-                    query_data: query_data.into(),
-                },
-                true,
-            )
-            .await?
-            .into_inner();
-        Ok(res.data)
-    }
-
     pub async fn wasm_query_at_height(
         &self,
         address: impl Into<String>,
         query_data: impl Into<Vec<u8>>,
         height: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, Infallible> {
         Ok(self
             .perform_query(
                 Some(height),
@@ -679,7 +726,7 @@ impl Cosmos {
         &self,
         address: impl Into<String>,
         key: impl Into<Vec<u8>>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, Infallible> {
         Ok(self
             .perform_query(
                 None,
@@ -699,7 +746,7 @@ impl Cosmos {
         address: impl Into<String>,
         key: impl Into<Vec<u8>>,
         height: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, Infallible> {
         Ok(self
             .perform_query(
                 Some(height),
@@ -714,7 +761,7 @@ impl Cosmos {
             .data)
     }
 
-    pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
+    pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>, Infallible> {
         let res = self
             .perform_query(None, QueryCodeRequest { code_id }, true)
             .await?;
@@ -722,7 +769,10 @@ impl Cosmos {
     }
 
     /// Implements a retry loop waiting for a transaction to be ready
-    pub async fn wait_for_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {
+    pub async fn wait_for_transaction(
+        &self,
+        txhash: impl Into<String>,
+    ) -> Result<TxResponse, Infallible> {
         self.wait_for_transaction_body(txhash).await.map(|x| x.1)
     }
 
@@ -730,7 +780,7 @@ impl Cosmos {
     pub async fn get_transaction_body(
         &self,
         txhash: impl Into<String>,
-    ) -> Result<(TxBody, TxResponse)> {
+    ) -> Result<(TxBody, TxResponse), Infallible> {
         let txhash = txhash.into();
         let txres = self
             .perform_query(
@@ -757,7 +807,7 @@ impl Cosmos {
     pub async fn wait_for_transaction_body(
         &self,
         txhash: impl Into<String>,
-    ) -> Result<(TxBody, TxResponse)> {
+    ) -> Result<(TxBody, TxResponse), Infallible> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
         for attempt in 1..=self.first_builder.config.transaction_attempts {
@@ -809,7 +859,7 @@ impl Cosmos {
         address: Address,
         limit: Option<u64>,
         offset: Option<u64>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<String>, Infallible> {
         let x = self
             .perform_query(
                 None,
@@ -860,7 +910,10 @@ impl Cosmos {
         self.first_builder.config.gas_estimate_multiplier
     }
 
-    pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
+    pub async fn contract_info(
+        &self,
+        address: impl Into<String>,
+    ) -> Result<ContractInfo, Infallible> {
         self.perform_query(
             None,
             QueryContractInfoRequest {
@@ -877,7 +930,7 @@ impl Cosmos {
     pub async fn contract_history(
         &self,
         address: impl Into<String>,
-    ) -> Result<QueryContractHistoryResponse> {
+    ) -> Result<QueryContractHistoryResponse, Infallible> {
         Ok(self
             .perform_query(
                 None,
@@ -891,7 +944,7 @@ impl Cosmos {
             .into_inner())
     }
 
-    pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
+    pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo, Infallible> {
         let res = self
             .perform_query(None, GetBlockByHeightRequest { height }, true)
             .await?
@@ -923,7 +976,7 @@ impl Cosmos {
         })
     }
 
-    pub async fn get_earliest_block_info(&self) -> Result<BlockInfo> {
+    pub async fn get_earliest_block_info(&self) -> Result<BlockInfo, Infallible> {
         // Really hacky, there must be a better way
         let err = match self.get_block_info(1).await {
             Ok(x) => return Ok(x),
@@ -948,7 +1001,7 @@ impl Cosmos {
         }
     }
 
-    pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
+    pub async fn get_latest_block_info(&self) -> Result<BlockInfo, Infallible> {
         let res = self
             .perform_query(None, GetLatestBlockRequest {}, true)
             .await?
@@ -1093,7 +1146,7 @@ impl CosmosBuilder {
             network: CosmosNetwork::WasmdLocal,
         }
     }
-    async fn new_sei_mainnet() -> Result<CosmosBuilder> {
+    async fn new_sei_mainnet() -> Result<CosmosBuilder, ClientError> {
         #[derive(Deserialize)]
         struct SeiGasConfig {
             #[serde(rename = "pacific-1")]
@@ -1105,8 +1158,15 @@ impl CosmosBuilder {
         }
 
         let url = "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json";
-        let resp = reqwest::get(url).await?;
-        let gas_config: SeiGasConfig = resp.json().await?;
+        let gas_config = async {
+            reqwest::get(url)
+                .await?
+                .error_for_status()?
+                .json::<SeiGasConfig>()
+                .await
+        }
+        .await
+        .map_err(|source| ClientError::LoadGasConfig { url, source })?;
 
         // https://github.com/chainapsis/keplr-chain-registry/blob/main/cosmos/pacific.json
         Ok(CosmosBuilder {
@@ -1123,7 +1183,7 @@ impl CosmosBuilder {
             network: CosmosNetwork::SeiMainnet,
         })
     }
-    async fn new_sei_testnet() -> Result<CosmosBuilder> {
+    async fn new_sei_testnet() -> Result<CosmosBuilder, Infallible> {
         #[derive(Deserialize)]
         struct SeiGasConfig {
             #[serde(rename = "atlantic-2")]
@@ -1135,8 +1195,15 @@ impl CosmosBuilder {
         }
 
         let url = "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json";
-        let resp = reqwest::get(url).await?;
-        let gas_config: SeiGasConfig = resp.json().await?;
+        let gas_config = async {
+            reqwest::get(url)
+                .await?
+                .error_for_status()?
+                .json::<SeiGasConfig>()
+                .await
+        }
+        .await
+        .map_err(|source| ClientError::LoadGasConfig { url, source })?;
 
         Ok(CosmosBuilder {
             grpc_url: "https://grpc-testnet.sei-apis.com".to_owned(),
@@ -1269,7 +1336,7 @@ impl TxBuilder {
         wallet: impl HasAddress,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<Self> {
+    ) -> Result<Self, Infallible> {
         self.add_execute_message_mut(contract, wallet, funds, msg)?;
         Ok(self)
     }
@@ -1280,7 +1347,7 @@ impl TxBuilder {
         wallet: impl HasAddress,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
+    ) -> Result<(), Infallible> {
         self.add_message_mut(MsgExecuteContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),
@@ -1296,7 +1363,7 @@ impl TxBuilder {
         wallet: impl HasAddress,
         code_id: u64,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
+    ) -> Result<(), Infallible> {
         self.add_message_mut(MsgMigrateContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),
@@ -1327,7 +1394,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         wallets: &[Address],
-    ) -> Result<FullSimulateResponse> {
+    ) -> Result<FullSimulateResponse, Infallible> {
         let mut sequences = vec![];
         for wallet in wallets {
             sequences.push(match cosmos.get_base_account(wallet.get_address()).await {
@@ -1371,7 +1438,11 @@ impl TxBuilder {
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
     /// the multiplier can by adjusted by calling [Cosmos::set_gas_multiplier]
-    pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
+    pub async fn sign_and_broadcast(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+    ) -> Result<TxResponse, Infallible> {
         let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
         self.inner_sign_and_broadcast(
             cosmos,
@@ -1391,7 +1462,7 @@ impl TxBuilder {
         cosmos: &Cosmos,
         wallet: &Wallet,
         gas_to_request: u64,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         self.inner_sign_and_broadcast(cosmos, wallet, self.make_tx_body(), gas_to_request)
             .await
     }
@@ -1402,7 +1473,7 @@ impl TxBuilder {
         wallet: &Wallet,
         body: TxBody,
         gas_to_request: u64,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         let base_account = cosmos.get_base_account(wallet.address()).await?;
 
         match self

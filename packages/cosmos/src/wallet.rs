@@ -1,9 +1,9 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use bitcoin::hashes::{ripemd160, sha256, Hash};
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{All, Message, Secp256k1};
@@ -19,6 +19,12 @@ use tiny_keccak::{Hasher, Keccak};
 
 use crate::address::RawAddress;
 use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
+
+#[derive(thiserror::Error, Debug)]
+pub enum WalletError {
+    #[error("Invalid seed phrase detected, not showing more information to avoid leaking secure information.")]
+    InvalidSeedPhrase,
+}
 
 /// A seed phrase for a wallet
 #[derive(Clone)]
@@ -60,7 +66,7 @@ impl From<bip39::Mnemonic> for SeedPhrase {
 }
 
 impl FromStr for SeedPhrase {
-    type Err = anyhow::Error;
+    type Err = WalletError;
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -70,10 +76,7 @@ impl FromStr for SeedPhrase {
         }
 
         // Create mnemonic and generate seed from it
-        let mnemonic = s
-            .parse()
-            .ok()
-            .context("Unable to parse mnemonic from phrase")?;
+        let mnemonic = s.parse().map_err(|_| WalletError::InvalidSeedPhrase)?;
 
         Ok(SeedPhrase { mnemonic })
     }
@@ -87,7 +90,7 @@ pub struct RawWallet {
 }
 
 impl FromStr for RawWallet {
-    type Err = anyhow::Error;
+    type Err = WalletError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         RawWallet::from_phrase(s)
@@ -164,10 +167,7 @@ impl DerivationPathConfig {
                     Arc::new(
                         path_str
                             .parse()
-                            .with_context(|| {
-                                format!("Generated an invalid derivation path: {path_str}")
-                            })
-                            .unwrap(),
+                            .expect("Generated an invalid derivation path"),
                     ),
                 );
                 guard.get(self).unwrap().clone()
@@ -212,7 +212,7 @@ impl RawWallet {
         Self::from_phrase(JUNO_LOCAL_PHRASE).unwrap()
     }
 
-    pub fn from_phrase(phrase: &str) -> Result<Self> {
+    pub fn from_phrase(phrase: &str) -> Result<Self, WalletError> {
         let (derivation_path, phrase) = if phrase.starts_with("m/44") {
             match phrase.split_once(' ') {
                 Some((path, phrase)) => {
@@ -232,7 +232,7 @@ impl RawWallet {
         })
     }
 
-    pub fn for_chain(&self, type_: AddressType) -> Result<Wallet> {
+    pub fn for_chain(&self, type_: AddressType) -> Result<Wallet, WalletError> {
         let secp = global_secp();
         let derivation_path = self
             .derivation_path
@@ -300,7 +300,7 @@ impl Wallet {
     }
 
     /// Generate a random wallet
-    pub fn generate(type_: AddressType) -> Result<Self> {
+    pub fn generate(type_: AddressType) -> Result<Self, WalletError> {
         RawWallet {
             seed_phrase: SeedPhrase::random(),
             derivation_path: None,
@@ -315,7 +315,7 @@ impl Wallet {
             .unwrap()
     }
 
-    pub fn from_phrase(phrase: &str, type_: AddressType) -> Result<Self> {
+    pub fn from_phrase(phrase: &str, type_: AddressType) -> Result<Self, WalletError> {
         RawWallet::from_phrase(phrase)
             .map(|raw| raw.for_chain(type_))
             .unwrap()
@@ -344,7 +344,7 @@ impl Wallet {
         &self,
         cosmos: &Cosmos,
         msg: impl Into<TypedMessage>,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         TxBuilder::default()
             .add_message(msg.into())
             .sign_and_broadcast(cosmos, self)
@@ -357,7 +357,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: Address,
         amount: Vec<Coin>,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         self.broadcast_message(
             cosmos,
             MsgSend {
@@ -375,7 +375,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: &impl HasAddress,
         amount: u128,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, Infallible> {
         self.broadcast_message(
             cosmos,
             MsgSend {

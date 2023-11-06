@@ -1,4 +1,5 @@
-use anyhow::Result;
+use std::convert::Infallible;
+
 use chrono::{DateTime, Utc};
 use cosmos_sdk_proto::cosmos::{
     authz::v1beta1::{
@@ -10,7 +11,7 @@ use cosmos_sdk_proto::cosmos::{
 use prost::Message;
 use prost_types::Timestamp;
 
-use crate::{Address, Cosmos, HasAddress, TypedMessage};
+use crate::{Address, ConversionError, Cosmos, HasAddress, TypedMessage};
 
 impl From<MsgGrant> for TypedMessage {
     fn from(msg: MsgGrant) -> Self {
@@ -38,7 +39,7 @@ pub struct MsgGrantHelper {
 }
 
 impl MsgGrantHelper {
-    pub fn try_into_msg_grant(self) -> Result<MsgGrant> {
+    pub fn try_into_msg_grant(self) -> Result<MsgGrant, ConversionError> {
         let MsgGrantHelper {
             granter,
             grantee,
@@ -61,10 +62,15 @@ impl MsgGrantHelper {
     }
 }
 
-fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp> {
+fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp, ConversionError> {
     Ok(prost_types::Timestamp {
         seconds: x.timestamp(),
-        nanos: x.timestamp_subsec_nanos().try_into()?,
+        nanos: i32::try_from(x.timestamp_subsec_nanos()).map_err(|source| {
+            crate::ConversionError::InvalidNanos {
+                datetime: x,
+                source,
+            }
+        })?,
     })
 }
 
@@ -72,7 +78,7 @@ impl Cosmos {
     pub async fn query_granter_grants(
         &self,
         granter: impl HasAddress,
-    ) -> Result<Vec<GrantAuthorization>> {
+    ) -> Result<Vec<GrantAuthorization>, Infallible> {
         let mut res = vec![];
         let mut pagination = None;
 
