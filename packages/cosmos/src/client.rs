@@ -199,7 +199,7 @@ impl Cosmos {
 
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
     ///
-    /// Called automatically by [Cosmos::build], but not by [Cosmos::build_lazy].
+    /// Called automatically by [CosmosBuilder::build], but not by [CosmosBuilder::build_lazy].
     pub async fn sanity_check(&self) -> Result<()> {
         let actual = &self.get_latest_block_info().await?.chain_id;
         let expected = &self.get_first_builder().chain_id;
@@ -990,7 +990,7 @@ impl CosmosBuilder {
         self.config.connection_timeout = timeout;
     }
 
-    /// See https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.retry_connection
+    /// See <https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.retry_connection>
     pub fn set_retry_connection(&mut self, retry_connection: bool) {
         self.config.retry_connection = Some(retry_connection);
     }
@@ -1370,7 +1370,7 @@ impl TxBuilder {
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
-    /// the multiplier can by adjusted by calling [Cosmos::set_gas_multiplier]
+    /// the multiplier can by adjusted by calling [CosmosBuilder::set_gas_multiplier]
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
         self.inner_sign_and_broadcast(
