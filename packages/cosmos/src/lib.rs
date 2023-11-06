@@ -9,7 +9,7 @@ pub use cosmos_sdk_proto as proto;
 pub use cosmos_sdk_proto::cosmos::base::v1beta1::Coin;
 pub use ext::TxResponseExt;
 pub use tokenfactory::TokenFactory;
-pub use wallet::{RawWallet, SeedPhrase, Wallet};
+pub use wallet::{SeedPhrase, Wallet};
 
 mod address;
 mod authz;

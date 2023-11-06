@@ -23,7 +23,7 @@ use cosmos::{
         traits::Message,
     },
     Address, AddressHrp, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress, HasAddressHrp,
-    RawAddress, RawWallet, TxBuilder, Wallet,
+    RawAddress, SeedPhrase, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -60,7 +60,7 @@ impl Opt {
 struct TxOpt {
     /// Mnemonic phrase
     #[clap(long, env = "COSMOS_WALLET")]
-    wallet: RawWallet,
+    wallet: SeedPhrase,
     /// Memo to put on transaction
     #[clap(long)]
     memo: Option<String>,
@@ -68,7 +68,7 @@ struct TxOpt {
 
 impl TxOpt {
     pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
-        self.wallet.with_hrp(hrp)
+        self.wallet.with_hrp(hrp, None)
     }
 }
 
@@ -180,7 +180,7 @@ enum Subcommand {
         /// HRP (human readable part) of the address, e.g. osmo, inj
         hrp: AddressHrp,
         /// Phrase
-        phrase: RawWallet,
+        phrase: SeedPhrase,
     },
     /// Send coins to the given address
     SendCoins {
@@ -255,7 +255,7 @@ enum Subcommand {
     TokenFactory {
         /// Mnemonic phrase
         #[clap(long, env = "COSMOS_WALLET")]
-        wallet: RawWallet,
+        wallet: SeedPhrase,
 
         #[clap(subcommand)]
         cmd: tokenfactory::Command,
@@ -409,11 +409,8 @@ impl Subcommand {
                 log::debug!("{tx:?}");
             }
             Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
-            Subcommand::PrintAddress {
-                hrp: address_type,
-                phrase,
-            } => {
-                println!("{}", phrase.with_hrp(address_type)?);
+            Subcommand::PrintAddress { hrp, phrase } => {
+                println!("{}", phrase.with_hrp(hrp, None)?);
             }
             Subcommand::SendCoins {
                 tx_opt,

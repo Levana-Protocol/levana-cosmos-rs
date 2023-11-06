@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cosmos::{Cosmos, HasAddressHrp, RawWallet, TokenFactory};
+use cosmos::{Cosmos, HasAddressHrp, SeedPhrase, TokenFactory};
 
 #[derive(clap::Parser)]
 pub enum Command {
@@ -12,8 +12,8 @@ pub enum Command {
     ChangeAdmin { denom: String, addr: String },
 }
 
-pub(crate) async fn go(cosmos: Cosmos, raw_wallet: RawWallet, cmd: Command) -> Result<()> {
-    let wallet = raw_wallet.with_hrp(cosmos.get_address_hrp())?;
+pub(crate) async fn go(cosmos: Cosmos, raw_wallet: SeedPhrase, cmd: Command) -> Result<()> {
+    let wallet = raw_wallet.with_hrp(cosmos.get_address_hrp(), None)?;
     let tokenfactory = TokenFactory::new(cosmos, wallet);
 
     match cmd {
