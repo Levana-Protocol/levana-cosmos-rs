@@ -566,6 +566,11 @@ impl CosmosBuilder {
             is_broken: false,
         })
     }
+
+    pub fn set_gas_multiplier(&mut self, multiplier: f64) -> &mut Self {
+        self.config.gas_estimate_multiplier = multiplier;
+        self
+    }
 }
 
 impl Cosmos {
