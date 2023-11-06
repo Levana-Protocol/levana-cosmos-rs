@@ -3,8 +3,7 @@ pub use address::{
 };
 pub use authz::MsgGrantHelper;
 pub use client::{
-    BlockInfo, Cosmos, CosmosBuilder, CosmosBuilders, CosmosNetwork, HasCosmos, TxBuilder,
-    TypedMessage,
+    BlockInfo, Cosmos, CosmosBuilder, CosmosNetwork, HasCosmos, TxBuilder, TypedMessage,
 };
 pub use codeid::CodeId;
 pub use contract::{Contract, ContractAdmin, HasContract};

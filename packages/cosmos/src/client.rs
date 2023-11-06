@@ -46,9 +46,11 @@ use super::Wallet;
 
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: Pool<CosmosBuilders>,
-    first_builder: Arc<CosmosBuilder>,
+    pool: Pool<FinalizedCosmosBuilder>,
+    builder: Arc<CosmosBuilder>,
 }
+
+struct FinalizedCosmosBuilder(Arc<CosmosBuilder>);
 
 impl std::fmt::Debug for Cosmos {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -59,32 +61,14 @@ impl std::fmt::Debug for Cosmos {
     }
 }
 
-/// Multiple [CosmosBuilder]s to allow for automatically switching between nodes.
-pub struct CosmosBuilders {
-    builders: Vec<Arc<CosmosBuilder>>,
-    next_index: parking_lot::Mutex<usize>,
-}
-
-impl CosmosBuilders {
-    fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
-        self.builders
-            .first()
-            .expect("Cannot construct a CosmosBuilders with no CosmosBuilder")
-    }
-
-    pub fn add(&mut self, builder: impl Into<Arc<CosmosBuilder>>) {
-        self.builders.push(builder.into());
-    }
-}
-
 #[async_trait]
-impl ManageConnection for CosmosBuilders {
+impl ManageConnection for FinalizedCosmosBuilder {
     type Connection = CosmosInner;
 
     type Error = anyhow::Error;
 
     async fn connect(&self) -> Result<Self::Connection> {
-        self.get_next_builder().build_inner().await
+        self.0.build_inner().await
     }
 
     async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
@@ -97,24 +81,6 @@ impl ManageConnection for CosmosBuilders {
 
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
         inner.is_broken
-    }
-}
-
-impl CosmosBuilders {
-    fn get_next_builder(&self) -> Arc<CosmosBuilder> {
-        let mut guard = self.next_index.lock();
-        let res = self
-            .builders
-            .get(*guard)
-            .expect("Impossible. get_next_builders failed")
-            .clone();
-
-        *guard += 1;
-        if *guard >= self.builders.len() {
-            *guard = 0;
-        }
-
-        res
     }
 }
 
@@ -144,9 +110,8 @@ impl Cosmos {
         let mut attempt = 0;
         loop {
             let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
-            let duration = tokio::time::Duration::from_secs(
-                self.first_builder.config.query_timeout_seconds.into(),
-            );
+            let duration =
+                tokio::time::Duration::from_secs(self.builder.config.query_timeout_seconds.into());
             let mut req = tonic::Request::new(req.clone());
             if let Some(height) = height {
                 // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
@@ -177,20 +142,20 @@ impl Cosmos {
                     PerformQueryError::Timeout(e)
                 }
             };
-            if attempt >= self.first_builder.config.query_retries || !should_retry {
+            if attempt >= self.builder.config.query_retries || !should_retry {
                 return Err(e);
             } else {
                 attempt += 1;
                 log::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
-                    self.first_builder.config.query_retries
+                    self.builder.config.query_retries
                 );
             }
         }
     }
 
     pub fn get_first_builder(&self) -> &Arc<CosmosBuilder> {
-        &self.first_builder
+        &self.builder
     }
 
     pub fn get_network(&self) -> CosmosNetwork {
@@ -380,40 +345,22 @@ impl CosmosBuilder {
     }
 
     pub async fn build_lazy(self) -> Cosmos {
-        CosmosBuilders::from(self).build_lazy().await
-    }
-}
-
-impl From<CosmosBuilder> for CosmosBuilders {
-    fn from(c: CosmosBuilder) -> Self {
-        CosmosBuilders {
-            builders: vec![c.into()],
-            next_index: parking_lot::Mutex::new(0),
-        }
-    }
-}
-
-impl CosmosBuilders {
-    pub async fn build_lazy(self) -> Cosmos {
-        let first_builder = self.get_first_builder().clone();
-        let mut builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
-            first_builder.config.idle_timeout_seconds.into(),
+        let builder = Arc::new(self);
+        let mut pool_builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
+            builder.config.idle_timeout_seconds.into(),
         )));
-        if let Some(count) = first_builder.config.connection_count {
-            builder = builder.max_size(count);
+        if let Some(count) = builder.config.connection_count {
+            pool_builder = pool_builder.max_size(count);
         }
-        builder = builder.connection_timeout(first_builder.config.connection_timeout);
-        if let Some(retry_connection) = first_builder.config.retry_connection {
-            builder = builder.retry_connection(retry_connection);
+        pool_builder = pool_builder.connection_timeout(builder.config.connection_timeout);
+        if let Some(retry_connection) = builder.config.retry_connection {
+            pool_builder = pool_builder.retry_connection(retry_connection);
         }
-        let pool = builder
-            .build(self)
+        let pool = pool_builder
+            .build(FinalizedCosmosBuilder(builder.clone()))
             .await
             .expect("Unexpected pool build error");
-        Cosmos {
-            pool,
-            first_builder,
-        }
+        Cosmos { pool, builder }
     }
 }
 
@@ -526,7 +473,7 @@ impl CosmosNetwork {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(self: Arc<Self>) -> Result<CosmosInner> {
+    async fn build_inner(&self) -> Result<CosmosInner> {
         let grpc_url = &self.grpc_url;
         let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
@@ -575,7 +522,7 @@ impl CosmosBuilder {
 
 impl Cosmos {
     pub fn get_config(&self) -> &CosmosConfig {
-        &self.first_builder.config
+        &self.builder.config
     }
 
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
@@ -765,7 +712,7 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse)> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        for attempt in 1..=self.first_builder.config.transaction_attempts {
+        for attempt in 1..=self.builder.config.transaction_attempts {
             let txres = self
                 .perform_query(
                     None,
@@ -795,7 +742,7 @@ impl Cosmos {
                 {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                        self.first_builder.config.transaction_attempts
+                        self.builder.config.transaction_attempts
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                 }
@@ -840,12 +787,12 @@ impl Cosmos {
     }
 
     pub fn get_gas_coin(&self) -> &String {
-        &self.first_builder.gas_coin
+        &self.builder.gas_coin
     }
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let config = &self.first_builder.config;
+        let config = &self.builder.config;
         let low = config.gas_price_low;
         let high = config.gas_price_high;
         let attempts = config.gas_price_retry_attempts;
@@ -862,7 +809,7 @@ impl Cosmos {
     }
 
     pub fn get_gas_multiplier(&self) -> f64 {
-        self.first_builder.config.gas_estimate_multiplier
+        self.builder.config.gas_estimate_multiplier
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
@@ -1580,7 +1527,7 @@ impl TxBuilder {
                 signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.first_builder.gas_coin.clone(),
+                        denom: cosmos.builder.gas_coin.clone(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -1592,7 +1539,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.first_builder.chain_id.clone(),
+                chain_id: cosmos.builder.chain_id.clone(),
                 account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
