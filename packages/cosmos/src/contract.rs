@@ -31,6 +31,7 @@ pub struct Contract {
 /// This is intended for use with helper newtype wrappers which provide a higher
 /// level interface for specific contracts.
 pub trait HasContract: HasAddress + HasCosmos {
+    /// Get the underlying [Contract].
     fn get_contract(&self) -> &Contract;
 }
 
@@ -126,6 +127,7 @@ impl Contract {
             .await
     }
 
+    /// Simulate executing a message against this contract.
     pub async fn simulate(
         &self,
         wallet: &Wallet,
@@ -167,9 +169,10 @@ impl Contract {
             msg: msg.into(),
             funds,
         };
-        let mut builder = TxBuilder::default().add_message(msg);
+        let mut builder = TxBuilder::default();
+        builder.add_message(msg);
         if let Some(memo) = memo {
-            builder = builder.set_memo(memo);
+            builder.set_memo(memo);
         }
         builder
             .simulate(&self.client, &[wallet.get_address()])
@@ -215,6 +218,7 @@ impl Contract {
         Ok(res.data)
     }
 
+    /// Perform a smart contract query and parse the resulting response as JSON.
     pub async fn query<T: serde::de::DeserializeOwned>(
         &self,
         msg: impl serde::Serialize,
@@ -223,6 +227,7 @@ impl Contract {
             .context("Invalid JSON response from smart contract query")
     }
 
+    /// Perform a contract migration with the given message
     pub async fn migrate(
         &self,
         wallet: &Wallet,

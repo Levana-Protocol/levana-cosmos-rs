@@ -30,21 +30,37 @@ impl From<MsgExec> for TypedMessage {
     }
 }
 
+/// A message for granting authorization to another address.
 pub struct MsgGrantHelper {
+    /// Address granting permissions
     pub granter: Address,
+    /// Address receiving permissions
     pub grantee: Address,
+    /// Which features are being authorized
     pub authorization: String,
+    /// When the authorization expires
     pub expiration: Option<DateTime<Utc>>,
 }
 
-impl MsgGrantHelper {
-    pub fn try_into_msg_grant(self) -> Result<MsgGrant> {
-        let MsgGrantHelper {
+impl TryFrom<MsgGrantHelper> for TypedMessage {
+    type Error = anyhow::Error;
+
+    fn try_from(value: MsgGrantHelper) -> Result<Self> {
+        MsgGrant::try_from(value).map(TypedMessage::from)
+    }
+}
+
+impl TryFrom<MsgGrantHelper> for MsgGrant {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        MsgGrantHelper {
             granter,
             grantee,
             authorization,
             expiration,
-        } = self;
+        }: MsgGrantHelper,
+    ) -> Result<Self> {
         let authorization = GenericAuthorization { msg: authorization };
         let authorization = prost_types::Any {
             type_url: "/cosmos.authz.v1beta1.GenericAuthorization".to_owned(),

@@ -1,3 +1,4 @@
+#![allow(missing_docs)] // FIXME remove when cleaning up this module
 use crate::{
     address::{AddressHrp, HasAddressHrp},
     Cosmos, HasAddress, TypedMessage, Wallet,

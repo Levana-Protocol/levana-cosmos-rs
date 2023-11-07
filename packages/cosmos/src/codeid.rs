@@ -80,7 +80,7 @@ impl Cosmos {
             grantee: wallet.get_address_string(),
             msgs: vec![TypedMessage::from(store_code).into_inner()],
         };
-        txbuilder.add_message_mut(msg);
+        txbuilder.add_message(msg);
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
         let code_id = self.make_code_id(res.parse_first_stored_code_id()?);
         Ok((res, code_id))

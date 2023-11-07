@@ -4,6 +4,7 @@ use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
 
 use crate::{codeid::strip_quotes, Address};
 
+/// Extension trait to add some helper methods to [TxResponse].
 pub trait TxResponseExt {
     /// Parse the timestamp of this transaction.
     fn parse_timestamp(&self) -> Result<DateTime<Utc>>;

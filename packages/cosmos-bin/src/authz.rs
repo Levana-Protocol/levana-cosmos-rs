@@ -8,7 +8,9 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use cosmos::{
     proto::{
-        cosmos::authz::v1beta1::MsgExec, cosmwasm::wasm::v1::MsgExecuteContract, traits::Message,
+        cosmos::authz::v1beta1::{MsgExec, MsgGrant},
+        cosmwasm::wasm::v1::MsgExecuteContract,
+        traits::Message,
     },
     Address, Cosmos, HasAddress, HasAddressHrp, MsgGrantHelper, TxBuilder, TypedMessage,
 };
@@ -156,15 +158,12 @@ async fn grant(
 ) -> Result<()> {
     let wallet = tx_opt.get_wallet(cosmos.get_address_hrp())?;
     let mut txbuilder = TxBuilder::default();
-    txbuilder.add_message_mut(
-        MsgGrantHelper {
-            granter: wallet.get_address(),
-            grantee,
-            authorization: grant_type.as_url().to_owned(),
-            expiration: Some(expiration),
-        }
-        .try_into_msg_grant()?,
-    );
+    txbuilder.try_add_message(MsgGrantHelper {
+        granter: wallet.get_address(),
+        grantee,
+        authorization: grant_type.as_url().to_owned(),
+        expiration: Some(expiration),
+    })?;
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
     log::info!("Granted in {}", res.txhash);
     Ok(())
@@ -176,13 +175,13 @@ fn cw3_grant(
     expiration: DateTime<Utc>,
     grant_type: GrantType,
 ) -> Result<()> {
-    let msg = MsgGrantHelper {
+    let msg: MsgGrant = MsgGrantHelper {
         granter,
         grantee,
         authorization: grant_type.as_url().to_owned(),
         expiration: Some(expiration),
     }
-    .try_into_msg_grant()?;
+    .try_into()?;
     let msg = msg.encode_to_vec();
 
     #[derive(serde::Serialize)]
@@ -251,7 +250,7 @@ async fn execute_contract(
         grantee: wallet.get_address_string(),
         msgs: vec![TypedMessage::from(msg_exec_contract).into_inner()],
     };
-    txbuilder.add_message_mut(msg);
+    txbuilder.add_message(msg);
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
     log::info!("Executed in {}", res.txhash);
     Ok(())

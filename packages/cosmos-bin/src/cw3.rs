@@ -176,9 +176,9 @@ async fn new_flex(
     // Fix permissions
     log::info!("Fixing permissions on the contracts to make the CW3 the admin");
     let mut builder = TxBuilder::default();
-    builder.add_update_contract_admin_mut(&cw3, &wallet, &cw3);
-    builder.add_update_contract_admin_mut(&cw4, &wallet, &cw3);
-    builder.add_execute_message_mut(
+    builder.add_update_contract_admin(&cw3, &wallet, &cw3);
+    builder.add_update_contract_admin(&cw4, &wallet, &cw3);
+    builder.add_execute_message(
         &cw4,
         &wallet,
         vec![],

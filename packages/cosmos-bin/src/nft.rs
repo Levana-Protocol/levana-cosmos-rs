@@ -40,7 +40,7 @@ pub(super) async fn go(sub: Subcommand, opt: Opt, cosmos: Cosmos) -> anyhow::Res
 
                 let mut builder = TxBuilder::default();
                 for token_id in tokens {
-                    builder.add_execute_message_mut(
+                    builder.add_execute_message(
                         &contract,
                         &wallet,
                         vec![],

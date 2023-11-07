@@ -1,3 +1,4 @@
+//! Provides helpers for generating Cosmos values from command line parameters.
 use anyhow::{Context, Result};
 
 use crate::{Cosmos, CosmosBuilder, CosmosNetwork};
@@ -23,10 +24,7 @@ pub struct CosmosOpt {
 }
 
 impl CosmosOpt {
-    pub async fn builder(&self) -> Result<CosmosBuilder> {
-        self.clone().into_builder().await
-    }
-
+    /// Convert these options into a new [CosmosBuilder].
     pub async fn into_builder(self) -> Result<CosmosBuilder> {
         let CosmosOpt {
             network,
@@ -50,11 +48,8 @@ impl CosmosOpt {
         Ok(builder)
     }
 
-    pub async fn build(&self) -> Result<Cosmos> {
-        self.builder().await?.build().await
-    }
-
-    pub async fn build_lazy(&self) -> Result<Cosmos> {
-        Ok(self.builder().await?.build_lazy().await)
+    /// Convenient for calling [CosmosOpt::into_builder] and then [CosmosBuilder::build].
+    pub async fn build(self) -> Result<Cosmos> {
+        self.into_builder().await?.build().await
     }
 }

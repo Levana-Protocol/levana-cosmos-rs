@@ -13,6 +13,7 @@ use crate::{Cosmos, CosmosBuilder, HasAddressHrp};
 ///
 /// Generally you'll want to use either [CosmosNetwork::builder] or [CosmosNetwork::connect].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(missing_docs)]
 pub enum CosmosNetwork {
     JunoTestnet,
     JunoMainnet,

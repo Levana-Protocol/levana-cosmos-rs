@@ -107,7 +107,7 @@ enum Subcommand {
     /// Print balances
     PrintBalances {
         /// Address on COSMOS blockchain
-        address: String,
+        address: Address,
         /// Optional height to do the query at
         #[clap(long)]
         height: Option<u64>,
@@ -281,7 +281,7 @@ impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
         match self {
             Subcommand::ShowConfig {} => {
-                let cosmos = opt.network_opt.build().await?;
+                let cosmos = opt.network_opt.into_builder().await?;
                 println!("{:#?}", cosmos);
             }
             Subcommand::StoreCode { tx_opt, file } => {
@@ -379,7 +379,7 @@ impl Subcommand {
                 let wallet = tx_opt.get_wallet(address_type)?;
 
                 let mut tx_builder = TxBuilder::default();
-                tx_builder.add_message_mut(MsgExecuteContract {
+                tx_builder.add_message(MsgExecuteContract {
                     sender: wallet.get_address_string(),
                     contract: contract.get_address_string(),
                     msg: msg.into_bytes(),
