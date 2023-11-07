@@ -173,7 +173,7 @@ enum Subcommand {
     /// Generate wallet
     GenWallet {
         /// Address type, supports any valid Human Readable Part like cosmos, osmo, or juno
-        address_type: String,
+        address_type: AddressHrp,
     },
     /// Print the address for the given phrase
     PrintAddress {
@@ -399,7 +399,7 @@ impl Subcommand {
                 println!("Raw log: {}", tx.raw_log);
                 log::debug!("{tx:?}");
             }
-            Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
+            Subcommand::GenWallet { address_type } => gen_wallet(address_type)?,
             Subcommand::PrintAddress { hrp, phrase } => {
                 println!("{}", phrase.with_hrp(hrp)?);
             }
@@ -598,11 +598,10 @@ impl Subcommand {
     }
 }
 
-fn gen_wallet(hrp: &str) -> Result<()> {
-    let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressHrp::new(hrp))?;
-    println!("Mnemonic: {phrase}");
-    let address = wallet.get_address().raw().with_hrp(AddressHrp::new(hrp));
-    println!("Address: {address}");
+fn gen_wallet(hrp: AddressHrp) -> Result<()> {
+    let phrase = cosmos::SeedPhrase::random();
+    let wallet = phrase.with_hrp(hrp)?;
+    println!("Mnemonic: {}", phrase.phrase());
+    println!("Address: {wallet}");
     Ok(())
 }

@@ -11,7 +11,6 @@ use bitcoin::util::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use cosmos_sdk_proto::cosmos::bank::v1beta1::MsgSend;
 use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
 use cosmos_sdk_proto::cosmos::base::v1beta1::Coin;
-use hkd32::mnemonic::Phrase;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 use rand::Rng;
@@ -35,9 +34,9 @@ pub struct SeedPhrase {
 
 impl SeedPhrase {
     /// Generate a random [SeedPhrase].
-    fn random() -> SeedPhrase {
+    pub fn random() -> SeedPhrase {
         let mut rng = rand::thread_rng();
-        let mut entropy: [u8; 64] = [0; 64];
+        let mut entropy: [u8; 32] = [0; 32];
         for b in &mut entropy {
             *b = rng.gen();
         }
@@ -46,6 +45,20 @@ impl SeedPhrase {
             derivation_path: None,
             public_key_method: None,
         }
+    }
+
+    /// Generate the seed phrase itself.
+    ///
+    /// Note that this should be considered security-sensitive content.
+    pub fn phrase(&self) -> String {
+        let mut phrase = String::new();
+        for (idx, word) in self.mnemonic.word_iter().enumerate() {
+            if idx != 0 {
+                phrase.push(' ');
+            }
+            phrase.push_str(word);
+        }
+        phrase
     }
 
     /// Make a new [SeedPhrase] using the given derivation path.
@@ -288,12 +301,6 @@ fn global_secp() -> &'static Secp256k1<All> {
 }
 
 impl Wallet {
-    /// Generate a random mnemonic phrase
-    pub fn generate_phrase() -> String {
-        let rng = rand::thread_rng();
-        Phrase::random(rng, Default::default()).phrase().to_owned()
-    }
-
     /// Generate a random wallet
     pub fn generate(hrp: AddressHrp) -> Result<Self> {
         SeedPhrase::random().with_hrp(hrp)
