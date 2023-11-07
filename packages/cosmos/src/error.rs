@@ -5,6 +5,7 @@ use std::{str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
+use chrono::{DateTime, Utc};
 
 use crate::AddressHrp;
 
@@ -69,4 +70,35 @@ pub enum CosmosBuilderError {
         cosmos: crate::Cosmos,
         source: anyhow::Error,
     },
+    #[error("Unknown Cosmos network value {network:?}")]
+    UnknownCosmosNetwork { network: String },
+}
+
+/// Parse errors while interacting with chain data.
+#[derive(thiserror::Error, Debug)]
+pub enum ChainParseError {
+    #[error("Could not parse timestamp {timestamp:?} from transaction {txhash}: {source:?}")]
+    InvalidTimestamp {
+        timestamp: String,
+        txhash: String,
+        source: <DateTime<Utc> as FromStr>::Err,
+    },
+    #[error(
+        "Invalid instantiate contract address {address:?} from transaction {txhash}: {source}"
+    )]
+    InvalidInstantiatedContract {
+        address: String,
+        txhash: String,
+        source: AddressError,
+    },
+    #[error("Invalid code ID {code_id:?} from transaction {txhash}: {source:?}")]
+    InvalidCodeId {
+        code_id: String,
+        txhash: String,
+        source: std::num::ParseIntError,
+    },
+    #[error("No code ID found when expecting a store code response in transaction {txhash}")]
+    NoCodeIdFound { txhash: String },
+    #[error("No instantiated contract found in transaction {txhash}")]
+    NoInstantiatedContractFound { txhash: String },
 }

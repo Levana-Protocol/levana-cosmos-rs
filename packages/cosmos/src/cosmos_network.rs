@@ -310,7 +310,7 @@ impl Display for CosmosNetwork {
 }
 
 impl FromStr for CosmosNetwork {
-    type Err = anyhow::Error;
+    type Err = CosmosBuilderError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -327,7 +327,9 @@ impl FromStr for CosmosNetwork {
             "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
             "injective-testnet" => Ok(CosmosNetwork::InjectiveTestnet),
             "injective-mainnet" => Ok(CosmosNetwork::InjectiveMainnet),
-            _ => Err(anyhow::anyhow!("Unknown network: {s}")),
+            _ => Err(CosmosBuilderError::UnknownCosmosNetwork {
+                network: s.to_owned(),
+            }),
         }
     }
 }

@@ -1,4 +1,3 @@
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use cosmos_sdk_proto::cosmos::{
     authz::v1beta1::{
@@ -42,46 +41,45 @@ pub struct MsgGrantHelper {
     pub expiration: Option<DateTime<Utc>>,
 }
 
-impl TryFrom<MsgGrantHelper> for TypedMessage {
-    type Error = anyhow::Error;
-
-    fn try_from(value: MsgGrantHelper) -> Result<Self> {
-        MsgGrant::try_from(value).map(TypedMessage::from)
+impl From<MsgGrantHelper> for TypedMessage {
+    fn from(value: MsgGrantHelper) -> Self {
+        MsgGrant::from(value).into()
     }
 }
 
-impl TryFrom<MsgGrantHelper> for MsgGrant {
-    type Error = anyhow::Error;
-
-    fn try_from(
+impl From<MsgGrantHelper> for MsgGrant {
+    fn from(
         MsgGrantHelper {
             granter,
             grantee,
             authorization,
             expiration,
         }: MsgGrantHelper,
-    ) -> Result<Self> {
+    ) -> Self {
         let authorization = GenericAuthorization { msg: authorization };
         let authorization = prost_types::Any {
             type_url: "/cosmos.authz.v1beta1.GenericAuthorization".to_owned(),
             value: authorization.encode_to_vec(),
         };
-        Ok(MsgGrant {
+        MsgGrant {
             granter: granter.get_address_string(),
             grantee: grantee.get_address_string(),
             grant: Some(Grant {
                 authorization: Some(authorization),
-                expiration: expiration.map(datetime_to_timestamp).transpose()?,
+                expiration: expiration.map(datetime_to_timestamp),
             }),
-        })
+        }
     }
 }
 
-fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp> {
-    Ok(prost_types::Timestamp {
+fn datetime_to_timestamp(x: DateTime<Utc>) -> Timestamp {
+    prost_types::Timestamp {
         seconds: x.timestamp(),
-        nanos: x.timestamp_subsec_nanos().try_into()?,
-    })
+        nanos: x
+            .timestamp_subsec_nanos()
+            .try_into()
+            .expect("DateTime<Utc>'s nanos is too large"),
+    }
 }
 
 impl Cosmos {
@@ -89,7 +87,7 @@ impl Cosmos {
     pub async fn query_granter_grants(
         &self,
         granter: impl HasAddress,
-    ) -> Result<Vec<GrantAuthorization>> {
+    ) -> anyhow::Result<Vec<GrantAuthorization>> {
         let mut res = vec![];
         let mut pagination = None;
 
