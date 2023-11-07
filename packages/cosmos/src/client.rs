@@ -41,6 +41,13 @@ use self::query::GrpcRequest;
 
 use super::Wallet;
 
+/// A connection to a gRPC endpoint to communicate with a Cosmos chain.
+///
+/// Behind the scenes, this uses a [Pool] of connections. Cloning this value is
+/// cheap and recommended, it will encourage connection sharing.
+///
+/// See [CosmosBuilder] and [crate::CosmosNetwork] for common methods of
+/// building a [Cosmos].
 #[derive(Clone)]
 pub struct Cosmos {
     pool: Pool<FinalizedCosmosBuilder>,
