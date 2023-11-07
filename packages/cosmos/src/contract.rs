@@ -26,6 +26,10 @@ pub struct Contract {
     client: Cosmos,
 }
 
+/// Trait for anything which has an underlying contract
+///
+/// This is intended for use with helper newtype wrappers which provide a higher
+/// level interface for specific contracts.
 pub trait HasContract: HasAddress + HasCosmos {
     fn get_contract(&self) -> &Contract;
 }
@@ -304,8 +308,11 @@ impl HasCosmos for Contract {
 /// The on-chain admin for a contract set during instantiation
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ContractAdmin {
+    /// No admin set, the contract will never be able to be migrated
     NoAdmin,
+    /// Set the admin to the sender of the instantiate message
     Sender,
+    /// Set the admin to the given address
     Addr(Address),
 }
 

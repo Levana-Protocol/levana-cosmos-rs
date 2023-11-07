@@ -1060,7 +1060,9 @@ impl From<MsgSend> for TypedMessage {
     }
 }
 
+/// Trait for any types that contain a [Cosmos] connection.
 pub trait HasCosmos: HasAddressHrp {
+    /// Get the underlying connection
     fn get_cosmos(&self) -> &Cosmos;
 }
 
