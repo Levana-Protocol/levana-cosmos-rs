@@ -1,6 +1,7 @@
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    Cosmos, TypedMessage, Wallet,
+    error::TokenFactoryError,
+    Cosmos, HasAddress, TypedMessage, Wallet,
 };
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
@@ -9,24 +10,49 @@ use cosmos_sdk_proto::cosmos::{
 };
 
 /// TokenFactory interface
+#[derive(Clone, Debug)]
 pub struct TokenFactory {
     client: Cosmos,
-    wallet: Wallet,
+    kind: TokenFactoryKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TokenFactoryKind {
+    Osmosis,
+    Sei,
+}
+
+impl TryFrom<AddressHrp> for TokenFactoryKind {
+    type Error = TokenFactoryError;
+
+    fn try_from(hrp: AddressHrp) -> Result<Self, TokenFactoryError> {
+        match hrp.as_str() {
+            "osmo" => Ok(TokenFactoryKind::Osmosis),
+            "sei" => Ok(TokenFactoryKind::Sei),
+            _ => Err(TokenFactoryError::Unsupported { hrp }),
+        }
+    }
+}
+
+impl Cosmos {
+    /// Generate a new [TokenFactory] for this connection, if supported for this chain.
+    pub fn token_factory(self) -> Result<TokenFactory, TokenFactoryError> {
+        self.get_address_hrp()
+            .try_into()
+            .map(|kind| TokenFactory { client: self, kind })
+    }
 }
 
 impl TokenFactory {
-    pub fn new(client: Cosmos, wallet: Wallet) -> Self {
-        Self { client, wallet }
-    }
-
-    pub async fn create(&self, subdenom: String) -> Result<(TxResponse, String)> {
+    /// Create a new token with the given subdenom.
+    pub async fn create(&self, wallet: &Wallet, subdenom: String) -> Result<(TxResponse, String)> {
         let msg = MsgCreateDenom {
-            sender: self.wallet.address().to_string(),
+            sender: wallet.get_address_string(),
             subdenom,
         }
-        .into_typed_message(self.client.get_address_hrp())?;
+        .into_typed_message(self.kind);
 
-        let res = self.wallet.broadcast_message(&self.client, msg).await?;
+        let res = wallet.broadcast_message(&self.client, msg).await?;
 
         let denom = res
             .events
@@ -49,84 +75,89 @@ impl TokenFactory {
         Ok((res, denom))
     }
 
-    pub async fn mint(&self, denom: String, amount: u128) -> Result<TxResponse> {
+    /// Mint some tokens for the given denom.
+    pub async fn mint(&self, wallet: &Wallet, denom: String, amount: u128) -> Result<TxResponse> {
         let msg = MsgMint {
-            sender: self.wallet.address().to_string(),
+            sender: wallet.get_address_string(),
             amount: Some(Coin {
                 denom,
                 amount: amount.to_string(),
             }),
         }
-        .into_typed_message(self.client.get_address_hrp())?;
-        self.wallet.broadcast_message(&self.client, msg).await
+        .into_typed_message(self.kind);
+        wallet.broadcast_message(&self.client, msg).await
     }
 
-    pub async fn burn(&self, denom: String, amount: u128) -> Result<TxResponse> {
+    /// Burn tokens for the given denom
+    pub async fn burn(&self, wallet: &Wallet, denom: String, amount: u128) -> Result<TxResponse> {
         let msg = MsgBurn {
-            sender: self.wallet.address().to_string(),
-            burn_from_address: self.wallet.address().to_string(),
+            sender: wallet.get_address_string(),
+            burn_from_address: wallet.get_address_string(),
             amount: Some(Coin {
                 denom,
                 amount: amount.to_string(),
             }),
         }
-        .into_typed_message(self.client.get_address_hrp())?;
-        self.wallet.broadcast_message(&self.client, msg).await
+        .into_typed_message(self.kind);
+        wallet.broadcast_message(&self.client, msg).await
     }
 
-    pub async fn change_admin(&self, denom: String, addr: String) -> Result<TxResponse> {
+    /// Change the admin for the given token.
+    pub async fn change_admin(
+        &self,
+        wallet: &Wallet,
+        denom: String,
+        addr: String,
+    ) -> Result<TxResponse> {
         let msg = MsgChangeAdmin {
-            sender: self.wallet.address().to_string(),
+            sender: wallet.get_address_string(),
             denom: denom.clone(),
             new_admin: addr,
         }
-        .into_typed_message(self.client.get_address_hrp())?;
-        self.wallet.broadcast_message(&self.client, msg).await
+        .into_typed_message(self.kind);
+        wallet.broadcast_message(&self.client, msg).await
     }
 }
 
-fn type_url(hrp: AddressHrp, s: &str) -> Result<String> {
-    match hrp.as_str() {
-        "osmo" => Ok(format!("/osmosis.tokenfactory.v1beta1.{s}")),
-        "sei" => Ok(format!("/seiprotocol.seichain.tokenfactory.{s}")),
-        _ => Err(anyhow::anyhow!(
-            "cosmos-rs does not support tokenfactory for address type {hrp}"
-        )),
+fn type_url(kind: TokenFactoryKind, s: &str) -> String {
+    match kind {
+        TokenFactoryKind::Osmosis => format!("/osmosis.tokenfactory.v1beta1.{s}"),
+        TokenFactoryKind::Sei => format!("/seiprotocol.seichain.tokenfactory.{s}"),
     }
 }
 
 fn into_typed_message<T: prost::Message>(
-    address_type: AddressHrp,
+    kind: TokenFactoryKind,
     type_url_suffix: &str,
     msg: T,
-) -> Result<TypedMessage> {
-    Ok(TypedMessage::new(cosmos_sdk_proto::Any {
-        type_url: type_url(address_type, type_url_suffix)?,
+) -> TypedMessage {
+    TypedMessage::new(cosmos_sdk_proto::Any {
+        type_url: type_url(kind, type_url_suffix),
         value: msg.encode_to_vec(),
-    }))
+    })
 }
 
 impl MsgCreateDenom {
-    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
-        into_typed_message(address_type, "MsgCreateDenom", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+        into_typed_message(kind, "MsgCreateDenom", self)
     }
 }
 
 impl MsgMint {
-    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
-        into_typed_message(address_type, "MsgMint", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+        into_typed_message(kind, "MsgMint", self)
     }
 }
 
 impl MsgBurn {
-    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
-        into_typed_message(address_type, "MsgBurn", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+        into_typed_message(kind, "MsgBurn", self)
     }
 }
 
 impl MsgChangeAdmin {
-    pub(crate) fn into_typed_message(self, address_type: AddressHrp) -> Result<TypedMessage> {
-        into_typed_message(address_type, "MsgChangeAdmin", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+        into_typed_message(kind, "MsgChangeAdmin", self)
     }
 }
 

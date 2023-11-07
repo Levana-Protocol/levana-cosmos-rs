@@ -59,10 +59,10 @@ pub(crate) async fn go(
         } => {
             let mut txbuilder = TxBuilder::default();
             if let Some(memo) = memo {
-                txbuilder = txbuilder.set_memo(memo);
+                txbuilder.set_memo(memo);
             }
             let msg: serde_json::Value = serde_json::from_str(&msg)?;
-            txbuilder.add_migrate_message_mut(contract, sender, code_id, msg)?;
+            txbuilder.add_migrate_message(contract, sender, code_id, msg)?;
             let simres = txbuilder.simulate(&cosmos, &[sender]).await?;
             println!("{simres:?}");
         }

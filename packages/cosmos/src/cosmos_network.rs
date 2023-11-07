@@ -10,7 +10,10 @@ use crate::{Cosmos, CosmosBuilder, HasAddressHrp};
 /// This library is designed to work with arbitrary other chains too, but
 /// providing this built-in list is intended to provide convenience for users of
 /// the library.
+///
+/// Generally you'll want to use either [CosmosNetwork::builder] or [CosmosNetwork::connect].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(missing_docs)]
 pub enum CosmosNetwork {
     JunoTestnet,
     JunoMainnet,

@@ -41,6 +41,13 @@ use self::query::GrpcRequest;
 
 use super::Wallet;
 
+/// A connection to a gRPC endpoint to communicate with a Cosmos chain.
+///
+/// Behind the scenes, this uses a [Pool] of connections. Cloning this value is
+/// cheap and recommended, it will encourage connection sharing.
+///
+/// See [CosmosBuilder] and [crate::CosmosNetwork] for common methods of
+/// building a [Cosmos].
 #[derive(Clone)]
 pub struct Cosmos {
     pool: Pool<FinalizedCosmosBuilder>,
@@ -297,11 +304,12 @@ impl Cosmos {
         self
     }
 
-    pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
+    /// Get the base account information for the given address.
+    pub async fn get_base_account(&self, address: Address) -> Result<BaseAccount> {
         let res = self
             .perform_query(
                 QueryAccountRequest {
-                    address: address.into(),
+                    address: address.get_address_string(),
                 },
                 true,
             )
@@ -319,15 +327,15 @@ impl Cosmos {
         Ok(base_account)
     }
 
-    pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>> {
-        let address = address.into();
+    /// Get the coin balances for the given address.
+    pub async fn all_balances(&self, address: Address) -> Result<Vec<Coin>> {
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
             let mut res = self
                 .perform_query(
                     QueryAllBalancesRequest {
-                        address: address.clone(),
+                        address: address.get_address_string(),
                         pagination: pagination.take(),
                     },
                     true,
@@ -384,6 +392,9 @@ impl Cosmos {
         Ok((txbody, txres))
     }
 
+    /// Wait for a transaction to land on-chain using a busy loop.
+    ///
+    /// This is most useful after broadcasting a transaction to wait for it to land.
     pub async fn wait_for_transaction(
         &self,
         txhash: impl Into<String>,
@@ -480,6 +491,7 @@ impl Cosmos {
         (gas as f64 * gas_price) as u64
     }
 
+    /// Get information on the given block height.
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
             .perform_query(GetBlockByHeightRequest { height }, true)
@@ -512,6 +524,7 @@ impl Cosmos {
         })
     }
 
+    /// Get information on the earliest block available from this node
     pub async fn get_earliest_block_info(&self) -> Result<BlockInfo> {
         // Really hacky, there must be a better way
         let err = match self.get_block_info(1).await {
@@ -537,6 +550,7 @@ impl Cosmos {
         }
     }
 
+    /// Get the latest block available
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
             .perform_query(GetLatestBlockRequest {}, true)
@@ -580,6 +594,9 @@ pub struct BlockInfo {
     pub chain_id: String,
 }
 
+/// Transaction builder
+///
+/// This is the core interface for producing, simulating, and broadcasting transactions.
 #[derive(Default)]
 pub struct TxBuilder {
     messages: Vec<cosmos_sdk_proto::Any>,
@@ -588,98 +605,98 @@ pub struct TxBuilder {
 }
 
 impl TxBuilder {
-    pub fn add_message(mut self, msg: impl Into<TypedMessage>) -> Self {
+    /// Add a message to this transaction.
+    pub fn add_message(&mut self, msg: impl Into<TypedMessage>) -> &mut Self {
         self.messages.push(msg.into().0);
         self
     }
 
-    pub fn add_message_mut(&mut self, msg: impl Into<TypedMessage>) {
-        self.messages.push(msg.into().0);
+    /// Try adding a message to this transaction.
+    ///
+    /// This is for types which may fail during conversion to [TypedMessage].
+    pub fn try_add_message<T>(&mut self, msg: T) -> Result<&mut Self, T::Error>
+    where
+        T: TryInto<TypedMessage>,
+    {
+        self.messages.push(msg.try_into()?.0);
+        Ok(self)
     }
 
+    /// Add a message to update a contract admin.
     pub fn add_update_contract_admin(
-        mut self,
-        contract: impl HasAddress,
-        wallet: impl HasAddress,
-        new_admin: impl HasAddress,
-    ) -> Self {
-        self.add_update_contract_admin_mut(contract, wallet, new_admin);
-        self
-    }
-
-    pub fn add_update_contract_admin_mut(
         &mut self,
         contract: impl HasAddress,
         wallet: impl HasAddress,
         new_admin: impl HasAddress,
-    ) {
-        self.add_message_mut(MsgUpdateAdmin {
+    ) -> &mut Self {
+        self.add_message(MsgUpdateAdmin {
             sender: wallet.get_address_string(),
             new_admin: new_admin.get_address_string(),
             contract: contract.get_address_string(),
         });
+        self
     }
 
+    /// Add an execute message on a contract.
     pub fn add_execute_message(
-        mut self,
-        contract: impl HasAddress,
-        wallet: impl HasAddress,
-        funds: Vec<Coin>,
-        msg: impl serde::Serialize,
-    ) -> Result<Self> {
-        self.add_execute_message_mut(contract, wallet, funds, msg)?;
-        Ok(self)
-    }
-
-    pub fn add_execute_message_mut(
         &mut self,
         contract: impl HasAddress,
         wallet: impl HasAddress,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
-        self.add_message_mut(MsgExecuteContract {
+    ) -> Result<&mut Self> {
+        Ok(self.add_message(MsgExecuteContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),
             msg: serde_json::to_vec(&msg)?,
             funds,
-        });
-        Ok(())
+        }))
     }
 
-    pub fn add_migrate_message_mut(
+    /// Add a contract migration message.
+    pub fn add_migrate_message(
         &mut self,
         contract: impl HasAddress,
         wallet: impl HasAddress,
         code_id: u64,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
-        self.add_message_mut(MsgMigrateContract {
+    ) -> Result<&mut Self> {
+        Ok(self.add_message(MsgMigrateContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),
             code_id,
             msg: serde_json::to_vec(&msg)?,
-        });
-        Ok(())
+        }))
     }
 
-    pub fn set_memo(mut self, memo: impl Into<String>) -> Self {
+    /// Set the memo field.
+    pub fn set_memo(&mut self, memo: impl Into<String>) -> &mut Self {
         self.memo = Some(memo.into());
         self
     }
 
-    pub fn set_optional_memo(mut self, memo: impl Into<Option<String>>) -> Self {
+    /// Clear the memo field
+    pub fn clear_memo(&mut self) -> &mut Self {
+        self.memo = None;
+        self
+    }
+
+    /// Either set or clear the memo field.
+    pub fn set_optional_memo(&mut self, memo: impl Into<Option<String>>) -> &mut Self {
         self.memo = memo.into();
         self
     }
 
     /// When calling [TxBuilder::sign_and_broadcast], skip the check of whether the code is 0
-    pub fn skip_code_check(mut self, skip_code_check: bool) -> Self {
+    pub fn set_skip_code_check(&mut self, skip_code_check: bool) -> &mut Self {
         self.skip_code_check = skip_code_check;
         self
     }
 
-    /// Simulate the amount of gas needed to run a transaction.
+    /// Simulate the transaction with the given signer or signers.
+    ///
+    /// Note that for simulation purposes you do not need to provide valid
+    /// signatures, so only the signer addresses are needed.
     pub async fn simulate(
         &self,
         cosmos: &Cosmos,
@@ -740,7 +757,7 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse> {
-        let base_account = cosmos.get_base_account(wallet.address()).await?;
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
 
         self.sign_and_broadcast_with(
             cosmos,
@@ -982,18 +999,22 @@ impl TxBuilder {
         }
     }
 
+    /// Does this transaction have any messages already?
     pub fn has_messages(&self) -> bool {
         !self.messages.is_empty()
     }
 }
 
+/// A message to include in a transaction, including the type URL string.
 pub struct TypedMessage(cosmos_sdk_proto::Any);
 
 impl TypedMessage {
+    /// Generate a new [TypedMessage] from a raw protocol value.
     pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
         TypedMessage(inner)
     }
 
+    /// Extract the underlying raw protocol value.
     pub fn into_inner(self) -> cosmos_sdk_proto::Any {
         self.0
     }
@@ -1053,7 +1074,9 @@ impl From<MsgSend> for TypedMessage {
     }
 }
 
-pub trait HasCosmos {
+/// Trait for any types that contain a [Cosmos] connection.
+pub trait HasCosmos: HasAddressHrp {
+    /// Get the underlying connection
     fn get_cosmos(&self) -> &Cosmos;
 }
 

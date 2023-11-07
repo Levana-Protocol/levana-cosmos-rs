@@ -68,7 +68,7 @@ struct TxOpt {
 
 impl TxOpt {
     pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
-        self.wallet.with_hrp(hrp, None)
+        self.wallet.with_hrp(hrp)
     }
 }
 
@@ -107,7 +107,7 @@ enum Subcommand {
     /// Print balances
     PrintBalances {
         /// Address on COSMOS blockchain
-        address: String,
+        address: Address,
         /// Optional height to do the query at
         #[clap(long)]
         height: Option<u64>,
@@ -173,7 +173,7 @@ enum Subcommand {
     /// Generate wallet
     GenWallet {
         /// Address type, supports any valid Human Readable Part like cosmos, osmo, or juno
-        address_type: String,
+        address_type: AddressHrp,
     },
     /// Print the address for the given phrase
     PrintAddress {
@@ -281,7 +281,7 @@ impl Subcommand {
     pub(crate) async fn go(self, opt: Opt) -> Result<()> {
         match self {
             Subcommand::ShowConfig {} => {
-                let cosmos = opt.network_opt.build().await?;
+                let cosmos = opt.network_opt.into_builder().await?;
                 println!("{:#?}", cosmos);
             }
             Subcommand::StoreCode { tx_opt, file } => {
@@ -379,7 +379,7 @@ impl Subcommand {
                 let wallet = tx_opt.get_wallet(address_type)?;
 
                 let mut tx_builder = TxBuilder::default();
-                tx_builder.add_message_mut(MsgExecuteContract {
+                tx_builder.add_message(MsgExecuteContract {
                     sender: wallet.get_address_string(),
                     contract: contract.get_address_string(),
                     msg: msg.into_bytes(),
@@ -399,9 +399,9 @@ impl Subcommand {
                 println!("Raw log: {}", tx.raw_log);
                 log::debug!("{tx:?}");
             }
-            Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
+            Subcommand::GenWallet { address_type } => gen_wallet(address_type)?,
             Subcommand::PrintAddress { hrp, phrase } => {
-                println!("{}", phrase.with_hrp(hrp, None)?);
+                println!("{}", phrase.with_hrp(hrp)?);
             }
             Subcommand::SendCoins {
                 tx_opt,
@@ -598,11 +598,10 @@ impl Subcommand {
     }
 }
 
-fn gen_wallet(hrp: &str) -> Result<()> {
-    let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressHrp::new(hrp))?;
-    println!("Mnemonic: {phrase}");
-    let address = wallet.address().raw().with_hrp(AddressHrp::new(hrp));
-    println!("Address: {address}");
+fn gen_wallet(hrp: AddressHrp) -> Result<()> {
+    let phrase = cosmos::SeedPhrase::random();
+    let wallet = phrase.with_hrp(hrp)?;
+    println!("Mnemonic: {}", phrase.phrase());
+    println!("Address: {wallet}");
     Ok(())
 }

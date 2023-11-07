@@ -147,6 +147,8 @@ impl Address {
 }
 
 /// The method used for hashing public keys into a byte representation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PublicKeyMethod {
     /// Cosmos standard is to use a combination of SHA2 256 and ripemd160.
     Cosmos,

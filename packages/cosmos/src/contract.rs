@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use cosmos_sdk_proto::{
     cosmos::{
         base::{abci::v1beta1::TxResponse, v1beta1::Coin},
@@ -15,7 +15,7 @@ use cosmos_sdk_proto::{
 
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    codeid::strip_quotes,
+    TxResponseExt,
 };
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
@@ -26,7 +26,12 @@ pub struct Contract {
     client: Cosmos,
 }
 
+/// Trait for anything which has an underlying contract
+///
+/// This is intended for use with helper newtype wrappers which provide a higher
+/// level interface for specific contracts.
 pub trait HasContract: HasAddress + HasCosmos {
+    /// Get the underlying [Contract].
     fn get_contract(&self) -> &Contract;
 }
 
@@ -85,7 +90,7 @@ impl CodeId {
     ) -> Result<Contract> {
         let msg = msg.into();
         let msg = MsgInstantiateContract {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address().to_string(),
             admin: match admin {
                 ContractAdmin::NoAdmin => "".to_owned(),
                 ContractAdmin::Sender => wallet.get_address_string(),
@@ -97,37 +102,16 @@ impl CodeId {
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
-        self.client.contract_address_from_instantiate(&res)
-    }
-}
 
-impl Cosmos {
-    /// Parse the contract address from the given [TxResponse].
-    pub fn contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
-        for log in &res.logs {
-            for event in &log.events {
-                if event.r#type == "instantiate"
-                    || event.r#type == "cosmwasm.wasm.v1.EventContractInstantiated"
-                {
-                    for attr in &event.attributes {
-                        if attr.key == "_contract_address" || attr.key == "contract_address" {
-                            let address: Address = strip_quotes(&attr.value).parse()?;
-                            anyhow::ensure!(address.get_address_hrp() == self.get_address_hrp());
-                            return Ok(Contract {
-                                address,
-                                client: self.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Missing _contract_address in instantiate_contract response {}: {:#?}",
-            res.txhash,
-            res.logs
-        ))
+        let addrs = res.parse_instantiated_contracts()?;
+        let addr = addrs.into_iter().next().with_context(|| {
+            format!(
+                "Missing _contract_address in instantiate_contract response {}: {:#?}",
+                res.txhash, res.logs
+            )
+        })?;
+        anyhow::ensure!(addr.get_address_hrp() == self.get_address_hrp());
+        Ok(self.client.make_contract(addr))
     }
 }
 
@@ -143,6 +127,7 @@ impl Contract {
             .await
     }
 
+    /// Simulate executing a message against this contract.
     pub async fn simulate(
         &self,
         wallet: &Wallet,
@@ -162,7 +147,7 @@ impl Contract {
         msg: impl Into<Vec<u8>>,
     ) -> Result<TxResponse> {
         let msg = MsgExecuteContract {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address_string(),
             contract: self.address.to_string(),
             msg: msg.into(),
             funds,
@@ -184,9 +169,10 @@ impl Contract {
             msg: msg.into(),
             funds,
         };
-        let mut builder = TxBuilder::default().add_message(msg);
+        let mut builder = TxBuilder::default();
+        builder.add_message(msg);
         if let Some(memo) = memo {
-            builder = builder.set_memo(memo);
+            builder.set_memo(memo);
         }
         builder
             .simulate(&self.client, &[wallet.get_address()])
@@ -232,6 +218,7 @@ impl Contract {
         Ok(res.data)
     }
 
+    /// Perform a smart contract query and parse the resulting response as JSON.
     pub async fn query<T: serde::de::DeserializeOwned>(
         &self,
         msg: impl serde::Serialize,
@@ -240,6 +227,7 @@ impl Contract {
             .context("Invalid JSON response from smart contract query")
     }
 
+    /// Perform a contract migration with the given message
     pub async fn migrate(
         &self,
         wallet: &Wallet,
@@ -258,8 +246,8 @@ impl Contract {
         msg: impl Into<Vec<u8>>,
     ) -> Result<()> {
         let msg = MsgMigrateContract {
-            sender: wallet.address().to_string(),
-            contract: self.address.to_string(),
+            sender: wallet.get_address_string(),
+            contract: self.get_address_string(),
             msg: msg.into(),
             code_id,
         };
@@ -325,8 +313,11 @@ impl HasCosmos for Contract {
 /// The on-chain admin for a contract set during instantiation
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ContractAdmin {
+    /// No admin set, the contract will never be able to be migrated
     NoAdmin,
+    /// Set the admin to the sender of the instantiate message
     Sender,
+    /// Set the admin to the given address
     Addr(Address),
 }
 
