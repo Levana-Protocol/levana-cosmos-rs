@@ -23,7 +23,6 @@ pub struct CosmosBuilder {
     idle_timeout_seconds: Option<u32>,
     query_timeout_seconds: Option<u32>,
     query_retries: Option<u32>,
-    autofix_sequence_mismatch: Option<bool>,
 }
 
 impl CosmosBuilder {
@@ -51,7 +50,6 @@ impl CosmosBuilder {
             idle_timeout_seconds: None,
             query_timeout_seconds: None,
             query_retries: None,
-            autofix_sequence_mismatch: None,
         }
     }
 
@@ -242,17 +240,5 @@ impl CosmosBuilder {
     /// See [Self::query_retries]
     pub fn set_query_retries(&mut self, query_retries: Option<u32>) {
         self.query_retries = query_retries;
-    }
-
-    /// Should we automatically retry transactions with corrected sequence numbers?
-    ///
-    /// Default: false
-    pub fn autofix_sequence_mismatch(&self) -> bool {
-        self.autofix_sequence_mismatch.unwrap_or(false)
-    }
-
-    /// See [Self::autofix_sequence_mismatch]
-    pub fn set_autofix_sequence_mismatch(&mut self, autofix_sequence_mismatch: Option<bool>) {
-        self.autofix_sequence_mismatch = autofix_sequence_mismatch;
     }
 }
