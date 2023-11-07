@@ -103,7 +103,8 @@ async fn account_info(cosmos: Cosmos, address: Address) -> Result<()> {
 }
 
 async fn code_id_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
-    let code_id = cosmos.code_id_from_tx(txhash).await?;
+    let (_, txres) = cosmos.get_transaction_body(txhash).await?;
+    let code_id = txres.parse_first_stored_code_id()?;
     log::info!("Code ID: {code_id}");
     Ok(())
 }

@@ -10,6 +10,12 @@ pub trait TxResponseExt {
 
     /// Return the addresses of all instantiated contracts in this transaction.
     fn parse_instantiated_contracts(&self) -> Result<Vec<Address>>;
+
+    /// Return the code IDs of any stored code in this transaction
+    fn parse_stored_code_ids(&self) -> Result<Vec<u64>>;
+
+    /// Return the first code ID stored in this transaction
+    fn parse_first_stored_code_id(&self) -> Result<u64>;
 }
 
 impl TxResponseExt for TxResponse {
@@ -41,5 +47,37 @@ impl TxResponseExt for TxResponse {
         }
 
         Ok(addrs)
+    }
+
+    fn parse_stored_code_ids(&self) -> Result<Vec<u64>> {
+        let mut res = vec![];
+
+        for log in &self.logs {
+            for event in &log.events {
+                for attr in &event.attributes {
+                    if attr.key == "code_id" {
+                        let value = strip_quotes(&attr.value);
+                        let value = value
+                            .parse()
+                            .with_context(|| format!("Unable to parse code ID: {}", attr.value))?;
+                        res.push(value);
+                    }
+                }
+            }
+        }
+
+        Ok(res)
+    }
+
+    fn parse_first_stored_code_id(&self) -> Result<u64> {
+        self.parse_stored_code_ids()?
+            .into_iter()
+            .next()
+            .with_context(|| {
+                format!(
+                    "Missing code_id in store_code response {}: {:?}",
+                    self.txhash, self.logs
+                )
+            })
     }
 }

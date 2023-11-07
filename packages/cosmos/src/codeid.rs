@@ -7,8 +7,8 @@ use cosmos_sdk_proto::{
 };
 
 use crate::{
-    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TypedMessage,
-    Wallet,
+    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxResponseExt,
+    TypedMessage, Wallet,
 };
 
 /// Represents the uploaded code on a specific blockchain connection.
@@ -30,28 +30,6 @@ impl CodeId {
     }
 }
 
-/// Get the code ID from a TxResponse
-fn parse_code_id(res: &TxResponse) -> Result<u64> {
-    for log in &res.logs {
-        for event in &log.events {
-            for attr in &event.attributes {
-                if attr.key == "code_id" {
-                    let value = strip_quotes(&attr.value);
-                    return value
-                        .parse()
-                        .with_context(|| format!("Unable to parse code ID: {}", attr.value));
-                }
-            }
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "Missing code_id in store_code response {}: {:?}",
-        res.txhash,
-        res.logs
-    ))
-}
-
 pub(crate) fn strip_quotes(s: &str) -> &str {
     s.strip_prefix('\"')
         .and_then(|s| s.strip_suffix('\"'))
@@ -70,11 +48,8 @@ impl Cosmos {
             .broadcast_message(self, msg)
             .await
             .context("Storing WASM contract")?;
-        let code_id = parse_code_id(&res)?;
-        Ok(CodeId {
-            code_id,
-            client: self.clone(),
-        })
+
+        Ok(self.make_code_id(res.parse_first_stored_code_id()?))
     }
 
     /// Convenience wrapper for [Cosmos::store_code] that works on file paths
@@ -107,15 +82,8 @@ impl Cosmos {
         };
         txbuilder.add_message_mut(msg);
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
-        let code_id = parse_code_id(&res)?;
-        Ok((res, self.make_code_id(code_id)))
-    }
-
-    /// Get the code ID from a transaction hash
-    pub async fn code_id_from_tx(&self, txhash: impl Into<String>) -> Result<CodeId> {
-        let (_, txres) = self.wait_for_transaction(txhash).await?;
-        let code_id = parse_code_id(&txres)?;
-        Ok(self.make_code_id(code_id))
+        let code_id = self.make_code_id(res.parse_first_stored_code_id()?);
+        Ok((res, code_id))
     }
 }
 
