@@ -36,8 +36,10 @@ use tonic::{
 };
 
 use crate::{
-    address::HasAddressHrp, error::CosmosBuilderError, wallet::WalletPublicKey, Address,
-    CosmosBuilder, HasAddress,
+    address::HasAddressHrp,
+    error::{BuilderError, ConnectionError},
+    wallet::WalletPublicKey,
+    Address, CosmosBuilder, HasAddress,
 };
 
 use self::query::GrpcRequest;
@@ -74,22 +76,18 @@ impl std::fmt::Debug for Cosmos {
 impl ManageConnection for FinalizedCosmosBuilder {
     type Connection = CosmosInner;
 
-    type Error = anyhow::Error;
+    type Error = ConnectionError;
 
-    async fn connect(&self) -> Result<Self::Connection> {
+    async fn connect(&self) -> Result<Self::Connection, ConnectionError> {
         self.0.build_inner().await
     }
 
-    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<()> {
-        if inner.is_broken {
-            Err(anyhow::anyhow!("Connection is marked as broken"))
-        } else {
-            Ok(())
-        }
+    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), ConnectionError> {
+        inner.is_broken.clone()
     }
 
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
-        inner.is_broken
+        inner.is_broken.is_err()
     }
 }
 
@@ -102,7 +100,7 @@ trait WithCosmosInner {
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum PerformQueryError {
     #[error("Error getting a gRPC connection from the pool: {0:?}")]
-    Pool(bb8::RunError<anyhow::Error>),
+    Pool(bb8::RunError<ConnectionError>),
     #[error("Error response from gRPC endpoint: {0:?}")]
     Tonic(tonic::Status),
     #[error("Query timed out, total elapsed time: {0}")]
@@ -139,14 +137,19 @@ impl Cosmos {
                     .await
                     {
                         Ok(_) => (),
-                        Err(_) => {
-                            cosmos_inner.is_broken = true;
+                        Err(source) => {
+                            cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
+                                grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                                source,
+                            });
                         }
                     }
                     PerformQueryError::Tonic(err)
                 }
                 Err(e) => {
-                    cosmos_inner.is_broken = true;
+                    cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
+                        grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                    });
                     PerformQueryError::Timeout(e)
                 }
             };
@@ -165,21 +168,6 @@ impl Cosmos {
     /// Get the [CosmosBuilder] used to construct this connection.
     pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
         &self.builder
-    }
-
-    /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
-    ///
-    /// Called automatically by [CosmosBuilder::build], but not by [CosmosBuilder::build_lazy].
-    pub async fn sanity_check(&self) -> Result<()> {
-        let actual = &self.get_latest_block_info().await?.chain_id;
-        let expected = &self.get_cosmos_builder().chain_id();
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "Mismatched chain IDs. Actual: {actual}. Expected: {expected}."
-            ))
-        }
     }
 }
 
@@ -220,17 +208,31 @@ pub struct CosmosInner {
         cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    is_broken: bool,
+    is_broken: Result<(), ConnectionError>,
 }
 
 impl CosmosBuilder {
     /// Create a new [Cosmos] and perform a sanity check to make sure the connection works.
-    pub async fn build(self) -> Result<Cosmos, CosmosBuilderError> {
+    pub async fn build(self) -> Result<Cosmos, BuilderError> {
         let cosmos = self.build_lazy().await;
-        // Force strict connection
-        match cosmos.sanity_check().await {
-            Ok(()) => Ok(cosmos),
-            Err(source) => Err(CosmosBuilderError::FailedSanityCheck { cosmos, source }),
+
+        let actual = cosmos
+            .get_latest_block_info()
+            .await
+            .map_err(|source| BuilderError::SanityQueryFailed {
+                grpc_url: cosmos.get_cosmos_builder().grpc_url().to_owned(),
+                source,
+            })?
+            .chain_id;
+        let expected = cosmos.get_cosmos_builder().chain_id();
+        if actual == expected {
+            Ok(cosmos)
+        } else {
+            Err(BuilderError::MismatchedChainIds {
+                grpc_url: cosmos.get_cosmos_builder().grpc_url().to_owned(),
+                expected: expected.to_owned(),
+                actual,
+            })
         }
     }
 
@@ -260,24 +262,35 @@ impl CosmosBuilder {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(&self) -> Result<CosmosInner> {
-        let grpc_url = &self.grpc_url();
-        let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
+    async fn build_inner(&self) -> Result<CosmosInner, ConnectionError> {
+        let grpc_url = self.grpc_url();
+        let grpc_endpoint =
+            grpc_url
+                .parse::<Endpoint>()
+                .map_err(|source| ConnectionError::InvalidGrpcUrl {
+                    grpc_url: grpc_url.to_owned(),
+                    source: source.into(),
+                })?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
-            grpc_endpoint.tls_config(ClientTlsConfig::new())?
+            grpc_endpoint
+                .tls_config(ClientTlsConfig::new())
+                .map_err(|source| ConnectionError::TlsConfig {
+                    grpc_url: grpc_url.to_owned(),
+                    source: source.into(),
+                })?
         } else {
             grpc_endpoint
         };
-        let grpc_channel = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            grpc_endpoint.connect(),
-        )
-        .await
-        {
-            Ok(grpc_channel) => grpc_channel
-                .with_context(|| format!("Error establishing gRPC connection to {grpc_url}"))?,
-            Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
-        };
+        let grpc_channel =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), grpc_endpoint.connect())
+                .await
+                .map_err(|_| ConnectionError::TimeoutConnecting {
+                    grpc_url: grpc_url.to_owned(),
+                })?
+                .map_err(|source| ConnectionError::CannotEstablishConnection {
+                    grpc_url: grpc_url.to_owned(),
+                    source: source.into(),
+                })?;
 
         let referer_header = self.referer_header().map(|x| x.to_owned());
 
@@ -297,7 +310,7 @@ impl CosmosBuilder {
             wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
-            is_broken: false,
+            is_broken: Ok(()),
         })
     }
 }

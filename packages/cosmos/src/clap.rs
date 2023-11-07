@@ -1,6 +1,6 @@
 //! Provides helpers for generating Cosmos values from command line parameters.
 
-use crate::{error::CosmosBuilderError, Cosmos, CosmosBuilder, CosmosNetwork};
+use crate::{error::BuilderError, Cosmos, CosmosBuilder, CosmosNetwork};
 
 /// Command line options for connecting to a Cosmos network
 #[derive(clap::Parser, Clone, Debug)]
@@ -29,7 +29,7 @@ pub enum CosmosOptError {
     #[error("No network specified, either provide the COSMOS_NETWORK env var or --network option")]
     NoNetworkProvided,
     #[error("{source}")]
-    CosmosBuilderError { source: CosmosBuilderError },
+    CosmosBuilderError { source: BuilderError },
 }
 
 impl CosmosOpt {

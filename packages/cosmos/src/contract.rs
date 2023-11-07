@@ -103,13 +103,7 @@ impl CodeId {
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
 
-        let addrs = res.parse_instantiated_contracts()?;
-        let addr = addrs.into_iter().next().with_context(|| {
-            format!(
-                "Missing _contract_address in instantiate_contract response {}: {:#?}",
-                res.txhash, res.logs
-            )
-        })?;
+        let addr = res.parse_first_instantiated_contract()?;
         anyhow::ensure!(addr.get_address_hrp() == self.get_address_hrp());
         Ok(self.client.make_contract(addr))
     }

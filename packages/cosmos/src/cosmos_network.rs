@@ -2,7 +2,7 @@ use std::{fmt::Display, str::FromStr};
 
 use serde::de::Visitor;
 
-use crate::{error::CosmosBuilderError, Cosmos, CosmosBuilder, HasAddressHrp};
+use crate::{error::BuilderError, Cosmos, CosmosBuilder, HasAddressHrp};
 
 /// A set of known networks.
 ///
@@ -31,7 +31,7 @@ pub enum CosmosNetwork {
 
 impl CosmosNetwork {
     /// Convenience method to make a [Self::builder] and then [CosmosBuilder::build] it.
-    pub async fn connect(self) -> Result<Cosmos, CosmosBuilderError> {
+    pub async fn connect(self) -> Result<Cosmos, BuilderError> {
         self.builder().await?.build().await
     }
 
@@ -40,7 +40,7 @@ impl CosmosNetwork {
     /// Combines [Self::builder_local] and [Self::load_settings].
     ///
     /// If you have an existing [reqwest::Client], consider using [Self::builder_with].
-    pub async fn builder(self) -> Result<CosmosBuilder, CosmosBuilderError> {
+    pub async fn builder(self) -> Result<CosmosBuilder, BuilderError> {
         self.builder_with(&reqwest::Client::new()).await
     }
 
@@ -48,7 +48,7 @@ impl CosmosNetwork {
     pub async fn builder_with(
         self,
         client: &reqwest::Client,
-    ) -> Result<CosmosBuilder, CosmosBuilderError> {
+    ) -> Result<CosmosBuilder, BuilderError> {
         let mut builder = self.builder_local();
         self.load_settings(client, &mut builder).await?;
         Ok(builder)
@@ -169,7 +169,7 @@ impl CosmosNetwork {
         self,
         client: &reqwest::Client,
         builder: &mut CosmosBuilder,
-    ) -> Result<(), CosmosBuilderError> {
+    ) -> Result<(), BuilderError> {
         match self {
             CosmosNetwork::JunoTestnet
             | CosmosNetwork::JunoMainnet
@@ -228,7 +228,7 @@ impl CosmosNetwork {
     }
 }
 
-async fn load_json<T>(url: &str, client: &reqwest::Client) -> Result<T, CosmosBuilderError>
+async fn load_json<T>(url: &str, client: &reqwest::Client) -> Result<T, BuilderError>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -242,7 +242,7 @@ where
             .await
     }
     .await
-    .map_err(|source| CosmosBuilderError::DownloadChainInfo {
+    .map_err(|source| BuilderError::DownloadChainInfo {
         url: url.to_owned(),
         source,
     })
@@ -310,7 +310,7 @@ impl Display for CosmosNetwork {
 }
 
 impl FromStr for CosmosNetwork {
-    type Err = anyhow::Error;
+    type Err = BuilderError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -327,7 +327,9 @@ impl FromStr for CosmosNetwork {
             "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
             "injective-testnet" => Ok(CosmosNetwork::InjectiveTestnet),
             "injective-mainnet" => Ok(CosmosNetwork::InjectiveMainnet),
-            _ => Err(anyhow::anyhow!("Unknown network: {s}")),
+            _ => Err(BuilderError::UnknownCosmosNetwork {
+                network: s.to_owned(),
+            }),
         }
     }
 }
