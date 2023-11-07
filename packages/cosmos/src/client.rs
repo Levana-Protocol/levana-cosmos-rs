@@ -36,7 +36,7 @@ use tonic::{
 
 use crate::{
     address::HasAddressHrp,
-    error::{Action, BuilderError, ConnectionError, QueryError},
+    error::{Action, BuilderError, ConnectionError, QueryError, QueryErrorDetails},
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress,
 };
@@ -102,7 +102,7 @@ impl Cosmos {
         req: Request,
         action: Action,
         should_retry: bool,
-    ) -> Result<tonic::Response<Request::Response>, crate::Error> {
+    ) -> Result<tonic::Response<Request::Response>, QueryError> {
         let mut attempt = 0;
         loop {
             let err = match self.perform_query_inner(req.clone()).await {
@@ -110,7 +110,7 @@ impl Cosmos {
                 Err(err) => err,
             };
             if attempt >= self.builder.query_retries() || !should_retry && err.should_be_retried() {
-                return Err(crate::Error::Query {
+                return Err(QueryError {
                     action,
                     builder: self.builder.clone(),
                     height: self.height,
@@ -129,10 +129,10 @@ impl Cosmos {
     pub(crate) async fn perform_query_inner<Request: GrpcRequest>(
         &self,
         req: Request,
-    ) -> Result<tonic::Response<Request::Response>, QueryError> {
+    ) -> Result<tonic::Response<Request::Response>, QueryErrorDetails> {
         let mut cosmos_inner = self.pool.get().await.map_err(|err| match err {
-            bb8::RunError::User(e) => QueryError::ConnectionError(e),
-            bb8::RunError::TimedOut => QueryError::ConnectionTimeout,
+            bb8::RunError::User(e) => QueryErrorDetails::ConnectionError(e),
+            bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
         })?;
         let duration =
             tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
@@ -162,13 +162,13 @@ impl Cosmos {
                         });
                     }
                 }
-                Err(QueryError::Tonic(err))
+                Err(QueryErrorDetails::Tonic(err))
             }
             Err(_) => {
                 cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
                     grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
                 });
-                Err(QueryError::QueryTimeout)
+                Err(QueryErrorDetails::QueryTimeout)
             }
         }
     }
@@ -459,8 +459,8 @@ impl Cosmos {
                     ));
                 }
                 // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
-                Err(crate::Error::Query {
-                    query: QueryError::Tonic(e),
+                Err(QueryError {
+                    query: QueryErrorDetails::Tonic(e),
                     ..
                 }) if e.code() == tonic::Code::NotFound || e.message().contains("not found") => {
                     log::debug!(

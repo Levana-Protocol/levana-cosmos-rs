@@ -145,21 +145,23 @@ pub enum ConnectionError {
     },
 }
 
+/// Errors that occur while querying the chain.
+#[derive(thiserror::Error, Debug, Clone)]
+#[error("On connection to {}, while performing:\n{action}\n{query}\nHeight set to: {height:?}", builder.grpc_url())]
+pub struct QueryError {
+    pub action: Action,
+    pub builder: Arc<CosmosBuilder>,
+    pub height: Option<u64>,
+    pub query: QueryErrorDetails,
+}
+
 /// General errors while interacting with the chain
 ///
 /// This error type is used by the majority of the codebase. The idea is that
 /// the other error types will represent "preparation" errors, and this will
 /// represent errors during normal interaction.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {
-    #[error("On connection to {}, while performing:\n{action}\n{query}\nHeight set to: {height:?}", builder.grpc_url())]
-    Query {
-        action: Action,
-        builder: Arc<CosmosBuilder>,
-        height: Option<u64>,
-        query: QueryError,
-    },
-}
+pub enum Error {}
 
 /// The action being performed when an error occurred.
 #[derive(Debug, Clone)]
@@ -232,10 +234,10 @@ impl Display for StringOrBytes {
 
 /// The lower-level details of how a query failed.
 ///
-/// This error type should generally be wrapped up in [Error::Query] to provide
+/// This error type should generally be wrapped up in [QueryError] to provide
 /// additional context.
 #[derive(thiserror::Error, Debug, Clone)]
-pub enum QueryError {
+pub enum QueryErrorDetails {
     #[error("Error response from gRPC endpoint: {0:?}")]
     Tonic(tonic::Status),
     #[error("Timed out getting new connection")]
@@ -245,7 +247,8 @@ pub enum QueryError {
     #[error("{0}")]
     ConnectionError(ConnectionError),
 }
-impl QueryError {
+
+impl QueryErrorDetails {
     /// Indicates that the error may be transient and deserves a retry.
     pub(crate) fn should_be_retried(&self) -> bool {
         todo!()
