@@ -702,27 +702,7 @@ impl TxBuilder {
             });
         }
 
-        // Deal with account sequence errors, overall relevant issue is: https://phobosfinance.atlassian.net/browse/PERP-283
-        //
-        // There may be a bug in Cosmos where simulating expects the wrong
-        // sequence number. So: we simulate, trying out the suggested sequence
-        // number if necessary, and then we broadcast, again trying the sequence
-        // number they recommend if necessary.
-        //
-        // See: https://github.com/cosmos/cosmos-sdk/issues/11597
-
-        match self.simulate_inner(cosmos, &sequences).await {
-            Ok(pair) => Ok(pair),
-            Err(ExpectedSequenceError::RealError(e)) => Err(e),
-            Err(ExpectedSequenceError::NewNumber(x, e)) => {
-                if sequences.len() == 1 {
-                    log::warn!("Received an account sequence error while simulating a transaction, retrying with new number {x}: {e:?}");
-                    Ok(self.simulate_inner(cosmos, &[x]).await?)
-                } else {
-                    Err(e)
-                }
-            }
-        }
+        self.simulate_inner(cosmos, &sequences).await
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
@@ -762,26 +742,15 @@ impl TxBuilder {
     ) -> Result<TxResponse> {
         let base_account = cosmos.get_base_account(wallet.address()).await?;
 
-        match self
-            .sign_and_broadcast_with(
-                cosmos,
-                wallet,
-                &base_account,
-                base_account.sequence,
-                body.clone(),
-                gas_to_request,
-            )
-            .await
-        {
-            Ok(res) => Ok(res),
-            Err(ExpectedSequenceError::RealError(e)) => Err(e),
-            Err(ExpectedSequenceError::NewNumber(x, e)) => {
-                log::warn!("Received an account sequence error while broadcasting a transaction, retrying with new number {x}: {e:?}");
-                self.sign_and_broadcast_with(cosmos, wallet, &base_account, x, body, gas_to_request)
-                    .await
-                    .map_err(|x| x.into())
-            }
-        }
+        self.sign_and_broadcast_with(
+            cosmos,
+            wallet,
+            &base_account,
+            base_account.sequence,
+            body.clone(),
+            gas_to_request,
+        )
+        .await
     }
 
     fn make_signer_info(&self, sequence: u64, wallet: Option<&Wallet>) -> SignerInfo {
@@ -853,7 +822,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         sequences: &[u64],
-    ) -> Result<FullSimulateResponse, ExpectedSequenceError> {
+    ) -> Result<FullSimulateResponse> {
         let body = self.make_tx_body();
 
         // First simulate the request with no signature and fake gas
@@ -880,20 +849,11 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
-        let simres = cosmos.perform_query(simulate_req, true).await;
-        // PERP-283: detect account sequence mismatches
-        let simres = match simres {
-            Ok(simres) => simres.into_inner(),
-            Err(PerformQueryError::Tonic(e)) => {
-                let is_sequence = cosmos.get_expected_sequence(e.message());
-                let e = anyhow::Error::from(e).context("Unable to simulate transaction");
-                return match is_sequence {
-                    None => Err(ExpectedSequenceError::RealError(e)),
-                    Some(number) => Err(ExpectedSequenceError::NewNumber(number, e)),
-                };
-            }
-            Err(e) => return Err(ExpectedSequenceError::RealError(e.into())),
-        };
+        let simres = cosmos
+            .perform_query(simulate_req, true)
+            .await
+            .context("Unable to simulate transaction")?
+            .into_inner();
 
         let gas_used = simres
             .gas_info
@@ -916,14 +876,14 @@ impl TxBuilder {
         sequence: u64,
         body: TxBody,
         gas_to_request: u64,
-    ) -> Result<TxResponse, ExpectedSequenceError> {
+    ) -> Result<TxResponse> {
         enum AttemptError {
-            Inner(ExpectedSequenceError),
+            Inner(anyhow::Error),
             InsufficientGas(anyhow::Error),
         }
         impl From<anyhow::Error> for AttemptError {
             fn from(e: anyhow::Error) -> Self {
-                AttemptError::Inner(e.into())
+                AttemptError::Inner(e)
             }
         }
         let body_ref = &body;
@@ -979,26 +939,17 @@ impl TxBuilder {
                 if res.code == 13 {
                     return Err(AttemptError::InsufficientGas(e));
                 }
-                let is_sequence = cosmos.get_expected_sequence(&res.raw_log);
-                return Err(AttemptError::Inner(match is_sequence {
-                    None => ExpectedSequenceError::RealError(e),
-                    Some(number) => ExpectedSequenceError::NewNumber(number, e),
-                }));
+                return Err(AttemptError::Inner(e));
             };
 
             log::debug!("Initial BroadcastTxResponse: {res:?}");
 
             let (_, res) = cosmos.wait_for_transaction(res.txhash).await?;
             if !self.skip_code_check && res.code != 0 {
-                // We don't do the account sequence mismatch hack work here, once a
-                // transaction actually lands on the chain we don't want to ever
-                // automatically retry.
-                return Err(AttemptError::Inner(ExpectedSequenceError::RealError(
-                    anyhow::anyhow!(
-                        "Transaction failed with code {}. Raw log: {}",
-                        res.code,
-                        res.raw_log
-                    ),
+                return Err(AttemptError::Inner(anyhow::anyhow!(
+                    "Transaction failed with code {}. Raw log: {}",
+                    res.code,
+                    res.raw_log
                 )));
             };
 
@@ -1026,7 +977,7 @@ impl TxBuilder {
         let amount = cosmos.gas_to_coins(gas_to_request, attempts).to_string();
         match retry_with_price(amount).await {
             Ok(x) => Ok(x),
-            Err(AttemptError::InsufficientGas(e)) => Err(e.into()),
+            Err(AttemptError::InsufficientGas(e)) => Err(e),
             Err(AttemptError::Inner(e)) => Err(e),
         }
     }
@@ -1118,110 +1069,11 @@ impl<T: HasCosmos> HasCosmos for &T {
     }
 }
 
-/// Returned the expected account sequence mismatch based on an error message, if present.
-///
-/// Always returns [None] if autofix_sequence_mismatch is disabled (the default).
-impl Cosmos {
-    fn get_expected_sequence(&self, message: &str) -> Option<u64> {
-        if self.builder.autofix_sequence_mismatch() {
-            get_expected_sequence_inner(message)
-        } else {
-            None
-        }
-    }
-}
-
-fn get_expected_sequence_inner(message: &str) -> Option<u64> {
-    for line in message.lines() {
-        if let Some(x) = get_expected_sequence_single(line) {
-            return Some(x);
-        }
-    }
-    None
-}
-
-fn get_expected_sequence_single(message: &str) -> Option<u64> {
-    let s = message.strip_prefix("account sequence mismatch, expected ")?;
-    let comma = s.find(',')?;
-    s[..comma].parse().ok()
-}
-
-/// Either a real error that should be propagated, or a new account sequence number to try
-enum ExpectedSequenceError {
-    RealError(anyhow::Error),
-    NewNumber(u64, anyhow::Error),
-}
-
-impl From<anyhow::Error> for ExpectedSequenceError {
-    fn from(e: anyhow::Error) -> Self {
-        ExpectedSequenceError::RealError(e)
-    }
-}
-
-impl From<ExpectedSequenceError> for anyhow::Error {
-    fn from(e: ExpectedSequenceError) -> Self {
-        match e {
-            ExpectedSequenceError::RealError(e) => e,
-            ExpectedSequenceError::NewNumber(_, e) => e,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::CosmosNetwork;
 
     use super::*;
-
-    #[test]
-    fn get_expected_sequence_good() {
-        assert_eq!(
-            get_expected_sequence_inner("account sequence mismatch, expected 5, got 0"),
-            Some(5)
-        );
-        assert_eq!(
-            get_expected_sequence_inner("account sequence mismatch, expected 2, got 7"),
-            Some(2)
-        );
-        assert_eq!(
-            get_expected_sequence_inner("account sequence mismatch, expected 20000001, got 7"),
-            Some(20000001)
-        );
-    }
-
-    #[test]
-    fn get_expected_sequence_extra_prelude() {
-        assert_eq!(
-            get_expected_sequence_inner(
-                "blah blah blah\n\naccount sequence mismatch, expected 5, got 0"
-            ),
-            Some(5)
-        );
-        assert_eq!(
-            get_expected_sequence_inner(
-                "foajodifjaolkdfjas aiodjfaof\n\n\naccount sequence mismatch, expected 2, got 7"
-            ),
-            Some(2)
-        );
-        assert_eq!(
-            get_expected_sequence_inner(
-                "iiiiiiiiiiiiii\n\naccount sequence mismatch, expected 20000001, got 7"
-            ),
-            Some(20000001)
-        );
-    }
-
-    #[test]
-    fn get_expected_sequence_bad() {
-        assert_eq!(
-            get_expected_sequence_inner("Totally different error message"),
-            None
-        );
-        assert_eq!(
-            get_expected_sequence_inner("account sequence mismatch, expected XXXXX, got 7"),
-            None
-        );
-    }
 
     #[test]
     fn gas_estimate_multiplier() {
