@@ -1,9 +1,8 @@
 use std::{fmt::Display, str::FromStr};
 
-use anyhow::Result;
 use serde::de::Visitor;
 
-use crate::{Cosmos, CosmosBuilder, HasAddressHrp};
+use crate::{error::CosmosBuilderError, Cosmos, CosmosBuilder, HasAddressHrp};
 
 /// A set of known networks.
 ///
@@ -32,7 +31,7 @@ pub enum CosmosNetwork {
 
 impl CosmosNetwork {
     /// Convenience method to make a [Self::builder] and then [CosmosBuilder::build] it.
-    pub async fn connect(self) -> Result<Cosmos> {
+    pub async fn connect(self) -> Result<Cosmos, CosmosBuilderError> {
         self.builder().await?.build().await
     }
 
@@ -41,12 +40,15 @@ impl CosmosNetwork {
     /// Combines [Self::builder_local] and [Self::load_settings].
     ///
     /// If you have an existing [reqwest::Client], consider using [Self::builder_with].
-    pub async fn builder(self) -> Result<CosmosBuilder> {
+    pub async fn builder(self) -> Result<CosmosBuilder, CosmosBuilderError> {
         self.builder_with(&reqwest::Client::new()).await
     }
 
     /// Same as [Self::builder] but takes an existing [reqwest::Client]
-    pub async fn builder_with(self, client: &reqwest::Client) -> Result<CosmosBuilder> {
+    pub async fn builder_with(
+        self,
+        client: &reqwest::Client,
+    ) -> Result<CosmosBuilder, CosmosBuilderError> {
         let mut builder = self.builder_local();
         self.load_settings(client, &mut builder).await?;
         Ok(builder)
@@ -167,7 +169,7 @@ impl CosmosNetwork {
         self,
         client: &reqwest::Client,
         builder: &mut CosmosBuilder,
-    ) -> Result<()> {
+    ) -> Result<(), CosmosBuilderError> {
         match self {
             CosmosNetwork::JunoTestnet
             | CosmosNetwork::JunoMainnet
@@ -191,10 +193,11 @@ impl CosmosNetwork {
                     pub min_gas_price: f64,
                 }
 
-                let url =
-                    "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json";
-                let resp = client.get(url).send().await?;
-                let gas_config: SeiGasConfig = resp.json().await?;
+                let gas_config = load_json::<SeiGasConfig>(
+                    "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json",
+                    client,
+                )
+                .await?;
 
                 builder.set_gas_price_low(Some(gas_config.pacific_1.min_gas_price));
                 builder.set_gas_price_high(Some(gas_config.pacific_1.min_gas_price * 2.0));
@@ -211,9 +214,11 @@ impl CosmosNetwork {
                     pub min_gas_price: f64,
                 }
 
-                let url = "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json";
-                let resp = client.get(url).send().await?;
-                let gas_config: SeiGasConfig = resp.json().await?;
+                let gas_config = load_json::<SeiGasConfig>(
+                "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json",
+                    client,
+                )
+                .await?;
 
                 builder.set_gas_price_low(Some(gas_config.atlantic_2.min_gas_price));
                 builder.set_gas_price_high(Some(gas_config.atlantic_2.min_gas_price * 2.0));
@@ -221,6 +226,26 @@ impl CosmosNetwork {
             }
         }
     }
+}
+
+async fn load_json<T>(url: &str, client: &reqwest::Client) -> Result<T, CosmosBuilderError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    async {
+        client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+    }
+    .await
+    .map_err(|source| CosmosBuilderError::DownloadChainInfo {
+        url: url.to_owned(),
+        source,
+    })
 }
 
 impl serde::Serialize for CosmosNetwork {

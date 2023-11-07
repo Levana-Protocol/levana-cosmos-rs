@@ -1,7 +1,6 @@
 //! Provides helpers for generating Cosmos values from command line parameters.
-use anyhow::{Context, Result};
 
-use crate::{Cosmos, CosmosBuilder, CosmosNetwork};
+use crate::{error::CosmosBuilderError, Cosmos, CosmosBuilder, CosmosNetwork};
 
 /// Command line options for connecting to a Cosmos network
 #[derive(clap::Parser, Clone, Debug)]
@@ -23,9 +22,19 @@ pub struct CosmosOpt {
     referer_header: Option<String>,
 }
 
+/// Errors for working with [CosmosOpt]
+#[derive(thiserror::Error, Debug)]
+#[allow(missing_docs)]
+pub enum CosmosOptError {
+    #[error("No network specified, either provide the COSMOS_NETWORK env var or --network option")]
+    NoNetworkProvided,
+    #[error("{source}")]
+    CosmosBuilderError { source: CosmosBuilderError },
+}
+
 impl CosmosOpt {
     /// Convert these options into a new [CosmosBuilder].
-    pub async fn into_builder(self) -> Result<CosmosBuilder> {
+    pub async fn into_builder(self) -> Result<CosmosBuilder, CosmosOptError> {
         let CosmosOpt {
             network,
             cosmos_grpc,
@@ -34,7 +43,13 @@ impl CosmosOpt {
             referer_header,
         } = self;
 
-        let mut builder = network.context("No network specified, either provide the COSMOS_NETWORK env var or --network option")?.builder().await?;
+        // Do the error checking here instead of in clap so that the field can
+        // be global.
+        let network = network.ok_or(CosmosOptError::NoNetworkProvided)?;
+        let mut builder = network
+            .builder()
+            .await
+            .map_err(|source| CosmosOptError::CosmosBuilderError { source })?;
         if let Some(grpc) = cosmos_grpc {
             builder.set_grpc_url(grpc);
         }
@@ -49,7 +64,11 @@ impl CosmosOpt {
     }
 
     /// Convenient for calling [CosmosOpt::into_builder] and then [CosmosBuilder::build].
-    pub async fn build(self) -> Result<Cosmos> {
-        self.into_builder().await?.build().await
+    pub async fn build(self) -> Result<Cosmos, CosmosOptError> {
+        self.into_builder()
+            .await?
+            .build()
+            .await
+            .map_err(|source| CosmosOptError::CosmosBuilderError { source })
     }
 }

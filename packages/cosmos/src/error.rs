@@ -58,3 +58,15 @@ pub enum WalletError {
     #[error("Invalid seed phrase: {source}")]
     InvalidPhrase { source: <Mnemonic as FromStr>::Err },
 }
+
+/// Errors that can occur while building a connection.
+#[derive(thiserror::Error, Debug)]
+pub enum CosmosBuilderError {
+    #[error("Error downloading chain information from {url}: {source:?}")]
+    DownloadChainInfo { url: String, source: reqwest::Error },
+    #[error("Failed sanity check on Cosmos value:\n{cosmos:?}\n{source:?}")]
+    FailedSanityCheck {
+        cosmos: crate::Cosmos,
+        source: anyhow::Error,
+    },
+}
