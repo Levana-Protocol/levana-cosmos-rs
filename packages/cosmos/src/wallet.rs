@@ -3,7 +3,6 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use bitcoin::hashes::{ripemd160, sha256, Hash};
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{All, Message, Secp256k1};
@@ -17,6 +16,7 @@ use rand::Rng;
 use tiny_keccak::{Hasher, Keccak};
 
 use crate::address::{AddressHrp, HasAddressHrp, PublicKeyMethod, RawAddress};
+use crate::error::WalletError;
 use crate::{Address, Cosmos, HasAddress, TxBuilder, TypedMessage};
 
 /// A seed phrase for a wallet, together with an optional derivation path.
@@ -86,18 +86,24 @@ impl SeedPhrase {
     /// If no public key method is provided, the default for the given HRP is
     /// used. Similarly, if `self` does not include a derivation path, the
     /// default for the HRP is used.
-    pub fn with_hrp(&self, hrp: AddressHrp) -> Result<Wallet> {
-        let secp = global_secp();
+    pub fn with_hrp(&self, hrp: AddressHrp) -> Result<Wallet, WalletError> {
+        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
+            bitcoin::Network::Bitcoin,
+            &self.mnemonic.to_seed(""),
+        )
+        .map_err(|source| WalletError::CouldNotGetRootPrivateKey { source })?;
+
         let derivation_path = self
             .derivation_path
             .clone()
             .unwrap_or_else(|| hrp.default_derivation_path());
-
-        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
-            bitcoin::Network::Bitcoin,
-            &self.mnemonic.to_seed(""),
-        )?;
-        let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
+        let secp = global_secp();
+        let privkey = root_private_key
+            .derive_priv(secp, &*derivation_path)
+            .map_err(|source| WalletError::CouldNotDerivePrivateKey {
+                derivation_path,
+                source,
+            })?;
         let public_key = ExtendedPubKey::from_priv(secp, &privkey);
         let public_key_bytes = public_key.public_key.serialize();
         let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
@@ -136,7 +142,7 @@ impl From<bip39::Mnemonic> for SeedPhrase {
 }
 
 impl FromStr for SeedPhrase {
-    type Err = anyhow::Error;
+    type Err = WalletError;
 
     fn from_str(mut phrase: &str) -> Result<Self, Self::Err> {
         match phrase {
@@ -148,7 +154,12 @@ impl FromStr for SeedPhrase {
         let (derivation_path, phrase) = if phrase.starts_with("m/44") {
             match phrase.split_once(' ') {
                 Some((path, phrase)) => {
-                    let path = Arc::new(path.parse()?);
+                    let path = Arc::new(path.parse().map_err(|source| {
+                        WalletError::InvalidDerivationPath {
+                            path: path.to_owned(),
+                            source,
+                        }
+                    })?);
                     (Some(path), phrase)
                 }
                 None => (None, phrase),
@@ -159,8 +170,7 @@ impl FromStr for SeedPhrase {
 
         let mnemonic = phrase
             .parse()
-            .ok()
-            .context("Unable to parse mnemonic from phrase")?;
+            .map_err(|source| WalletError::InvalidPhrase { source })?;
 
         Ok(SeedPhrase {
             derivation_path,
@@ -237,14 +247,10 @@ impl DerivationPathConfig {
                 let path_str = self.to_string();
                 guard.insert(
                     self.clone(),
-                    Arc::new(
-                        path_str
-                            .parse()
-                            .with_context(|| {
-                                format!("Generated an invalid derivation path: {path_str}")
-                            })
-                            .unwrap(),
-                    ),
+                    Arc::new(match path_str.parse() {
+                        Ok(x) => x,
+                        Err(e) => panic!("Generated an invalid derivation path {path_str}: {e:?}"),
+                    }),
                 );
                 guard.get(self).unwrap().clone()
             }
@@ -304,7 +310,7 @@ impl Wallet {
     /// Generate a random wallet
     ///
     /// If you want more control over the derivation settings, use [SeedPhrase::random] instead.
-    pub fn generate(hrp: AddressHrp) -> Result<Self> {
+    pub fn generate(hrp: AddressHrp) -> Result<Self, WalletError> {
         SeedPhrase::random().with_hrp(hrp)
     }
 
@@ -341,7 +347,7 @@ impl Wallet {
         &self,
         cosmos: &Cosmos,
         msg: impl Into<TypedMessage>,
-    ) -> Result<TxResponse> {
+    ) -> anyhow::Result<TxResponse> {
         TxBuilder::default()
             .add_message(msg.into())
             .sign_and_broadcast(cosmos, self)
@@ -356,7 +362,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: Address,
         amount: Vec<Coin>,
-    ) -> Result<TxResponse> {
+    ) -> anyhow::Result<TxResponse> {
         self.broadcast_message(
             cosmos,
             MsgSend {
@@ -376,7 +382,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: &impl HasAddress,
         amount: u128,
-    ) -> Result<TxResponse> {
+    ) -> anyhow::Result<TxResponse> {
         self.broadcast_message(
             cosmos,
             MsgSend {

@@ -14,6 +14,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use cosmos::{
     clap::CosmosOpt,
+    error::WalletError,
     proto::{
         cosmos::base::abci::v1beta1::TxResponse,
         cosmwasm::wasm::v1::{
@@ -67,7 +68,7 @@ struct TxOpt {
 }
 
 impl TxOpt {
-    pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
+    pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet, WalletError> {
         self.wallet.with_hrp(hrp)
     }
 }

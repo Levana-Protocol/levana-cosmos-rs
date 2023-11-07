@@ -1,6 +1,11 @@
 #![allow(missing_docs)]
 //! Error types exposed by this package.
 
+use std::{str::FromStr, sync::Arc};
+
+use bip39::Mnemonic;
+use bitcoin::util::bip32::DerivationPath;
+
 use crate::AddressHrp;
 
 /// Errors that can occur with token factory
@@ -32,4 +37,24 @@ pub enum AddressError {
     InvalidByteCount { address: String, actual: usize },
     #[error("Invalid HRP provided: {hrp:?}")]
     InvalidHrp { hrp: String },
+}
+
+/// Errors that can occur while working with [crate::Wallet].
+
+#[derive(thiserror::Error, Debug)]
+pub enum WalletError {
+    #[error("Could not get root private key from mnemonic: {source:?}")]
+    CouldNotGetRootPrivateKey { source: bitcoin::util::bip32::Error },
+    #[error("Could not derive private key using derivation path {derivation_path}: {source:?}")]
+    CouldNotDerivePrivateKey {
+        derivation_path: Arc<DerivationPath>,
+        source: bitcoin::util::bip32::Error,
+    },
+    #[error("Invalid derivation path {path:?}: {source:?}")]
+    InvalidDerivationPath {
+        path: String,
+        source: <DerivationPath as FromStr>::Err,
+    },
+    #[error("Invalid seed phrase: {source}")]
+    InvalidPhrase { source: <Mnemonic as FromStr>::Err },
 }
