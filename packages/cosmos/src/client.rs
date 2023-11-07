@@ -1,6 +1,6 @@
 mod query;
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool};
@@ -36,7 +36,7 @@ use tonic::{
 
 use crate::{
     address::HasAddressHrp,
-    error::{BuilderError, ConnectionError, QueryError},
+    error::{Action, BuilderError, ConnectionError, QueryError},
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress,
 };
@@ -100,6 +100,7 @@ impl Cosmos {
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
+        action: Action,
         should_retry: bool,
     ) -> Result<tonic::Response<Request::Response>, crate::Error> {
         let mut attempt = 0;
@@ -110,9 +111,9 @@ impl Cosmos {
             };
             if attempt >= self.builder.query_retries() || !should_retry && err.should_be_retried() {
                 return Err(crate::Error::Query {
-                    action: todo!(),
+                    action,
                     builder: self.builder.clone(),
-                    height: self.height.clone(),
+                    height: self.height,
                     query: err,
                 });
             } else {
@@ -336,6 +337,7 @@ impl Cosmos {
                 QueryAccountRequest {
                     address: address.get_address_string(),
                 },
+                Action::GetBaseAccount(address),
                 true,
             )
             .await?
@@ -363,6 +365,7 @@ impl Cosmos {
                         address: address.get_address_string(),
                         pagination: pagination.take(),
                     },
+                    Action::QueryAllBalances(address),
                     true,
                 )
                 .await?
@@ -385,7 +388,11 @@ impl Cosmos {
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
-            .perform_query(QueryCodeRequest { code_id }, true)
+            .perform_query(
+                QueryCodeRequest { code_id },
+                Action::CodeInfo(code_id),
+                true,
+            )
             .await?;
         Ok(res.into_inner().data)
     }
@@ -401,6 +408,7 @@ impl Cosmos {
                 GetTxRequest {
                     hash: txhash.clone(),
                 },
+                Action::GetTransactionBody(txhash.clone()),
                 true,
             )
             .await
@@ -432,6 +440,7 @@ impl Cosmos {
                     GetTxRequest {
                         hash: txhash.clone(),
                     },
+                    Action::GetTransactionBody(txhash.clone()),
                     false,
                 )
                 .await;
@@ -490,6 +499,7 @@ impl Cosmos {
                     }),
                     order_by: OrderBy::Asc as i32,
                 },
+                Action::ListTransactionsFor(address),
                 true,
             )
             .await?;
@@ -520,7 +530,11 @@ impl Cosmos {
     /// Get information on the given block height.
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .perform_query(GetBlockByHeightRequest { height }, true)
+            .perform_query(
+                GetBlockByHeightRequest { height },
+                Action::GetBlock(height),
+                true,
+            )
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -579,7 +593,7 @@ impl Cosmos {
     /// Get the latest block available
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
-            .perform_query(GetLatestBlockRequest {}, true)
+            .perform_query(GetLatestBlockRequest {}, Action::GetLatestBlock, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -623,11 +637,17 @@ pub struct BlockInfo {
 /// Transaction builder
 ///
 /// This is the core interface for producing, simulating, and broadcasting transactions.
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct TxBuilder {
     messages: Vec<cosmos_sdk_proto::Any>,
     memo: Option<String>,
     skip_code_check: bool,
+}
+
+impl Display for TxBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("FIXME need to implement a real Display for TxBuilder")
+    }
 }
 
 impl TxBuilder {
@@ -893,7 +913,7 @@ impl TxBuilder {
         };
 
         let simres = cosmos
-            .perform_query(simulate_req, true)
+            .perform_query(simulate_req, Action::Simulate(self.clone()), true)
             .await
             .context("Unable to simulate transaction")?
             .into_inner();
@@ -965,6 +985,7 @@ impl TxBuilder {
                         tx_bytes: tx.encode_to_vec(),
                         mode: BroadcastMode::Sync as i32,
                     },
+                    Action::Broadcast(self.clone()),
                     true,
                 )
                 .await

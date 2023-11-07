@@ -7,7 +7,7 @@ use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
 use chrono::{DateTime, Utc};
 
-use crate::{AddressHrp, CosmosBuilder};
+use crate::{Address, AddressHrp, CosmosBuilder, TxBuilder};
 
 /// Errors that can occur with token factory
 #[derive(thiserror::Error, Debug, Clone)]
@@ -163,12 +163,70 @@ pub enum Error {
 
 /// The action being performed when an error occurred.
 #[derive(Debug, Clone)]
-pub enum Action {}
+pub enum Action {
+    GetBaseAccount(Address),
+    QueryAllBalances(Address),
+    QueryGranterGrants(Address),
+    CodeInfo(u64),
+    GetTransactionBody(String),
+    ListTransactionsFor(Address),
+    GetBlock(i64),
+    GetLatestBlock,
+    Simulate(TxBuilder),
+    Broadcast(TxBuilder),
+    RawQuery {
+        contract: Address,
+        key: StringOrBytes,
+    },
+    SmartQuery {
+        contract: Address,
+        message: StringOrBytes,
+    },
+    ContractInfo(Address),
+    ContractHistory(Address),
+}
 
 impl Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        todo!()
-        // match self {}
+        match self {
+            Action::GetBaseAccount(address) => write!(f, "get base account {address}"),
+            Action::QueryAllBalances(address) => write!(f, "query all balances for {address}"),
+            Action::QueryGranterGrants(address) => write!(f, "query granter grants for {address}"),
+            Action::CodeInfo(code_id) => write!(f, "get code info for code ID {code_id}"),
+            Action::GetTransactionBody(txhash) => write!(f, "get transaction {txhash}"),
+            Action::ListTransactionsFor(address) => write!(f, "list transactions for {address}"),
+            Action::GetBlock(height) => write!(f, "get block {height}"),
+            Action::GetLatestBlock => f.write_str("get latest block"),
+            Action::Simulate(txbuilder) => write!(f, "simulating transaction: {txbuilder}"),
+            Action::Broadcast(txbuilder) => write!(f, "broadcasting transaction: {txbuilder}"),
+            Action::RawQuery { contract, key } => {
+                write!(f, "raw query contract {contract} with key: {key}")
+            }
+            Action::SmartQuery { contract, message } => {
+                write!(f, "smart query contract {contract} with message: {message}")
+            }
+            Action::ContractInfo(address) => write!(f, "contract info for {address}"),
+            Action::ContractHistory(address) => write!(f, "contract history for {address}"),
+        }
+    }
+}
+
+/// A helper type to display either as UTF8 data or the underlying bytes
+#[derive(Debug, Clone)]
+pub struct StringOrBytes(pub Vec<u8>);
+
+impl From<Vec<u8>> for StringOrBytes {
+    fn from(value: Vec<u8>) -> Self {
+        StringOrBytes(value)
+    }
+}
+
+impl Display for StringOrBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match std::str::from_utf8(&self.0) {
+            Ok(s) => f.write_str(s),
+            Err(_) => write!(f, "{:?}", self.0),
+        }
     }
 }
 

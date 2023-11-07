@@ -9,7 +9,7 @@ use cosmos_sdk_proto::cosmos::{
 use prost::Message;
 use prost_types::Timestamp;
 
-use crate::{Address, Cosmos, HasAddress, TypedMessage};
+use crate::{error::Action, Address, Cosmos, HasAddress, TypedMessage};
 
 impl From<MsgGrant> for TypedMessage {
     fn from(msg: MsgGrant) -> Self {
@@ -100,7 +100,10 @@ impl Cosmos {
             let QueryGranterGrantsResponse {
                 mut grants,
                 pagination: pag_res,
-            } = self.perform_query(req, true).await?.into_inner();
+            } = self
+                .perform_query(req, Action::QueryGranterGrants(granter.get_address()), true)
+                .await?
+                .into_inner();
             println!("{grants:?}");
             if grants.is_empty() {
                 break Ok(res);
