@@ -10,14 +10,14 @@ use chrono::{DateTime, Utc};
 use crate::AddressHrp;
 
 /// Errors that can occur with token factory
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TokenFactoryError {
     #[error("cosmos-rs does not support tokenfactory for the given chain HRP: {hrp}")]
     Unsupported { hrp: AddressHrp },
 }
 
 /// Errors that can occur while working with [crate::Address].
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum AddressError {
     #[error("Invalid bech32 encoding in {address:?}: {source:?}")]
     InvalidBech32 {
@@ -42,7 +42,7 @@ pub enum AddressError {
 
 /// Errors that can occur while working with [crate::Wallet].
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum WalletError {
     #[error("Could not get root private key from mnemonic: {source:?}")]
     CouldNotGetRootPrivateKey { source: bitcoin::util::bip32::Error },
@@ -62,7 +62,7 @@ pub enum WalletError {
 
 /// Errors that can occur while building a connection.
 #[derive(thiserror::Error, Debug)]
-pub enum CosmosBuilderError {
+pub enum BuilderError {
     #[error("Error downloading chain information from {url}: {source:?}")]
     DownloadChainInfo { url: String, source: reqwest::Error },
     #[error("Failed sanity check on Cosmos value:\n{cosmos:?}\n{source:?}")]
@@ -72,10 +72,21 @@ pub enum CosmosBuilderError {
     },
     #[error("Unknown Cosmos network value {network:?}")]
     UnknownCosmosNetwork { network: String },
+    #[error("Mismatched chain IDs during sanity check of {grpc_url}. Expected: {expected}. Actual: {actual}.")]
+    MismatchedChainIds {
+        grpc_url: String,
+        expected: String,
+        actual: String,
+    },
+    #[error("Basic query to {grpc_url} failed during sanity check: {source:?}")]
+    SanityQueryFailed {
+        grpc_url: String,
+        source: anyhow::Error,
+    },
 }
 
 /// Parse errors while interacting with chain data.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum ChainParseError {
     #[error("Could not parse timestamp {timestamp:?} from transaction {txhash}: {source:?}")]
     InvalidTimestamp {
@@ -101,4 +112,35 @@ pub enum ChainParseError {
     NoCodeIdFound { txhash: String },
     #[error("No instantiated contract found in transaction {txhash}")]
     NoInstantiatedContractFound { txhash: String },
+}
+
+/// An error that occurs while connecting to a Cosmos gRPC endpoint.
+///
+/// This could be the initial connection or sending a new query.
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum ConnectionError {
+    #[error("Invalid gRPC URL: {grpc_url}: {source:?}")]
+    InvalidGrpcUrl {
+        grpc_url: String,
+        source: Arc<tonic::transport::Error>,
+    },
+    #[error("Unable to configure TLS when connecting to {grpc_url}: {source:?}")]
+    TlsConfig {
+        grpc_url: String,
+        source: Arc<tonic::transport::Error>,
+    },
+    #[error("Sanity check on connection to {grpc_url} failed with gRPC status {source}")]
+    SanityCheckFailed {
+        grpc_url: String,
+        source: tonic::Status,
+    },
+    #[error("Timeout hit when querying gRPC endpoint {grpc_url}")]
+    TimeoutQuery { grpc_url: String },
+    #[error("Timeout hit when connecting to gRPC endpoint {grpc_url}")]
+    TimeoutConnecting { grpc_url: String },
+    #[error("Cannot establish connection to {grpc_url}: {source:?}")]
+    CannotEstablishConnection {
+        grpc_url: String,
+        source: Arc<tonic::transport::Error>,
+    },
 }
