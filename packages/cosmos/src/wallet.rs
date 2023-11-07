@@ -25,8 +25,12 @@ use crate::{Address, Cosmos, HasAddress, TxBuilder, TypedMessage};
 /// The derivation path can be provided before the seed phrase to override the default derivation path.
 #[derive(Clone)]
 pub struct SeedPhrase {
+    /// The mnemonic seed phrase itself, used for deriving private keys.
     pub mnemonic: bip39::Mnemonic,
+    /// The override derivation path to use when deriving private keys.
     pub derivation_path: Option<Arc<DerivationPath>>,
+    /// The override method for converting the public key into bytes.
+    pub public_key_method: Option<PublicKeyMethod>,
 }
 
 impl SeedPhrase {
@@ -40,26 +44,25 @@ impl SeedPhrase {
         SeedPhrase {
             mnemonic: bip39::Mnemonic::from_entropy(&entropy).unwrap(),
             derivation_path: None,
+            public_key_method: None,
         }
     }
 
     /// Make a new [SeedPhrase] using the given derivation path.
-    pub fn with_derivation_path(&self, derivation_path: Option<Arc<DerivationPath>>) -> Self {
-        SeedPhrase {
-            mnemonic: self.mnemonic.clone(),
-            derivation_path,
-        }
+    fn with_derivation_path(mut self, derivation_path: Option<Arc<DerivationPath>>) -> Self {
+        self.derivation_path = derivation_path;
+        self
     }
 
     /// Make a new [SeedPhrase] using a Cosmos derivation path and the given index.
-    pub fn with_cosmos_numbered(&self, index: u64) -> Self {
+    pub fn with_cosmos_numbered(self, index: u64) -> Self {
         self.with_derivation_path(Some(
             DerivationPathConfig::cosmos_numbered(index).as_derivation_path(),
         ))
     }
 
     /// Make a new [SeedPhrase] using an Ethereum derivation path and the given index.
-    pub fn with_ethereum_numbered(&self, index: u64) -> Self {
+    pub fn with_ethereum_numbered(self, index: u64) -> Self {
         self.with_derivation_path(Some(
             DerivationPathConfig::ethereum_numbered(index).as_derivation_path(),
         ))
@@ -70,11 +73,7 @@ impl SeedPhrase {
     /// If no public key method is provided, the default for the given HRP is
     /// used. Similarly, if `self` does not include a derivation path, the
     /// default for the HRP is used.
-    pub fn with_hrp(
-        &self,
-        hrp: AddressHrp,
-        public_key_method: Option<PublicKeyMethod>,
-    ) -> Result<Wallet> {
+    pub fn with_hrp(&self, hrp: AddressHrp) -> Result<Wallet> {
         let secp = global_secp();
         let derivation_path = self
             .derivation_path
@@ -90,8 +89,9 @@ impl SeedPhrase {
         let public_key_bytes = public_key.public_key.serialize();
         let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
 
-        let public_key_method =
-            public_key_method.unwrap_or_else(|| hrp.default_public_key_method());
+        let public_key_method = self
+            .public_key_method
+            .unwrap_or_else(|| hrp.default_public_key_method());
         let (raw_address, public_key) = match public_key_method {
             crate::address::PublicKeyMethod::Cosmos => (
                 cosmos_address_from_public_key(&public_key_bytes),
@@ -117,6 +117,7 @@ impl From<bip39::Mnemonic> for SeedPhrase {
         SeedPhrase {
             mnemonic,
             derivation_path: None,
+            public_key_method: None,
         }
     }
 }
@@ -151,6 +152,7 @@ impl FromStr for SeedPhrase {
         Ok(SeedPhrase {
             derivation_path,
             mnemonic,
+            public_key_method: None,
         })
     }
 }
@@ -298,19 +300,19 @@ impl Wallet {
 
     /// Generate a random wallet
     pub fn generate(hrp: AddressHrp) -> Result<Self> {
-        SeedPhrase::random().with_hrp(hrp, None)
+        SeedPhrase::random().with_hrp(hrp)
     }
 
     /// Generate the special Juno Local wallet
     pub fn juno_local() -> Self {
         SeedPhrase::from_str(JUNO_LOCAL_PHRASE)
             .unwrap()
-            .with_hrp(AddressHrp::from_static("juno"), None)
+            .with_hrp(AddressHrp::from_static("juno"))
             .unwrap()
     }
 
     pub fn from_phrase(phrase: &str, hrp: AddressHrp) -> Result<Self> {
-        SeedPhrase::from_str(phrase)?.with_hrp(hrp, None)
+        SeedPhrase::from_str(phrase)?.with_hrp(hrp)
     }
 
     pub fn public_key_bytes(&self) -> &[u8] {

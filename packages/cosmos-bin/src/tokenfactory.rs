@@ -13,7 +13,7 @@ pub enum Command {
 }
 
 pub(crate) async fn go(cosmos: Cosmos, raw_wallet: SeedPhrase, cmd: Command) -> Result<()> {
-    let wallet = raw_wallet.with_hrp(cosmos.get_address_hrp(), None)?;
+    let wallet = raw_wallet.with_hrp(cosmos.get_address_hrp())?;
     let tokenfactory = TokenFactory::new(cosmos, wallet);
 
     match cmd {

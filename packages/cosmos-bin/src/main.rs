@@ -68,7 +68,7 @@ struct TxOpt {
 
 impl TxOpt {
     pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
-        self.wallet.with_hrp(hrp, None)
+        self.wallet.with_hrp(hrp)
     }
 }
 
@@ -401,7 +401,7 @@ impl Subcommand {
             }
             Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
             Subcommand::PrintAddress { hrp, phrase } => {
-                println!("{}", phrase.with_hrp(hrp, None)?);
+                println!("{}", phrase.with_hrp(hrp)?);
             }
             Subcommand::SendCoins {
                 tx_opt,
