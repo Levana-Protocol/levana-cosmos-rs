@@ -6,7 +6,10 @@ use cosmos_sdk_proto::{
     cosmwasm::wasm::v1::MsgStoreCode,
 };
 
-use crate::{Address, Cosmos, HasAddress, HasCosmos, TxBuilder, TypedMessage, Wallet};
+use crate::{
+    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TypedMessage,
+    Wallet,
+};
 
 /// Represents the uploaded code on a specific blockchain connection.
 #[derive(Clone)]
@@ -125,5 +128,11 @@ impl Display for CodeId {
 impl HasCosmos for CodeId {
     fn get_cosmos(&self) -> &Cosmos {
         &self.client
+    }
+}
+
+impl HasAddressHrp for CodeId {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.client.get_address_hrp()
     }
 }

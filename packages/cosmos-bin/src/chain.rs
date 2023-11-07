@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use cosmos::{Address, Cosmos};
+use cosmos::{Address, Cosmos, TxResponseExt};
 
 #[derive(clap::Parser)]
 pub(crate) struct Opt {
@@ -109,9 +109,16 @@ async fn code_id_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
 }
 
 async fn contract_address_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
-    let (_, tx) = cosmos.wait_for_transaction(txhash).await?;
-    let contract = cosmos.contract_address_from_instantiate(&tx)?;
-    log::info!("Contract address: {contract}");
+    let (_, tx) = cosmos.wait_for_transaction(&txhash).await?;
+    let addrs = tx.parse_instantiated_contracts()?;
+
+    anyhow::ensure!(
+        !addrs.is_empty(),
+        "No contract addresses found in transaction {txhash}"
+    );
+    addrs
+        .into_iter()
+        .for_each(|contract| log::info!("Contract address: {contract}"));
     Ok(())
 }
 

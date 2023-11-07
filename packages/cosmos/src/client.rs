@@ -1060,7 +1060,7 @@ impl From<MsgSend> for TypedMessage {
     }
 }
 
-pub trait HasCosmos {
+pub trait HasCosmos: HasAddressHrp {
     fn get_cosmos(&self) -> &Cosmos;
 }
 

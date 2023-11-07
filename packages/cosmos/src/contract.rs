@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use cosmos_sdk_proto::{
     cosmos::{
         base::{abci::v1beta1::TxResponse, v1beta1::Coin},
@@ -15,7 +15,7 @@ use cosmos_sdk_proto::{
 
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    codeid::strip_quotes,
+    TxResponseExt,
 };
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
@@ -97,37 +97,16 @@ impl CodeId {
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
-        self.client.contract_address_from_instantiate(&res)
-    }
-}
 
-impl Cosmos {
-    /// Parse the contract address from the given [TxResponse].
-    pub fn contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
-        for log in &res.logs {
-            for event in &log.events {
-                if event.r#type == "instantiate"
-                    || event.r#type == "cosmwasm.wasm.v1.EventContractInstantiated"
-                {
-                    for attr in &event.attributes {
-                        if attr.key == "_contract_address" || attr.key == "contract_address" {
-                            let address: Address = strip_quotes(&attr.value).parse()?;
-                            anyhow::ensure!(address.get_address_hrp() == self.get_address_hrp());
-                            return Ok(Contract {
-                                address,
-                                client: self.clone(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Missing _contract_address in instantiate_contract response {}: {:#?}",
-            res.txhash,
-            res.logs
-        ))
+        let addrs = res.parse_instantiated_contracts()?;
+        let addr = addrs.into_iter().next().with_context(|| {
+            format!(
+                "Missing _contract_address in instantiate_contract response {}: {:#?}",
+                res.txhash, res.logs
+            )
+        })?;
+        anyhow::ensure!(addr.get_address_hrp() == self.get_address_hrp());
+        Ok(self.client.make_contract(addr))
     }
 }
 
