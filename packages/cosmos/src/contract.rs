@@ -8,11 +8,15 @@ use cosmos_sdk_proto::{
     },
     cosmwasm::wasm::v1::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract,
-        QueryContractHistoryResponse,
+        QueryContractHistoryRequest, QueryContractHistoryResponse, QueryContractInfoRequest,
+        QueryRawContractStateRequest, QuerySmartContractStateRequest,
     },
 };
 
-use crate::{address::HasAddressType, codeid::strip_quotes};
+use crate::{
+    address::{AddressHrp, HasAddressHrp},
+    codeid::strip_quotes,
+};
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 
 /// A Cosmos smart contract
@@ -20,12 +24,6 @@ use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
 pub struct Contract {
     address: Address,
     client: Cosmos,
-}
-
-impl Contract {
-    pub fn new(client: Cosmos, address: Address) -> Self {
-        Contract { address, client }
-    }
 }
 
 pub trait HasContract: HasAddress + HasCosmos {
@@ -45,6 +43,7 @@ impl<T: HasContract> HasContract for &T {
 }
 
 impl Cosmos {
+    /// Make a new [Contract] for the given smart contract address.
     pub fn make_contract(&self, address: Address) -> Contract {
         Contract {
             address,
@@ -52,6 +51,7 @@ impl Cosmos {
         }
     }
 
+    /// Make a new [CodeId] for the given numeric ID.
     pub fn make_code_id(&self, code_id: u64) -> CodeId {
         CodeId {
             client: self.clone(),
@@ -61,6 +61,7 @@ impl Cosmos {
 }
 
 impl CodeId {
+    /// Instantiate a new contract with the given parameters.
     pub async fn instantiate(
         &self,
         wallet: &Wallet,
@@ -69,19 +70,20 @@ impl CodeId {
         msg: impl serde::Serialize,
         admin: ContractAdmin,
     ) -> Result<Contract> {
-        self.instantiate_binary(wallet, label, funds, serde_json::to_vec(&msg)?, admin)
+        self.instantiate_rendered(wallet, label, funds, serde_json::to_string(&msg)?, admin)
             .await
     }
 
-    /// Same as [CodeId::instantiate] but the message is already in binary.
-    pub async fn instantiate_binary(
+    /// Same as [CodeId::instantiate] but the message is already rendered to text.
+    pub async fn instantiate_rendered(
         &self,
         wallet: &Wallet,
         label: impl Into<String>,
         funds: Vec<Coin>,
-        msg: impl Into<Vec<u8>>,
+        msg: impl Into<String>,
         admin: ContractAdmin,
     ) -> Result<Contract> {
+        let msg = msg.into();
         let msg = MsgInstantiateContract {
             sender: wallet.address().to_string(),
             admin: match admin {
@@ -91,16 +93,17 @@ impl CodeId {
             },
             code_id: self.code_id,
             label: label.into(),
-            msg: msg.into(),
+            msg: msg.into_bytes(),
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
-        self.client.parse_contract_address_from_instantiate(&res)
+        self.client.contract_address_from_instantiate(&res)
     }
 }
 
 impl Cosmos {
-    pub fn parse_contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
+    /// Parse the contract address from the given [TxResponse].
+    pub fn contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
         for log in &res.logs {
             for event in &log.events {
                 if event.r#type == "instantiate"
@@ -109,7 +112,7 @@ impl Cosmos {
                     for attr in &event.attributes {
                         if attr.key == "_contract_address" || attr.key == "contract_address" {
                             let address: Address = strip_quotes(&attr.value).parse()?;
-                            anyhow::ensure!(address.get_address_type() == self.get_address_type());
+                            anyhow::ensure!(address.get_address_hrp() == self.get_address_hrp());
                             return Ok(Contract {
                                 address,
                                 client: self.clone(),
@@ -129,30 +132,15 @@ impl Cosmos {
 }
 
 impl Contract {
+    /// Execute a message against the smart contract.
     pub async fn execute(
         &self,
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
     ) -> Result<TxResponse> {
-        self.execute_binary(wallet, funds, serde_json::to_vec(&msg)?)
+        self.execute_rendered(wallet, funds, serde_json::to_string(&msg)?)
             .await
-    }
-
-    pub fn add_message(
-        &self,
-        txbuilder: &mut TxBuilder,
-        wallet: &Wallet,
-        funds: Vec<Coin>,
-        msg: impl serde::Serialize,
-    ) -> Result<()> {
-        txbuilder.add_message_mut(MsgExecuteContract {
-            sender: wallet.get_address_string(),
-            contract: self.get_address_string(),
-            msg: serde_json::to_vec(&msg)?,
-            funds,
-        });
-        Ok(())
     }
 
     pub async fn simulate(
@@ -167,7 +155,7 @@ impl Contract {
     }
 
     /// Same as [Contract::execute] but the msg is serialized
-    pub async fn execute_binary(
+    pub async fn execute_rendered(
         &self,
         wallet: &Wallet,
         funds: Vec<Coin>,
@@ -208,36 +196,40 @@ impl Contract {
 
     /// Perform a raw query
     pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
-        self.client.wasm_raw_query(self.address, key).await
+        Ok(self
+            .client
+            .perform_query(
+                QueryRawContractStateRequest {
+                    address: self.address.into(),
+                    query_data: key.into(),
+                },
+                true,
+            )
+            .await?
+            .into_inner()
+            .data)
     }
 
-    /// Perform a raw query at a given block height
-    pub async fn query_raw_at_height(
-        &self,
-        key: impl Into<Vec<u8>>,
-        height: u64,
-    ) -> Result<Vec<u8>> {
-        self.client
-            .wasm_raw_query_at_height(self.address, key, height)
-            .await
+    /// Return a modified [Contract] that queries at the given height.
+    pub fn at_height(mut self, height: Option<u64>) -> Self {
+        self.client = self.client.at_height(height);
+        self
     }
 
     /// Perform a query and return the raw unparsed JSON bytes.
     pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
-        self.client
-            .wasm_query(self.address, serde_json::to_vec(&msg)?)
-            .await
-    }
-
-    /// Perform a query at a given block height and return the raw unparsed JSON bytes.
-    pub async fn query_bytes_at_height(
-        &self,
-        msg: impl serde::Serialize,
-        height: u64,
-    ) -> Result<Vec<u8>> {
-        self.client
-            .wasm_query_at_height(self.address, serde_json::to_vec(&msg)?, height)
-            .await
+        let res = self
+            .client
+            .perform_query(
+                QuerySmartContractStateRequest {
+                    address: self.address.into(),
+                    query_data: serde_json::to_vec(&msg)?,
+                },
+                true,
+            )
+            .await?
+            .into_inner();
+        Ok(res.data)
     }
 
     pub async fn query<T: serde::de::DeserializeOwned>(
@@ -245,15 +237,6 @@ impl Contract {
         msg: impl serde::Serialize,
     ) -> Result<T> {
         serde_json::from_slice(&self.query_bytes(msg).await?)
-            .context("Invalid JSON response from smart contract query")
-    }
-
-    pub async fn query_at_height<T: serde::de::DeserializeOwned>(
-        &self,
-        msg: impl serde::Serialize,
-        height: u64,
-    ) -> Result<T> {
-        serde_json::from_slice(&self.query_bytes_at_height(msg, height).await?)
             .context("Invalid JSON response from smart contract query")
     }
 
@@ -286,18 +269,44 @@ impl Contract {
 
     /// Get the contract info metadata
     pub async fn info(&self) -> Result<ContractInfo> {
-        self.client.contract_info(&self.address).await
+        self.client
+            .perform_query(
+                QueryContractInfoRequest {
+                    address: self.address.into(),
+                },
+                true,
+            )
+            .await?
+            .into_inner()
+            .contract_info
+            .context("contract_info: missing contract_info (ironic...)")
     }
 
     /// Get the contract history
     pub async fn history(&self) -> Result<QueryContractHistoryResponse> {
-        self.client.contract_history(&self.address).await
+        Ok(self
+            .client
+            .perform_query(
+                QueryContractHistoryRequest {
+                    address: self.address.into(),
+                    pagination: None,
+                },
+                true,
+            )
+            .await?
+            .into_inner())
     }
 }
 
 impl Display for Contract {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.address)
+    }
+}
+
+impl HasAddressHrp for Contract {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.get_address().get_address_hrp()
     }
 }
 

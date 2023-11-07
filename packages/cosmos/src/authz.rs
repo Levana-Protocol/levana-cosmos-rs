@@ -69,6 +69,7 @@ fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp> {
 }
 
 impl Cosmos {
+    /// Check which grants the given address has authorized.
     pub async fn query_granter_grants(
         &self,
         granter: impl HasAddress,
@@ -85,7 +86,7 @@ impl Cosmos {
             let QueryGranterGrantsResponse {
                 mut grants,
                 pagination: pag_res,
-            } = self.perform_query(None, req, true).await?.into_inner();
+            } = self.perform_query(req, true).await?.into_inner();
             println!("{grants:?}");
             if grants.is_empty() {
                 break Ok(res);

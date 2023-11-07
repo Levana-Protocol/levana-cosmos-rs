@@ -109,8 +109,8 @@ async fn code_id_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
 }
 
 async fn contract_address_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
-    let (_, tx) = cosmos.wait_for_transaction_body(txhash).await?;
-    let contract = cosmos.parse_contract_address_from_instantiate(&tx)?;
+    let (_, tx) = cosmos.wait_for_transaction(txhash).await?;
+    let contract = cosmos.contract_address_from_instantiate(&tx)?;
     log::info!("Contract address: {contract}");
     Ok(())
 }

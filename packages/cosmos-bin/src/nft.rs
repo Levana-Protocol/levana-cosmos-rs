@@ -1,4 +1,4 @@
-use cosmos::{Address, Cosmos, HasAddressType, TxBuilder};
+use cosmos::{Address, Cosmos, HasAddressHrp, TxBuilder};
 
 use crate::TxOpt;
 
@@ -24,7 +24,7 @@ pub(super) async fn go(sub: Subcommand, opt: Opt, cosmos: Cosmos) -> anyhow::Res
     let contract = cosmos.make_contract(opt.nft_contract);
     match sub {
         Subcommand::TransferAll { dest, tx_opt } => {
-            let wallet = tx_opt.get_wallet(cosmos.get_address_type())?;
+            let wallet = tx_opt.get_wallet(cosmos.get_address_hrp())?;
             loop {
                 let Tokens { tokens } = contract
                     .query(&NftQuery::Tokens {

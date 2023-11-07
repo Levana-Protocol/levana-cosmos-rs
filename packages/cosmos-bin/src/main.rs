@@ -22,8 +22,8 @@ use cosmos::{
         },
         traits::Message,
     },
-    Address, AddressAnyHrp, AddressType, BlockInfo, CodeId, Coin, ContractAdmin, HasAddress,
-    HasAddressType, RawAddress, RawWallet, TxBuilder, Wallet,
+    Address, AddressHrp, BlockInfo, Coin, ContractAdmin, HasAddress, HasAddressHrp, RawAddress,
+    SeedPhrase, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
 
@@ -60,15 +60,15 @@ impl Opt {
 struct TxOpt {
     /// Mnemonic phrase
     #[clap(long, env = "COSMOS_WALLET")]
-    wallet: RawWallet,
+    wallet: SeedPhrase,
     /// Memo to put on transaction
     #[clap(long)]
     memo: Option<String>,
 }
 
 impl TxOpt {
-    pub(crate) fn get_wallet(&self, address_type: AddressType) -> Result<Wallet> {
-        self.wallet.for_chain(address_type)
+    pub(crate) fn get_wallet(&self, hrp: AddressHrp) -> Result<Wallet> {
+        self.wallet.with_hrp(hrp, None)
     }
 }
 
@@ -115,7 +115,7 @@ enum Subcommand {
     /// Query contract
     QueryContract {
         /// Contract address
-        address: String,
+        address: Address,
         /// Query (in JSON)
         query: String,
         /// Optional Height. Use latest if not passed.
@@ -124,7 +124,7 @@ enum Subcommand {
     /// Look up a raw value in the contract's storage
     RawQueryContract {
         /// Contract address
-        address: String,
+        address: Address,
         /// Key
         key: String,
         /// Optional Height. Use latest if not passed.
@@ -177,10 +177,10 @@ enum Subcommand {
     },
     /// Print the address for the given phrase
     PrintAddress {
-        /// Address type: One of cosmos, juno, osmo or levana
-        address_type: AddressType,
+        /// HRP (human readable part) of the address, e.g. osmo, inj
+        hrp: AddressHrp,
         /// Phrase
-        phrase: RawWallet,
+        phrase: SeedPhrase,
     },
     /// Send coins to the given address
     SendCoins {
@@ -230,8 +230,8 @@ enum Subcommand {
     ChangeAddressType {
         /// Original address
         orig: RawAddress,
-        /// Destination address type
-        address_type: AddressType,
+        /// Destination address HRP (human-readable part)
+        hrp: AddressHrp,
     },
     /// NFT focused subcommands
     Nft {
@@ -255,7 +255,7 @@ enum Subcommand {
     TokenFactory {
         /// Mnemonic phrase
         #[clap(long, env = "COSMOS_WALLET")]
-        wallet: RawWallet,
+        wallet: SeedPhrase,
 
         #[clap(subcommand)]
         cmd: tokenfactory::Command,
@@ -282,11 +282,11 @@ impl Subcommand {
         match self {
             Subcommand::ShowConfig {} => {
                 let cosmos = opt.network_opt.build().await?;
-                println!("{:#?}", cosmos.get_config())
+                println!("{:#?}", cosmos);
             }
             Subcommand::StoreCode { tx_opt, file } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let wallet = tx_opt.get_wallet(address_type)?;
                 let codeid = cosmos.store_code_path(&wallet, &file).await?;
                 println!("Code ID: {codeid}");
@@ -299,9 +299,10 @@ impl Subcommand {
                 admin,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
-                let contract = CodeId::new(cosmos, code_id)
-                    .instantiate_binary(
+                let address_type = cosmos.get_address_hrp();
+                let contract = cosmos
+                    .make_code_id(code_id)
+                    .instantiate_rendered(
                         &tx_opt.get_wallet(address_type)?,
                         label,
                         vec![],
@@ -313,7 +314,7 @@ impl Subcommand {
             }
             Subcommand::PrintBalances { address, height } => {
                 let cosmos = opt.network_opt.build().await?;
-                let balances = cosmos.all_balances_at(address, height).await?;
+                let balances = cosmos.at_height(height).all_balances(address).await?;
                 for Coin { denom, amount } in &balances {
                     println!("{amount}{denom}");
                 }
@@ -326,11 +327,8 @@ impl Subcommand {
                 query,
                 height,
             } => {
-                let cosmos = opt.network_opt.build().await?;
-                let x = match height {
-                    Some(height) => cosmos.wasm_query_at_height(address, query, height).await?,
-                    None => cosmos.wasm_query(address, query).await?,
-                };
+                let cosmos = opt.network_opt.build().await?.at_height(height);
+                let x = cosmos.make_contract(address).query_bytes(query).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
@@ -341,15 +339,8 @@ impl Subcommand {
                 key,
                 height,
             } => {
-                let cosmos = opt.network_opt.build().await?;
-                let x = match height {
-                    Some(height) => {
-                        cosmos
-                            .wasm_raw_query_at_height(address, key, height)
-                            .await?
-                    }
-                    None => cosmos.wasm_raw_query(address, key).await?,
-                };
+                let cosmos = opt.network_opt.build().await?.at_height(height);
+                let x = cosmos.make_contract(address).query_raw(key).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
@@ -362,8 +353,8 @@ impl Subcommand {
                 msg,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
-                let contract = cosmos::Contract::new(cosmos, address);
+                let address_type = cosmos.get_address_hrp();
+                let contract = cosmos.make_contract(address);
                 contract
                     .migrate_binary(&tx_opt.get_wallet(address_type)?, code_id, msg)
                     .await?;
@@ -376,8 +367,8 @@ impl Subcommand {
                 skip_simulate,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
-                let contract = cosmos::Contract::new(cosmos.clone(), address);
+                let address_type = cosmos.get_address_hrp();
+                let contract = cosmos.make_contract(address);
                 let amount = match amount {
                     Some(funds) => {
                         let coin = ParsedCoin::from_str(&funds)?.into();
@@ -409,11 +400,8 @@ impl Subcommand {
                 log::debug!("{tx:?}");
             }
             Subcommand::GenWallet { address_type } => gen_wallet(&address_type)?,
-            Subcommand::PrintAddress {
-                address_type,
-                phrase,
-            } => {
-                println!("{}", phrase.for_chain(address_type)?);
+            Subcommand::PrintAddress { hrp, phrase } => {
+                println!("{}", phrase.with_hrp(hrp, None)?);
             }
             Subcommand::SendCoins {
                 tx_opt,
@@ -421,7 +409,7 @@ impl Subcommand {
                 coins,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
+                let address_type = cosmos.get_address_hrp();
                 let txres = tx_opt
                     .get_wallet(address_type)?
                     .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
@@ -465,7 +453,7 @@ impl Subcommand {
                     tx,
                     timestamp,
                     events,
-                } = cosmos.wait_for_transaction(txhash).await?;
+                } = cosmos.wait_for_transaction(txhash).await?.1;
                 println!("Height: {height}");
                 println!("Code: {code}");
                 println!("Codespace: {codespace}");
@@ -536,8 +524,8 @@ impl Subcommand {
                 funds,
             } => {
                 let cosmos = opt.network_opt.build().await?;
-                let address_type = cosmos.get_address_type();
-                let contract = cosmos::Contract::new(cosmos.clone(), address);
+                let address_type = cosmos.get_address_hrp();
+                let contract = cosmos.make_contract(address);
                 let amount = match funds {
                     Some(funds) => {
                         let coin = ParsedCoin::from_str(&funds)?.into();
@@ -546,7 +534,7 @@ impl Subcommand {
                     None => vec![],
                 };
                 let simres = contract
-                    .simulate_binary(sender.for_chain(address_type), amount, msg, memo)
+                    .simulate_binary(sender.with_hrp(address_type), amount, msg, memo)
                     .await?;
                 println!("{simres:?}");
             }
@@ -567,8 +555,11 @@ impl Subcommand {
                     println!("Transaction #{}: {txhash}", idx + 1);
                 }
             }
-            Subcommand::ChangeAddressType { orig, address_type } => {
-                println!("{}", orig.for_chain(address_type));
+            Subcommand::ChangeAddressType {
+                orig,
+                hrp: address_type,
+            } => {
+                println!("{}", orig.with_hrp(address_type));
             }
             Subcommand::Nft {
                 opt: inner,
@@ -607,20 +598,11 @@ impl Subcommand {
     }
 }
 
-fn gen_wallet(address_type: &str) -> Result<()> {
+fn gen_wallet(hrp: &str) -> Result<()> {
     let phrase = cosmos::Wallet::generate_phrase();
-    let wallet = cosmos::Wallet::from_phrase(
-        &phrase,
-        match address_type {
-            "inj" => AddressType::Injective,
-            _ => AddressType::Cosmos,
-        },
-    )?;
+    let wallet = cosmos::Wallet::from_phrase(&phrase, AddressHrp::new(hrp))?;
     println!("Mnemonic: {phrase}");
-    let address = AddressAnyHrp {
-        raw_address: *wallet.address().raw(),
-        hrp: address_type,
-    };
+    let address = wallet.address().raw().with_hrp(AddressHrp::new(hrp));
     println!("Address: {address}");
     Ok(())
 }

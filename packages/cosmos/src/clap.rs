@@ -38,19 +38,14 @@ impl CosmosOpt {
 
         let mut builder = network.context("No network specified, either provide the COSMOS_NETWORK env var or --network option")?.builder().await?;
         if let Some(grpc) = cosmos_grpc {
-            builder.grpc_url = grpc;
+            builder.set_grpc_url(grpc);
         }
         if let Some(chain_id) = chain_id {
-            builder.chain_id = chain_id;
+            builder.set_chain_id(chain_id);
         }
 
-        if let Some(gas_multiplier) = gas_multiplier {
-            builder.config.gas_estimate_multiplier = gas_multiplier;
-        }
-
-        if let Some(referer_header) = referer_header {
-            builder.set_referer_header(referer_header);
-        }
+        builder.set_gas_estimate_multiplier(gas_multiplier);
+        builder.set_referer_header(referer_header);
 
         Ok(builder)
     }

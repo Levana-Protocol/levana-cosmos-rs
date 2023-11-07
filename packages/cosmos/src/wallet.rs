@@ -17,15 +17,20 @@ use parking_lot::Mutex;
 use rand::Rng;
 use tiny_keccak::{Hasher, Keccak};
 
-use crate::address::RawAddress;
-use crate::{Address, AddressType, Cosmos, HasAddress, TxBuilder, TypedMessage};
+use crate::address::{AddressHrp, HasAddressHrp, PublicKeyMethod, RawAddress};
+use crate::{Address, Cosmos, HasAddress, TxBuilder, TypedMessage};
 
-/// A seed phrase for a wallet
+/// A seed phrase for a wallet, together with an optional derivation path.
+///
+/// The derivation path can be provided before the seed phrase to override the default derivation path.
 #[derive(Clone)]
 pub struct SeedPhrase {
-    mnemonic: bip39::Mnemonic,
+    pub mnemonic: bip39::Mnemonic,
+    pub derivation_path: Option<Arc<DerivationPath>>,
 }
+
 impl SeedPhrase {
+    /// Generate a random [SeedPhrase].
     fn random() -> SeedPhrase {
         let mut rng = rand::thread_rng();
         let mut entropy: [u8; 64] = [0; 64];
@@ -34,63 +39,119 @@ impl SeedPhrase {
         }
         SeedPhrase {
             mnemonic: bip39::Mnemonic::from_entropy(&entropy).unwrap(),
+            derivation_path: None,
         }
     }
 
-    pub fn with_derivation_path(&self, derivation_path_config: &DerivationPathConfig) -> RawWallet {
-        RawWallet {
-            seed_phrase: self.clone(),
-            derivation_path: Some(derivation_path_config.as_derivation_path()),
+    /// Make a new [SeedPhrase] using the given derivation path.
+    pub fn with_derivation_path(&self, derivation_path: Option<Arc<DerivationPath>>) -> Self {
+        SeedPhrase {
+            mnemonic: self.mnemonic.clone(),
+            derivation_path,
         }
     }
 
-    pub fn derive_cosmos_numbered(&self, index: u64) -> RawWallet {
-        self.with_derivation_path(&DerivationPathConfig::cosmos_numbered(index))
+    /// Make a new [SeedPhrase] using a Cosmos derivation path and the given index.
+    pub fn with_cosmos_numbered(&self, index: u64) -> Self {
+        self.with_derivation_path(Some(
+            DerivationPathConfig::cosmos_numbered(index).as_derivation_path(),
+        ))
     }
 
-    pub fn derive_ethereum_numbered(&self, index: u64) -> RawWallet {
-        self.with_derivation_path(&DerivationPathConfig::ethereum_numbered(index))
+    /// Make a new [SeedPhrase] using an Ethereum derivation path and the given index.
+    pub fn with_ethereum_numbered(&self, index: u64) -> Self {
+        self.with_derivation_path(Some(
+            DerivationPathConfig::ethereum_numbered(index).as_derivation_path(),
+        ))
+    }
+
+    /// Generate a new [Wallet] with the given HRP.
+    ///
+    /// If no public key method is provided, the default for the given HRP is
+    /// used. Similarly, if `self` does not include a derivation path, the
+    /// default for the HRP is used.
+    pub fn with_hrp(
+        &self,
+        hrp: AddressHrp,
+        public_key_method: Option<PublicKeyMethod>,
+    ) -> Result<Wallet> {
+        let secp = global_secp();
+        let derivation_path = self
+            .derivation_path
+            .clone()
+            .unwrap_or_else(|| hrp.default_derivation_path());
+
+        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
+            bitcoin::Network::Bitcoin,
+            &self.mnemonic.to_seed(""),
+        )?;
+        let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
+        let public_key = ExtendedPubKey::from_priv(secp, &privkey);
+        let public_key_bytes = public_key.public_key.serialize();
+        let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
+
+        let public_key_method =
+            public_key_method.unwrap_or_else(|| hrp.default_public_key_method());
+        let (raw_address, public_key) = match public_key_method {
+            crate::address::PublicKeyMethod::Cosmos => (
+                cosmos_address_from_public_key(&public_key_bytes),
+                WalletPublicKey::Cosmos(public_key_bytes),
+            ),
+            crate::address::PublicKeyMethod::Ethereum => (
+                eth_address_from_public_key(&public_key_bytes_uncompressed),
+                WalletPublicKey::Ethereum(public_key_bytes_uncompressed),
+            ),
+        };
+        let address = RawAddress::from(raw_address).with_hrp(hrp);
+
+        Ok(Wallet {
+            address,
+            privkey,
+            public_key,
+        })
     }
 }
 
 impl From<bip39::Mnemonic> for SeedPhrase {
     fn from(mnemonic: bip39::Mnemonic) -> Self {
-        SeedPhrase { mnemonic }
+        SeedPhrase {
+            mnemonic,
+            derivation_path: None,
+        }
     }
 }
 
 impl FromStr for SeedPhrase {
     type Err = anyhow::Error;
 
-    fn from_str(mut s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "juno-local" => s = JUNO_LOCAL_PHRASE,
-            "osmosis-local" | "osmo-local" => s = OSMO_LOCAL_PHRASE,
+    fn from_str(mut phrase: &str) -> Result<Self, Self::Err> {
+        match phrase {
+            "juno-local" => phrase = JUNO_LOCAL_PHRASE,
+            "osmosis-local" | "osmo-local" => phrase = OSMO_LOCAL_PHRASE,
             _ => (),
         }
 
-        // Create mnemonic and generate seed from it
-        let mnemonic = s
+        let (derivation_path, phrase) = if phrase.starts_with("m/44") {
+            match phrase.split_once(' ') {
+                Some((path, phrase)) => {
+                    let path = Arc::new(path.parse()?);
+                    (Some(path), phrase)
+                }
+                None => (None, phrase),
+            }
+        } else {
+            (None, phrase)
+        };
+
+        let mnemonic = phrase
             .parse()
             .ok()
             .context("Unable to parse mnemonic from phrase")?;
 
-        Ok(SeedPhrase { mnemonic })
-    }
-}
-
-/// A private key for a wallet, without specifying the [AddressType].
-#[derive(Clone)]
-pub struct RawWallet {
-    seed_phrase: SeedPhrase,
-    derivation_path: Option<Arc<DerivationPath>>,
-}
-
-impl FromStr for RawWallet {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        RawWallet::from_phrase(s)
+        Ok(SeedPhrase {
+            derivation_path,
+            mnemonic,
+        })
     }
 }
 
@@ -204,70 +265,6 @@ impl Display for DerivationPathComponent {
 const JUNO_LOCAL_PHRASE: &str = "clip hire initial neck maid actor venue client foam budget lock catalog sweet steak waste crater broccoli pipe steak sister coyote moment obvious choose";
 const OSMO_LOCAL_PHRASE: &str = "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius";
 
-// fn make_derivation_path()
-
-impl RawWallet {
-    /// Generate the special Juno Local wallet
-    pub fn juno_local() -> Self {
-        Self::from_phrase(JUNO_LOCAL_PHRASE).unwrap()
-    }
-
-    pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let (derivation_path, phrase) = if phrase.starts_with("m/44") {
-            match phrase.split_once(' ') {
-                Some((path, phrase)) => {
-                    let path = Arc::new(path.parse()?);
-                    (Some(path), phrase)
-                }
-                None => (None, phrase),
-            }
-        } else {
-            (None, phrase)
-        };
-
-        let seed_phrase = SeedPhrase::from_str(phrase)?;
-        Ok(RawWallet {
-            seed_phrase,
-            derivation_path,
-        })
-    }
-
-    pub fn for_chain(&self, type_: AddressType) -> Result<Wallet> {
-        let secp = global_secp();
-        let derivation_path = self
-            .derivation_path
-            .clone()
-            .unwrap_or_else(|| type_.default_derivation_path());
-
-        let root_private_key = bitcoin::util::bip32::ExtendedPrivKey::new_master(
-            bitcoin::Network::Bitcoin,
-            &self.seed_phrase.mnemonic.to_seed(""),
-        )?;
-        let privkey = root_private_key.derive_priv(secp, &*derivation_path)?;
-        let public_key = ExtendedPubKey::from_priv(secp, &privkey);
-        let public_key_bytes = public_key.public_key.serialize();
-        let public_key_bytes_uncompressed = public_key.public_key.serialize_uncompressed();
-
-        let (raw_address, public_key) = match type_.public_key_method() {
-            crate::address::PublicKeyMethod::Cosmos => (
-                cosmos_address_from_public_key(&public_key_bytes),
-                WalletPublicKey::Cosmos(public_key_bytes),
-            ),
-            crate::address::PublicKeyMethod::Ethereum => (
-                eth_address_from_public_key(&public_key_bytes_uncompressed),
-                WalletPublicKey::Ethereum(public_key_bytes_uncompressed),
-            ),
-        };
-        let address = RawAddress::from(raw_address).for_chain(type_);
-
-        Ok(Wallet {
-            address,
-            privkey,
-            public_key,
-        })
-    }
-}
-
 /// A wallet capable of signing on a specific blockchain
 #[derive(Clone)]
 // Not deriving Copy since this is a pretty large data structure.
@@ -300,25 +297,20 @@ impl Wallet {
     }
 
     /// Generate a random wallet
-    pub fn generate(type_: AddressType) -> Result<Self> {
-        RawWallet {
-            seed_phrase: SeedPhrase::random(),
-            derivation_path: None,
-        }
-        .for_chain(type_)
+    pub fn generate(hrp: AddressHrp) -> Result<Self> {
+        SeedPhrase::random().with_hrp(hrp, None)
     }
 
     /// Generate the special Juno Local wallet
     pub fn juno_local() -> Self {
-        RawWallet::juno_local()
-            .for_chain(AddressType::Juno)
+        SeedPhrase::from_str(JUNO_LOCAL_PHRASE)
+            .unwrap()
+            .with_hrp(AddressHrp::from_static("juno"), None)
             .unwrap()
     }
 
-    pub fn from_phrase(phrase: &str, type_: AddressType) -> Result<Self> {
-        RawWallet::from_phrase(phrase)
-            .map(|raw| raw.for_chain(type_))
-            .unwrap()
+    pub fn from_phrase(phrase: &str, hrp: AddressHrp) -> Result<Self> {
+        SeedPhrase::from_str(phrase)?.with_hrp(hrp, None)
     }
 
     pub fn public_key_bytes(&self) -> &[u8] {
@@ -382,7 +374,7 @@ impl Wallet {
                 from_address: self.to_string(),
                 to_address: dest.get_address_string(),
                 amount: vec![Coin {
-                    denom: cosmos.get_gas_coin().clone(),
+                    denom: cosmos.get_cosmos_builder().gas_coin().to_owned(),
                     amount: amount.to_string(),
                 }],
             },
@@ -407,6 +399,12 @@ fn eth_address_from_public_key(public_key: &[u8; 65]) -> [u8; 20] {
 impl Display for Wallet {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.address)
+    }
+}
+
+impl HasAddressHrp for Wallet {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.address.get_address_hrp()
     }
 }
 
@@ -436,7 +434,7 @@ mod tests {
             "entire clap mystery embrace blame doll volcano face trust mom cruel load";
         const ADDRESS: &str = "0x00980adc74d3d2053c011cb0528fbe1fa91a352c";
         let address = ADDRESS.chars().skip(2).collect::<String>();
-        let wallet = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        let wallet = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
         let eth_address = eth_address_from_public_key(match &wallet.public_key {
             WalletPublicKey::Cosmos(_) => panic!("Should not be Cosmos"),
             WalletPublicKey::Ethereum(public_key) => public_key,
@@ -454,8 +452,8 @@ mod tests {
         let expected_injective: Address = "inj15sws48vv977kmgawqfegptw0pqs7cfeq7mpr4c"
             .parse()
             .unwrap();
-        let osmosis = Wallet::from_phrase(PHRASE, AddressType::Osmo).unwrap();
-        let injective = Wallet::from_phrase(PHRASE, AddressType::Injective).unwrap();
+        let osmosis = Wallet::from_phrase(PHRASE, AddressHrp::from_static("osmo")).unwrap();
+        let injective = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
         assert_eq!(expected_osmosis, osmosis.get_address());
         assert_eq!(expected_injective, injective.get_address());
     }
@@ -472,7 +470,7 @@ mod tests {
 
         let secret_key = SecretKey::from_str(PRIVATE_KEY).unwrap();
         let secp = global_secp();
-        let public_key = secret_key.public_key(&secp);
+        let public_key = secret_key.public_key(secp);
         let public_key_bytes = public_key.serialize_uncompressed();
 
         assert_eq!(public_key_from_str.as_slice(), &public_key_bytes);
@@ -507,10 +505,10 @@ mod tests {
         assert_eq!(private_key1, private_key2);
 
         let secp = global_secp();
-        let public_key = private_key1.public_key(&secp);
+        let public_key = private_key1.public_key(secp);
         let public_key_bytes = public_key.serialize_uncompressed();
 
-        assert_eq!(PUBLIC_KEY_STR, &hex::encode(&public_key_bytes));
+        assert_eq!(PUBLIC_KEY_STR, &hex::encode(public_key_bytes));
         assert_eq!(
             PUBLIC_KEY_HASHED_STR,
             hex::encode(keccak(&public_key_bytes[1..]))
@@ -523,7 +521,7 @@ mod tests {
         let hash = keccak(&[]);
         assert_eq!(
             "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-            hex::encode(&hash)
+            hex::encode(hash)
         );
     }
 }

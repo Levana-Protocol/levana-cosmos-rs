@@ -16,14 +16,12 @@ pub struct CodeId {
 }
 
 impl CodeId {
-    pub fn new(client: Cosmos, code_id: u64) -> Self {
-        CodeId { code_id, client }
-    }
-
+    /// Get the underlying numeric code ID.
     pub fn get_code_id(&self) -> u64 {
         self.code_id
     }
 
+    /// Download the WASM content of this code ID.
     pub async fn download(&self) -> Result<Vec<u8>> {
         self.client.code_info(self.code_id).await
     }
@@ -85,7 +83,7 @@ impl Cosmos {
             .with_context(|| format!("Storing code in file {}", path.display()))
     }
 
-    /// Like store_code_path, but uses the authz grant mechanism
+    /// Like [Self::store_code_path], but uses the authz grant mechanism
     pub async fn store_code_path_authz(
         &self,
         wallet: &Wallet,
@@ -112,14 +110,7 @@ impl Cosmos {
 
     /// Get the code ID from a transaction hash
     pub async fn code_id_from_tx(&self, txhash: impl Into<String>) -> Result<CodeId> {
-        let (_, txres) = self.wait_for_transaction_body(txhash).await?;
-        let code_id = parse_code_id(&txres)?;
-        Ok(self.make_code_id(code_id))
-    }
-
-    /// Get the contract address from a transaction hash
-    pub async fn contract_address_from_tx(&self, txhash: impl Into<String>) -> Result<CodeId> {
-        let (_, txres) = self.wait_for_transaction_body(txhash).await?;
+        let (_, txres) = self.wait_for_transaction(txhash).await?;
         let code_id = parse_code_id(&txres)?;
         Ok(self.make_code_id(code_id))
     }

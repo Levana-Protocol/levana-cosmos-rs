@@ -1,5 +1,6 @@
 use std::{
-    convert::TryFrom,
+    collections::HashSet,
+    convert::{Infallible, TryFrom},
     fmt::{Debug, Display},
     str::FromStr,
     sync::Arc,
@@ -8,30 +9,41 @@ use std::{
 use anyhow::{Context, Result};
 use bech32::{FromBase32, ToBase32};
 use bitcoin::util::bip32::DerivationPath;
+use once_cell::sync::OnceCell;
+use parking_lot::RwLock;
 use serde::de::Visitor;
 
-use crate::{wallet::DerivationPathConfig, CosmosNetwork};
+use crate::{wallet::DerivationPathConfig, Cosmos, CosmosBuilder, CosmosNetwork};
 
-/// A raw address value not connected to a specific blockchain. You usually want [Address].
+/// A raw address value not connected to a specific blockchain.
+///
+/// This value can be useful for converting addresses between different chains,
+/// or for accepting a command line parameter or config value which is
+/// chain-agnostic.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum RawAddress {
+pub struct RawAddress(RawAddressInner);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+enum RawAddressInner {
     Twenty { raw_address: [u8; 20] },
     ThirtyTwo { raw_address: [u8; 32] },
 }
 
-/// Parse a raw address and its HRP from a string. Supports any Cosmos-compatible blockchain.
-pub fn parse_raw_address(s: &str) -> Result<(String, RawAddress)> {
-    let (hrp, data, variant) = bech32::decode(s).context("Invalid bech32 data")?;
-    match variant {
-        bech32::Variant::Bech32 => (),
-        bech32::Variant::Bech32m => anyhow::bail!("Must use Bech32 variant"),
+impl RawAddress {
+    /// Parse a Cosmos-compatible address into an HRP and [RawAddress].
+    pub fn parse_with_hrp(s: &str) -> Result<(String, RawAddress)> {
+        let (hrp, data, variant) = bech32::decode(s).context("Invalid bech32 data")?;
+        match variant {
+            bech32::Variant::Bech32 => (),
+            bech32::Variant::Bech32m => anyhow::bail!("Must use Bech32 variant"),
+        }
+        let data = Vec::<u8>::from_base32(&data)?;
+        let raw_address = data
+            .as_slice()
+            .try_into()
+            .with_context(|| format!("Total bytes found: {}", data.len()))?;
+        Ok((hrp, raw_address))
     }
-    let data = Vec::<u8>::from_base32(&data)?;
-    let raw_address = data
-        .as_slice()
-        .try_into()
-        .with_context(|| format!("Total bytes found: {}", data.len()))?;
-    Ok((hrp, raw_address))
 }
 
 /// Note that using this instance throws away the Human Readable Parse (HRP) of the address!
@@ -39,7 +51,7 @@ impl FromStr for RawAddress {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_raw_address(s).map(|x| x.1)
+        RawAddress::parse_with_hrp(s).map(|x| x.1)
     }
 }
 
@@ -66,28 +78,30 @@ impl<'de> Visitor<'de> for RawAddressVisitor {
     where
         E: serde::de::Error,
     {
-        parse_raw_address(s).map(|x| x.1).map_err(E::custom)
+        RawAddress::parse_with_hrp(s)
+            .map(|x| x.1)
+            .map_err(E::custom)
     }
 }
 
 impl AsRef<[u8]> for RawAddress {
     fn as_ref(&self) -> &[u8] {
-        match self {
-            RawAddress::Twenty { raw_address } => raw_address,
-            RawAddress::ThirtyTwo { raw_address } => raw_address,
+        match &self.0 {
+            RawAddressInner::Twenty { raw_address } => raw_address,
+            RawAddressInner::ThirtyTwo { raw_address } => raw_address,
         }
     }
 }
 
 impl From<[u8; 20]> for RawAddress {
     fn from(raw_address: [u8; 20]) -> Self {
-        RawAddress::Twenty { raw_address }
+        RawAddress(RawAddressInner::Twenty { raw_address })
     }
 }
 
 impl From<[u8; 32]> for RawAddress {
     fn from(raw_address: [u8; 32]) -> Self {
-        RawAddress::ThirtyTwo { raw_address }
+        RawAddress(RawAddressInner::ThirtyTwo { raw_address })
     }
 }
 
@@ -96,146 +110,55 @@ impl TryFrom<&[u8]> for RawAddress {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         match value.try_into().ok() {
-            Some(raw_address) => Ok(RawAddress::Twenty { raw_address }),
+            Some(raw_address) => Ok(RawAddress(RawAddressInner::Twenty { raw_address })),
             None => value
                 .try_into()
-                .map(|raw_address| RawAddress::ThirtyTwo { raw_address })
+                .map(|raw_address| RawAddress(RawAddressInner::ThirtyTwo { raw_address }))
                 .context("Invalid data size for a RawAddress, need either 20 or 32 bytes"),
         }
     }
 }
 
 impl RawAddress {
-    pub fn for_chain(self, type_: AddressType) -> Address {
+    /// Generates a new [Address] given the raw address and HRP for the chain.
+    pub fn with_hrp(self, hrp: AddressHrp) -> Address {
         Address {
             raw_address: self,
-            type_,
+            hrp,
         }
     }
 }
 
-/// An address on a Cosmos blockchain
+/// An address on a Cosmos blockchain.
+///
+/// This is composed of a [RawAddress] combined with the human-readable part
+/// (HRP) for the given chain. HRP is part of the bech32 standard.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Address {
     raw_address: RawAddress,
-    type_: AddressType,
+    hrp: AddressHrp,
 }
 
 impl Address {
-    pub fn raw(&self) -> &RawAddress {
-        &self.raw_address
-    }
-
-    pub fn for_chain(&self, type_: AddressType) -> Self {
-        Address {
-            raw_address: self.raw_address,
-            type_,
-        }
+    /// Get the raw bytes without the chain's HRP.
+    pub fn raw(self) -> RawAddress {
+        self.raw_address
     }
 }
 
-/// The type of address
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum AddressType {
+/// The method used for hashing public keys into a byte representation.
+pub enum PublicKeyMethod {
+    /// Cosmos standard is to use a combination of SHA2 256 and ripemd160.
     Cosmos,
-    Juno,
-    Osmo,
-    Wasm,
-    Sei,
-    Stargaze,
-    Injective,
-}
-
-impl AddressType {
-    pub fn all() -> [AddressType; 7] {
-        [
-            AddressType::Cosmos,
-            AddressType::Juno,
-            AddressType::Osmo,
-            AddressType::Wasm,
-            AddressType::Sei,
-            AddressType::Stargaze,
-            AddressType::Injective,
-        ]
-    }
-
-    pub fn hrp(self) -> &'static str {
-        match self {
-            AddressType::Cosmos => "cosmos",
-            AddressType::Juno => "juno",
-            AddressType::Osmo => "osmo",
-            AddressType::Wasm => "wasm",
-            AddressType::Sei => "sei",
-            // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
-            AddressType::Stargaze => "stars",
-            AddressType::Injective => "inj",
-        }
-    }
-
-    pub(crate) fn public_key_method(self) -> PublicKeyMethod {
-        match self {
-            AddressType::Cosmos
-            | AddressType::Juno
-            | AddressType::Osmo
-            | AddressType::Wasm
-            | AddressType::Sei
-            | AddressType::Stargaze => PublicKeyMethod::Cosmos,
-            AddressType::Injective => PublicKeyMethod::Ethereum,
-        }
-    }
-
-    pub fn default_derivation_path(self) -> Arc<DerivationPath> {
-        match self.public_key_method() {
-            PublicKeyMethod::Cosmos => DerivationPathConfig::cosmos_numbered(0),
-            PublicKeyMethod::Ethereum => DerivationPathConfig::ethereum_numbered(0),
-        }
-        .as_derivation_path()
-    }
-}
-
-pub(crate) enum PublicKeyMethod {
-    Cosmos,
+    /// Ethereum, and some Cosmos chains like Injective, use keccak3.
     Ethereum,
-}
-
-impl FromStr for AddressType {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "cosmos" => Ok(AddressType::Cosmos),
-            "juno" => Ok(AddressType::Juno),
-            "osmo" => Ok(AddressType::Osmo),
-            "wasm" => Ok(AddressType::Wasm),
-            "sei" => Ok(AddressType::Sei),
-            // https://github.com/cosmos/chain-registry/blob/e20cc7896cc203dada0f6a197d8f52ccafb4f7c7/stargaze/chain.json#L9
-            "stars" => Ok(AddressType::Stargaze),
-            "inj" => Ok(AddressType::Injective),
-            _ => Err(anyhow::anyhow!("Invalid address type {s:?}")),
-        }
-    }
 }
 
 impl Display for Address {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        AddressAnyHrp {
-            raw_address: self.raw_address,
-            hrp: self.type_.hrp(),
-        }
-        .fmt(fmt)
-    }
-}
-
-pub struct AddressAnyHrp<'a> {
-    pub raw_address: RawAddress,
-    pub hrp: &'a str,
-}
-
-impl<'a> Display for AddressAnyHrp<'a> {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
         bech32::encode_to_fmt(
             fmt,
-            self.hrp,
+            self.hrp.0,
             self.raw_address.to_base32(),
             bech32::Variant::Bech32,
         )
@@ -259,23 +182,20 @@ impl FromStr for Address {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        (|| {
-            let (hrp, raw_address) = parse_raw_address(s)?;
-            hrp.parse().map(|type_| Address { raw_address, type_ })
-        })()
-        .with_context(|| format!("Unable to parse Cosmos address {s}"))
+        RawAddress::parse_with_hrp(s)
+            .map(|(hrp, raw_address)| raw_address.with_hrp(AddressHrp::from_string(hrp)))
+            .with_context(|| format!("Unable to parse Cosmos address {s}"))
     }
 }
 
-pub trait HasAddress {
+/// Anything which has an on-chain [Address].
+pub trait HasAddress: HasAddressHrp {
+    /// Get the raw address itself.
     fn get_address(&self) -> Address;
 
+    /// Get the string representation of the address.
     fn get_address_string(&self) -> String {
         self.get_address().to_string()
-    }
-
-    fn get_address_type(&self) -> AddressType {
-        self.get_address().type_
     }
 }
 
@@ -291,33 +211,178 @@ impl<T: HasAddress> HasAddress for &T {
     }
 }
 
-pub trait HasAddressType {
-    fn get_address_type(&self) -> AddressType;
-}
+/// The human-readable part (HRP) of a Cosmos address.
+///
+/// HRPs are part of the bech32 standard. All addresses encoded with
+/// bech32--which includes all Cosmos chains--have a human-readable part, such
+/// as `cosmos` for CosmosHub or `osmo` for Osmosis.  This trait allows us to
+/// query the HRP for various types within this package that know their HRP.
+///
+/// This library internally shares multiple copies of the same HRP for both
+/// efficiency and ease of use of this library: it allows both this data type,
+/// as well as [Address], to be [Copy].
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
+pub struct AddressHrp(&'static str);
 
-impl HasAddressType for AddressType {
-    fn get_address_type(&self) -> AddressType {
-        *self
+impl FromStr for AddressHrp {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(AddressHrp::new(s))
     }
 }
 
-impl HasAddressType for CosmosNetwork {
-    fn get_address_type(&self) -> AddressType {
-        match self {
-            CosmosNetwork::JunoTestnet => AddressType::Juno,
-            CosmosNetwork::JunoMainnet => AddressType::Juno,
-            CosmosNetwork::JunoLocal => AddressType::Juno,
-            CosmosNetwork::OsmosisMainnet => AddressType::Osmo,
-            CosmosNetwork::OsmosisTestnet => AddressType::Osmo,
-            CosmosNetwork::OsmosisLocal => AddressType::Osmo,
-            CosmosNetwork::WasmdLocal => AddressType::Wasm,
-            CosmosNetwork::SeiMainnet => AddressType::Sei,
-            CosmosNetwork::SeiTestnet => AddressType::Sei,
-            CosmosNetwork::StargazeTestnet => AddressType::Stargaze,
-            CosmosNetwork::StargazeMainnet => AddressType::Stargaze,
-            CosmosNetwork::InjectiveTestnet => AddressType::Injective,
-            CosmosNetwork::InjectiveMainnet => AddressType::Injective,
+impl AddressHrp {
+    /// The default [DerivationPath] for this HRP.
+    ///
+    /// Some chains follow Ethereum rules, notably Injective. For all other
+    /// chains we default to Cosmos defaults.
+    pub fn default_derivation_path(self) -> Arc<DerivationPath> {
+        self.default_derivation_path_with_index(0)
+    }
+
+    /// Same as [Self::default_derivation_path], but includes an index.
+    pub fn default_derivation_path_with_index(self, index: u64) -> Arc<DerivationPath> {
+        match self.as_str() {
+            "inj" => DerivationPathConfig::ethereum_numbered(index).as_derivation_path(),
+            _ => DerivationPathConfig::cosmos_numbered(index).as_derivation_path(),
         }
+    }
+
+    /// The default public key method for this HRP.
+    ///
+    /// Public keys are hashed into bytes used for wallet addresses. This
+    /// represents the strategy used. Some chains, notably Injective, use
+    /// Ethereum's method. The default is to use Cosmos's method.
+    pub fn default_public_key_method(self) -> PublicKeyMethod {
+        match self.as_str() {
+            "inj" => PublicKeyMethod::Ethereum,
+            _ => PublicKeyMethod::Cosmos,
+        }
+    }
+}
+
+impl Display for AddressHrp {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+type AddressHrpSet = RwLock<HashSet<&'static str>>;
+static ADDRESS_HRPS: OnceCell<AddressHrpSet> = OnceCell::new();
+impl AddressHrp {
+    fn get_set() -> &'static AddressHrpSet {
+        ADDRESS_HRPS.get_or_init(|| RwLock::new(HashSet::new()))
+    }
+
+    /// Generate a new value from a [String]-like value.
+    pub fn new(s: impl AsRef<str>) -> Self {
+        // FIXME validate the str as a valid HRP?
+        let s = s.as_ref();
+        let set = Self::get_set();
+        {
+            if let Some(s) = set.read().get(s) {
+                return AddressHrp(s);
+            }
+        }
+        let mut guard = set.write();
+        // Deal with race condition: was this added between our read and now?
+        if let Some(s) = guard.get(s) {
+            return AddressHrp(s);
+        }
+        let s = Box::leak(s.to_owned().into_boxed_str());
+        guard.insert(s);
+        AddressHrp(s)
+    }
+
+    /// Minor optimization over [AddressHrp::new]: use a static string for initializing.
+    pub fn from_static(s: &'static str) -> Self {
+        let set = Self::get_set();
+        {
+            if let Some(s) = set.read().get(s) {
+                return AddressHrp(s);
+            }
+        }
+        let mut guard = set.write();
+        // Deal with race condition: was this added between our read and now?
+        if let Some(s) = guard.get(s) {
+            return AddressHrp(s);
+        }
+        guard.insert(s);
+        AddressHrp(s)
+    }
+
+    /// Minor optimization over [AddressHrp::new]: use an owned [String] for initializing.
+    pub fn from_string(s: String) -> Self {
+        // FIXME validate the str as a valid HRP?
+        let set = Self::get_set();
+        {
+            if let Some(s) = set.read().get(&*s) {
+                return AddressHrp(s);
+            }
+        }
+        let mut guard = set.write();
+        // Deal with race condition: was this added between our read and now?
+        if let Some(s) = guard.get(&*s) {
+            return AddressHrp(s);
+        }
+        let s = Box::leak(s.into_boxed_str());
+        guard.insert(s);
+        AddressHrp(s)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Trait for any values that can report their bech32 HRP (human-readable part).
+///
+pub trait HasAddressHrp {
+    /// Return the HRP
+    fn get_address_hrp(&self) -> AddressHrp;
+}
+
+impl<T: HasAddressHrp> HasAddressHrp for &T {
+    fn get_address_hrp(&self) -> AddressHrp {
+        (*self).get_address_hrp()
+    }
+}
+
+impl HasAddressHrp for Address {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.hrp
+    }
+}
+
+impl HasAddressHrp for Cosmos {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.get_cosmos_builder().get_address_hrp()
+    }
+}
+
+impl HasAddressHrp for CosmosBuilder {
+    fn get_address_hrp(&self) -> AddressHrp {
+        self.hrp()
+    }
+}
+
+impl HasAddressHrp for CosmosNetwork {
+    fn get_address_hrp(&self) -> AddressHrp {
+        AddressHrp::from_static(match self {
+            CosmosNetwork::JunoTestnet | CosmosNetwork::JunoMainnet | CosmosNetwork::JunoLocal => {
+                "juno"
+            }
+            CosmosNetwork::OsmosisMainnet
+            | CosmosNetwork::OsmosisTestnet
+            | CosmosNetwork::OsmosisLocal => "osmo",
+            CosmosNetwork::WasmdLocal => "wasm",
+            CosmosNetwork::SeiMainnet | CosmosNetwork::SeiTestnet => "sei",
+            CosmosNetwork::StargazeTestnet | CosmosNetwork::StargazeMainnet => "stars",
+            CosmosNetwork::InjectiveTestnet | CosmosNetwork::InjectiveMainnet => "inj",
+        })
     }
 }
 
@@ -327,9 +392,12 @@ mod tests {
 
     use super::*;
 
-    impl Arbitrary for AddressType {
+    impl Arbitrary for AddressHrp {
         fn arbitrary(g: &mut quickcheck::Gen) -> Self {
-            *g.choose(&AddressType::all()).unwrap()
+            AddressHrp::from_static(
+                g.choose(&["juno", "stars", "osmo", "wasm", "inj", "cosmos"])
+                    .unwrap(),
+            )
         }
     }
 
@@ -340,20 +408,20 @@ mod tests {
                 for byte in &mut raw_address {
                     *byte = u8::arbitrary(g);
                 }
-                RawAddress::Twenty { raw_address }
+                RawAddress(RawAddressInner::Twenty { raw_address })
             } else {
                 let mut raw_address = [0; 32];
                 for byte in &mut raw_address {
                     *byte = u8::arbitrary(g);
                 }
-                RawAddress::ThirtyTwo { raw_address }
+                RawAddress(RawAddressInner::ThirtyTwo { raw_address })
             }
         }
     }
 
     quickcheck::quickcheck! {
-        fn roundtrip_address(address_type: AddressType, raw_address: RawAddress) -> bool {
-            let address1 = raw_address.for_chain(address_type);
+        fn roundtrip_address(hrp: AddressHrp, raw_address: RawAddress) -> bool {
+            let address1 = raw_address.with_hrp(hrp);
             let s1 = address1.to_string();
             let address2: Address = s1.parse().unwrap();
             let s2 = address2.to_string();
@@ -413,96 +481,7 @@ impl<'de> Visitor<'de> for AddressVisitor {
     }
 }
 
-/// An address where the [AddressType] is known to be Juno.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct JunoAddress {
-    raw_address: RawAddress,
-}
-
-impl From<JunoAddress> for Address {
-    fn from(JunoAddress { raw_address }: JunoAddress) -> Self {
-        raw_address.for_chain(AddressType::Juno)
-    }
-}
-
-impl From<RawAddress> for JunoAddress {
-    fn from(raw_address: RawAddress) -> Self {
-        JunoAddress { raw_address }
-    }
-}
-
-impl TryFrom<Address> for JunoAddress {
-    type Error = anyhow::Error;
-
-    fn try_from(Address { raw_address, type_ }: Address) -> Result<Self, Self::Error> {
-        if let AddressType::Juno = type_ {
-            Ok(JunoAddress { raw_address })
-        } else {
-            Err(anyhow::anyhow!(
-                "Cannot convert to JunoAddress from {type_:?}"
-            ))
-        }
-    }
-}
-
-impl Display for JunoAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            Address {
-                raw_address: self.raw_address,
-                type_: AddressType::Juno
-            }
-        )
-    }
-}
-
-impl FromStr for JunoAddress {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse()? {
-            Address {
-                raw_address,
-                type_: AddressType::Juno,
-            } => Ok(JunoAddress { raw_address }),
-            _ => Err(anyhow::anyhow!("Expected a Juno address")),
-        }
-    }
-}
-
-impl serde::Serialize for JunoAddress {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for JunoAddress {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error;
-
-        let Address { raw_address, type_ } = Address::deserialize(deserializer)?;
-        match type_ {
-            AddressType::Juno => Ok(JunoAddress { raw_address }),
-            _ => Err(D::Error::custom("Expecting a Juno address")),
-        }
-    }
-}
-
 impl Debug for Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\"{self}\"")
-    }
-}
-
-impl Debug for JunoAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"{self}\"")
     }
