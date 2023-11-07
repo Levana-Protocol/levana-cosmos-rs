@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
         auth::v1beta1::{BaseAccount, QueryAccountRequest},
-        bank::v1beta1::{MsgSend, QueryAllBalancesRequest},
+        bank::v1beta1::QueryAllBalancesRequest,
         base::{
             abci::v1beta1::TxResponse,
             query::v1beta1::PageRequest,
@@ -20,10 +20,7 @@ use cosmos_sdk_proto::{
             ModeInfo, OrderBy, SignDoc, SignerInfo, SimulateRequest, SimulateResponse, Tx, TxBody,
         },
     },
-    cosmwasm::wasm::v1::{
-        MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
-        MsgUpdateAdmin, QueryCodeRequest,
-    },
+    cosmwasm::wasm::v1::QueryCodeRequest,
     traits::Message,
 };
 use tonic::{
@@ -37,7 +34,6 @@ use tonic::{
 use crate::{
     address::HasAddressHrp,
     error::{Action, BuilderError, ConnectionError, QueryError, QueryErrorDetails},
-    txbuilder::TxMessage,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
@@ -769,7 +765,7 @@ impl TxBuilder {
     /// Make a [TxBody] for this builder
     fn make_tx_body(&self) -> TxBody {
         TxBody {
-            messages: self.messages.clone(),
+            messages: self.messages.iter().map(|msg| msg.get_protobuf()).collect(),
             memo: self.memo.as_deref().unwrap_or_default().to_owned(),
             timeout_height: 0,
             extension_options: vec![],
@@ -946,72 +942,6 @@ impl TxBuilder {
     /// Does this transaction have any messages already?
     pub fn has_messages(&self) -> bool {
         !self.messages.is_empty()
-    }
-}
-
-impl TxMessage {
-    /// Generate a new [TypedMessage] from a raw protocol value.
-    pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
-        TxMessage(inner)
-    }
-
-    /// Extract the underlying raw protocol value.
-    pub fn into_inner(self) -> cosmos_sdk_proto::Any {
-        self.0
-    }
-}
-
-impl From<MsgStoreCode> for TxMessage {
-    fn from(msg: MsgStoreCode) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgStoreCode".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgInstantiateContract> for TxMessage {
-    fn from(msg: MsgInstantiateContract) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgInstantiateContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgMigrateContract> for TxMessage {
-    fn from(msg: MsgMigrateContract) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgMigrateContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgExecuteContract> for TxMessage {
-    fn from(msg: MsgExecuteContract) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgExecuteContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgUpdateAdmin> for TxMessage {
-    fn from(msg: MsgUpdateAdmin) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgUpdateAdmin".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgSend> for TxMessage {
-    fn from(msg: MsgSend) -> Self {
-        TxMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmos.bank.v1beta1.MsgSend".to_owned(),
-            value: msg.encode_to_vec(),
-        })
     }
 }
 

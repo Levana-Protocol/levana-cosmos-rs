@@ -1,7 +1,6 @@
 #![deny(missing_docs)]
 //! Library for communicating with Cosmos blockchains over gRPC
 pub use address::{Address, AddressHrp, HasAddress, HasAddressHrp, PublicKeyMethod, RawAddress};
-pub use authz::MsgGrantHelper;
 pub use client::{BlockInfo, Cosmos, HasCosmos};
 pub use codeid::CodeId;
 pub use contract::{Contract, ContractAdmin, HasContract};
@@ -32,3 +31,5 @@ mod wallet;
 pub mod clap;
 
 pub mod error;
+
+pub mod messages;

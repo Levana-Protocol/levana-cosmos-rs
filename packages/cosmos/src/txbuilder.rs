@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, sync::Arc};
 
 use cosmos_sdk_proto::{
     cosmos::base::v1beta1::Coin,
@@ -12,21 +12,27 @@ use crate::HasAddress;
 /// This is the core interface for producing, simulating, and broadcasting transactions.
 #[derive(Default, Clone, Debug)]
 pub struct TxBuilder {
-    pub(crate) messages: Vec<cosmos_sdk_proto::Any>,
+    pub(crate) messages: Vec<Arc<TxMessage>>,
     pub(crate) memo: Option<String>,
     pub(crate) skip_code_check: bool,
 }
 
 impl Display for TxBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("FIXME need to implement a real Display for TxBuilder")
+        if let Some(memo) = &self.memo {
+            writeln!(f, "Memo: {memo}")?;
+        }
+        for (idx, msg) in self.messages.iter().enumerate() {
+            writeln!(f, "Message {idx}: {}", msg.description)?;
+        }
+        Ok(())
     }
 }
 
 impl TxBuilder {
     /// Add a message to this transaction.
     pub fn add_message(&mut self, msg: impl Into<TxMessage>) -> &mut Self {
-        self.messages.push(msg.into().0);
+        self.messages.push(msg.into().into());
         self
     }
 
@@ -37,7 +43,7 @@ impl TxBuilder {
     where
         T: TryInto<TxMessage>,
     {
-        self.messages.push(msg.try_into()?.0);
+        self.messages.push(msg.try_into()?.into());
         Ok(self)
     }
 
@@ -115,4 +121,45 @@ impl TxBuilder {
 }
 
 /// A message to include in a transaction.
-pub struct TxMessage(pub(crate) cosmos_sdk_proto::Any);
+#[derive(Debug)]
+pub struct TxMessage {
+    type_url: String,
+    value: Vec<u8>,
+    description: String,
+}
+
+impl TxMessage {
+    /// Generate a new [TxMessage].
+    pub fn new(
+        type_url: impl Into<String>,
+        value: Vec<u8>,
+        description: impl Into<String>,
+    ) -> Self {
+        TxMessage {
+            type_url: type_url.into(),
+            value,
+            description: description.into(),
+        }
+    }
+
+    /// Get an [cosmos_sdk_proto::Any] value for including in a protobuf message.
+    pub fn get_protobuf(&self) -> cosmos_sdk_proto::Any {
+        cosmos_sdk_proto::Any {
+            type_url: self.type_url.clone(),
+            value: self.value.clone(),
+        }
+    }
+
+    /// Convert into an [cosmos_sdk_proto::Any] value for including in a protobuf message.
+    ///
+    /// Provides the description value as well.
+    pub fn into_protobuf(self) -> (cosmos_sdk_proto::Any, String) {
+        (
+            cosmos_sdk_proto::Any {
+                type_url: self.type_url,
+                value: self.value,
+            },
+            self.description,
+        )
+    }
+}

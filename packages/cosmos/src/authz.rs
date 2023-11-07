@@ -1,84 +1,23 @@
-use chrono::{DateTime, Utc};
 use cosmos_sdk_proto::cosmos::{
     authz::v1beta1::{
-        GenericAuthorization, Grant, GrantAuthorization, MsgExec, MsgGrant,
-        QueryGranterGrantsRequest, QueryGranterGrantsResponse,
+        GrantAuthorization, MsgGrant, QueryGranterGrantsRequest, QueryGranterGrantsResponse,
     },
     base::query::v1beta1::{PageRequest, PageResponse},
 };
 use prost::Message;
-use prost_types::Timestamp;
 
-use crate::{error::Action, Address, Cosmos, HasAddress, TxMessage};
+use crate::{error::Action, Cosmos, HasAddress, TxMessage};
 
 impl From<MsgGrant> for TxMessage {
     fn from(msg: MsgGrant) -> Self {
-        TxMessage::new(cosmos_sdk_proto::Any {
-            type_url: "/cosmos.authz.v1beta1.MsgGrant".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgExec> for TxMessage {
-    fn from(msg: MsgExec) -> Self {
-        TxMessage::new(cosmos_sdk_proto::Any {
-            type_url: "/cosmos.authz.v1beta1.MsgExec".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-/// A message for granting authorization to another address.
-pub struct MsgGrantHelper {
-    /// Address granting permissions
-    pub granter: Address,
-    /// Address receiving permissions
-    pub grantee: Address,
-    /// Which features are being authorized
-    pub authorization: String,
-    /// When the authorization expires
-    pub expiration: Option<DateTime<Utc>>,
-}
-
-impl From<MsgGrantHelper> for TxMessage {
-    fn from(value: MsgGrantHelper) -> Self {
-        MsgGrant::from(value).into()
-    }
-}
-
-impl From<MsgGrantHelper> for MsgGrant {
-    fn from(
-        MsgGrantHelper {
-            granter,
-            grantee,
-            authorization,
-            expiration,
-        }: MsgGrantHelper,
-    ) -> Self {
-        let authorization = GenericAuthorization { msg: authorization };
-        let authorization = prost_types::Any {
-            type_url: "/cosmos.authz.v1beta1.GenericAuthorization".to_owned(),
-            value: authorization.encode_to_vec(),
-        };
-        MsgGrant {
-            granter: granter.get_address_string(),
-            grantee: grantee.get_address_string(),
-            grant: Some(Grant {
-                authorization: Some(authorization),
-                expiration: expiration.map(datetime_to_timestamp),
-            }),
-        }
-    }
-}
-
-fn datetime_to_timestamp(x: DateTime<Utc>) -> Timestamp {
-    prost_types::Timestamp {
-        seconds: x.timestamp(),
-        nanos: x
-            .timestamp_subsec_nanos()
-            .try_into()
-            .expect("DateTime<Utc>'s nanos is too large"),
+        TxMessage::new(
+            "/cosmos.authz.v1beta1.MsgGrant",
+            msg.encode_to_vec(),
+            format!(
+                "{} grants {} access to {:?}",
+                msg.granter, msg.grantee, msg.grant
+            ),
+        )
     }
 }
 
