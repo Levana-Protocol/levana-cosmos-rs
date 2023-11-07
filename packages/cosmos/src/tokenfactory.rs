@@ -1,6 +1,6 @@
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    Cosmos, TypedMessage, Wallet,
+    Cosmos, HasAddress, TypedMessage, Wallet,
 };
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
@@ -21,7 +21,7 @@ impl TokenFactory {
 
     pub async fn create(&self, subdenom: String) -> Result<(TxResponse, String)> {
         let msg = MsgCreateDenom {
-            sender: self.wallet.address().to_string(),
+            sender: self.wallet.get_address_string(),
             subdenom,
         }
         .into_typed_message(self.client.get_address_hrp())?;
@@ -51,7 +51,7 @@ impl TokenFactory {
 
     pub async fn mint(&self, denom: String, amount: u128) -> Result<TxResponse> {
         let msg = MsgMint {
-            sender: self.wallet.address().to_string(),
+            sender: self.wallet.get_address_string(),
             amount: Some(Coin {
                 denom,
                 amount: amount.to_string(),
@@ -63,8 +63,8 @@ impl TokenFactory {
 
     pub async fn burn(&self, denom: String, amount: u128) -> Result<TxResponse> {
         let msg = MsgBurn {
-            sender: self.wallet.address().to_string(),
-            burn_from_address: self.wallet.address().to_string(),
+            sender: self.wallet.get_address_string(),
+            burn_from_address: self.wallet.get_address_string(),
             amount: Some(Coin {
                 denom,
                 amount: amount.to_string(),
@@ -76,7 +76,7 @@ impl TokenFactory {
 
     pub async fn change_admin(&self, denom: String, addr: String) -> Result<TxResponse> {
         let msg = MsgChangeAdmin {
-            sender: self.wallet.address().to_string(),
+            sender: self.wallet.get_address_string(),
             denom: denom.clone(),
             new_admin: addr,
         }

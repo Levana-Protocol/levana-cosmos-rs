@@ -747,7 +747,7 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse> {
-        let base_account = cosmos.get_base_account(wallet.address()).await?;
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
 
         self.sign_and_broadcast_with(
             cosmos,

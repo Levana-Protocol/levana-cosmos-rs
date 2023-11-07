@@ -288,10 +288,6 @@ fn global_secp() -> &'static Secp256k1<All> {
 }
 
 impl Wallet {
-    pub fn address(&self) -> &Address {
-        &self.address
-    }
-
     /// Generate a random mnemonic phrase
     pub fn generate_phrase() -> String {
         let rng = rand::thread_rng();

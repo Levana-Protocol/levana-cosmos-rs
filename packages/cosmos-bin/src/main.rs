@@ -602,7 +602,7 @@ fn gen_wallet(hrp: &str) -> Result<()> {
     let phrase = cosmos::Wallet::generate_phrase();
     let wallet = cosmos::Wallet::from_phrase(&phrase, AddressHrp::new(hrp))?;
     println!("Mnemonic: {phrase}");
-    let address = wallet.address().raw().with_hrp(AddressHrp::new(hrp));
+    let address = wallet.get_address().raw().with_hrp(AddressHrp::new(hrp));
     println!("Address: {address}");
     Ok(())
 }

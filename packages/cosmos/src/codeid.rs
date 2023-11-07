@@ -62,7 +62,7 @@ impl Cosmos {
     /// Convenience helper for uploading code to the blockchain
     pub async fn store_code(&self, wallet: &Wallet, wasm_byte_code: Vec<u8>) -> Result<CodeId> {
         let msg = MsgStoreCode {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address().to_string(),
             wasm_byte_code,
             instantiate_permission: None,
         };

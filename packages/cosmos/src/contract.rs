@@ -85,7 +85,7 @@ impl CodeId {
     ) -> Result<Contract> {
         let msg = msg.into();
         let msg = MsgInstantiateContract {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address().to_string(),
             admin: match admin {
                 ContractAdmin::NoAdmin => "".to_owned(),
                 ContractAdmin::Sender => wallet.get_address_string(),
@@ -141,7 +141,7 @@ impl Contract {
         msg: impl Into<Vec<u8>>,
     ) -> Result<TxResponse> {
         let msg = MsgExecuteContract {
-            sender: wallet.address().to_string(),
+            sender: wallet.get_address_string(),
             contract: self.address.to_string(),
             msg: msg.into(),
             funds,
@@ -237,8 +237,8 @@ impl Contract {
         msg: impl Into<Vec<u8>>,
     ) -> Result<()> {
         let msg = MsgMigrateContract {
-            sender: wallet.address().to_string(),
-            contract: self.address.to_string(),
+            sender: wallet.get_address_string(),
+            contract: self.get_address_string(),
             msg: msg.into(),
             code_id,
         };

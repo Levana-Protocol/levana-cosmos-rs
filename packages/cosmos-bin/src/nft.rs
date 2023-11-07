@@ -1,4 +1,4 @@
-use cosmos::{Address, Cosmos, HasAddressHrp, TxBuilder};
+use cosmos::{Address, Cosmos, HasAddress, HasAddressHrp, TxBuilder};
 
 use crate::TxOpt;
 
@@ -28,7 +28,7 @@ pub(super) async fn go(sub: Subcommand, opt: Opt, cosmos: Cosmos) -> anyhow::Res
             loop {
                 let Tokens { tokens } = contract
                     .query(&NftQuery::Tokens {
-                        owner: *wallet.address(),
+                        owner: wallet.get_address(),
                         limit: 30,
                     })
                     .await?;
