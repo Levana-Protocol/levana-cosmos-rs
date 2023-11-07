@@ -159,7 +159,7 @@ impl Cosmos {
                         });
                     }
                 }
-                Err(QueryErrorDetails::Tonic(err))
+                Err(QueryErrorDetails::from_tonic_status(err))
             }
             Err(_) => {
                 cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
@@ -455,11 +455,10 @@ impl Cosmos {
                         })?,
                     ));
                 }
-                // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
                 Err(QueryError {
-                    query: QueryErrorDetails::Tonic(e),
+                    query: QueryErrorDetails::NotFound(_),
                     ..
-                }) if e.code() == tonic::Code::NotFound || e.message().contains("not found") => {
+                }) => {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
                         self.builder.transaction_attempts()

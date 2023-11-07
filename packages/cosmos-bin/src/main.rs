@@ -454,7 +454,7 @@ impl Subcommand {
                     tx,
                     timestamp,
                     events,
-                } = cosmos.wait_for_transaction(txhash).await?.1;
+                } = cosmos.get_transaction_body(txhash).await?.1;
                 println!("Height: {height}");
                 println!("Code: {code}");
                 println!("Codespace: {codespace}");

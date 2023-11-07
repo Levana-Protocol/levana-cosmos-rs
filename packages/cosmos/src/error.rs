@@ -238,19 +238,40 @@ impl Display for StringOrBytes {
 /// additional context.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum QueryErrorDetails {
-    #[error("Error response from gRPC endpoint: {0:?}")]
-    Tonic(tonic::Status),
+    #[error("Unknown gRPC status returned: {0:?}")]
+    Unknown(tonic::Status),
     #[error("Timed out getting new connection")]
     ConnectionTimeout,
     #[error("Query timed out")]
     QueryTimeout,
     #[error("{0}")]
     ConnectionError(ConnectionError),
+    #[error("Not found returned from chain: {0}")]
+    NotFound(String),
 }
 
 impl QueryErrorDetails {
     /// Indicates that the error may be transient and deserves a retry.
     pub(crate) fn should_be_retried(&self) -> bool {
-        todo!()
+        match self {
+            // Not sure, so give it a retry
+            QueryErrorDetails::Unknown(_) => true,
+            // Yup, may as well try to connect again.
+            QueryErrorDetails::ConnectionTimeout => true,
+            // Same here, maybe it was a bad connection.
+            QueryErrorDetails::QueryTimeout => true,
+            // Also possibly a bad connection
+            QueryErrorDetails::ConnectionError(_) => true,
+            QueryErrorDetails::NotFound(_) => false,
+        }
+    }
+
+    pub(crate) fn from_tonic_status(err: tonic::Status) -> QueryErrorDetails {
+        // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
+        if err.message().contains("not found") || err.code() == tonic::Code::NotFound {
+            QueryErrorDetails::NotFound(err.message().to_owned())
+        } else {
+            QueryErrorDetails::Unknown(err)
+        }
     }
 }
