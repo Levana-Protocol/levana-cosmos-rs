@@ -1,13 +1,13 @@
 #![allow(missing_docs)]
 //! Error types exposed by this package.
 
-use std::{str::FromStr, sync::Arc};
+use std::{fmt::Display, str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
 use chrono::{DateTime, Utc};
 
-use crate::AddressHrp;
+use crate::{AddressHrp, CosmosBuilder};
 
 /// Errors that can occur with token factory
 #[derive(thiserror::Error, Debug, Clone)]
@@ -143,4 +143,53 @@ pub enum ConnectionError {
         grpc_url: String,
         source: Arc<tonic::transport::Error>,
     },
+}
+
+/// General errors while interacting with the chain
+///
+/// This error type is used by the majority of the codebase. The idea is that
+/// the other error types will represent "preparation" errors, and this will
+/// represent errors during normal interaction.
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum Error {
+    #[error("On connection to {}, while performing:\n{action}\n{query}\nHeight set to: {height:?}", builder.grpc_url())]
+    Query {
+        action: Action,
+        builder: Arc<CosmosBuilder>,
+        height: Option<u64>,
+        query: QueryError,
+    },
+}
+
+/// The action being performed when an error occurred.
+#[derive(Debug, Clone)]
+pub enum Action {}
+
+impl Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        todo!()
+        // match self {}
+    }
+}
+
+/// The lower-level details of how a query failed.
+///
+/// This error type should generally be wrapped up in [Error::Query] to provide
+/// additional context.
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum QueryError {
+    #[error("Error response from gRPC endpoint: {0:?}")]
+    Tonic(tonic::Status),
+    #[error("Timed out getting new connection")]
+    ConnectionTimeout,
+    #[error("Query timed out")]
+    QueryTimeout,
+    #[error("{0}")]
+    ConnectionError(ConnectionError),
+}
+impl QueryError {
+    /// Indicates that the error may be transient and deserves a retry.
+    pub(crate) fn should_be_retried(&self) -> bool {
+        todo!()
+    }
 }

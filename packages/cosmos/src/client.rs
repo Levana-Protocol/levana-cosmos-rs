@@ -26,7 +26,6 @@ use cosmos_sdk_proto::{
     },
     traits::Message,
 };
-use tokio::time::error::Elapsed;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -37,7 +36,7 @@ use tonic::{
 
 use crate::{
     address::HasAddressHrp,
-    error::{BuilderError, ConnectionError},
+    error::{BuilderError, ConnectionError, QueryError},
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress,
 };
@@ -97,70 +96,78 @@ trait WithCosmosInner {
     async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
 }
 
-#[derive(thiserror::Error, Debug)]
-pub(crate) enum PerformQueryError {
-    #[error("Error getting a gRPC connection from the pool: {0:?}")]
-    Pool(bb8::RunError<ConnectionError>),
-    #[error("Error response from gRPC endpoint: {0:?}")]
-    Tonic(tonic::Status),
-    #[error("Query timed out, total elapsed time: {0}")]
-    Timeout(Elapsed),
-}
-
 impl Cosmos {
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
         should_retry: bool,
-    ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
+    ) -> Result<tonic::Response<Request::Response>, crate::Error> {
         let mut attempt = 0;
         loop {
-            let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
-            let duration =
-                tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
-            let mut req = tonic::Request::new(req.clone());
-            if let Some(height) = self.height {
-                // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-                let metadata = req.metadata_mut();
-                metadata.insert("x-cosmos-block-height", height.into());
-            }
-            let res =
-                tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
-            let e = match res {
-                Ok(Ok(x)) => return Ok(x),
-                Ok(Err(err)) => {
-                    // Basic sanity check that we can still talk to the blockchain
-                    match GrpcRequest::perform(
-                        tonic::Request::new(GetLatestBlockRequest {}),
-                        &mut cosmos_inner,
-                    )
-                    .await
-                    {
-                        Ok(_) => (),
-                        Err(source) => {
-                            cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
-                                grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                                source,
-                            });
-                        }
-                    }
-                    PerformQueryError::Tonic(err)
-                }
-                Err(e) => {
-                    cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
-                        grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                    });
-                    PerformQueryError::Timeout(e)
-                }
+            let err = match self.perform_query_inner(req.clone()).await {
+                Ok(x) => break Ok(x),
+                Err(err) => err,
             };
-            if attempt >= self.builder.query_retries() || !should_retry {
-                return Err(e);
+            if attempt >= self.builder.query_retries() || !should_retry && err.should_be_retried() {
+                return Err(crate::Error::Query {
+                    action: todo!(),
+                    builder: self.builder.clone(),
+                    height: self.height.clone(),
+                    query: err,
+                });
             } else {
                 attempt += 1;
                 log::debug!(
-                    "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
+                    "Error performing a query, retrying. Attempt {attempt} of {}. {err:?}",
                     self.builder.query_retries()
                 );
+            }
+        }
+    }
+
+    pub(crate) async fn perform_query_inner<Request: GrpcRequest>(
+        &self,
+        req: Request,
+    ) -> Result<tonic::Response<Request::Response>, QueryError> {
+        let mut cosmos_inner = self.pool.get().await.map_err(|err| match err {
+            bb8::RunError::User(e) => QueryError::ConnectionError(e),
+            bb8::RunError::TimedOut => QueryError::ConnectionTimeout,
+        })?;
+        let duration =
+            tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
+        let mut req = tonic::Request::new(req.clone());
+        if let Some(height) = self.height {
+            // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
+            let metadata = req.metadata_mut();
+            metadata.insert("x-cosmos-block-height", height.into());
+        }
+        let res =
+            tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+        match res {
+            Ok(Ok(x)) => Ok(x),
+            Ok(Err(err)) => {
+                // Basic sanity check that we can still talk to the blockchain
+                match GrpcRequest::perform(
+                    tonic::Request::new(GetLatestBlockRequest {}),
+                    &mut cosmos_inner,
+                )
+                .await
+                {
+                    Ok(_) => (),
+                    Err(source) => {
+                        cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
+                            grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                            source,
+                        });
+                    }
+                }
+                Err(QueryError::Tonic(err))
+            }
+            Err(_) => {
+                cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
+                    grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                });
+                Err(QueryError::QueryTimeout)
             }
         }
     }
@@ -443,9 +450,10 @@ impl Cosmos {
                     ));
                 }
                 // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
-                Err(PerformQueryError::Tonic(e))
-                    if e.code() == tonic::Code::NotFound || e.message().contains("not found") =>
-                {
+                Err(crate::Error::Query {
+                    query: QueryError::Tonic(e),
+                    ..
+                }) if e.code() == tonic::Code::NotFound || e.message().contains("not found") => {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
                         self.builder.transaction_attempts()
