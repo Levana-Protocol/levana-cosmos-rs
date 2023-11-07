@@ -306,14 +306,6 @@ impl Wallet {
         SeedPhrase::random().with_hrp(hrp)
     }
 
-    /// Generate the special Juno Local wallet
-    pub fn juno_local() -> Self {
-        SeedPhrase::from_str(JUNO_LOCAL_PHRASE)
-            .unwrap()
-            .with_hrp(AddressHrp::from_static("juno"))
-            .unwrap()
-    }
-
     pub fn from_phrase(phrase: &str, hrp: AddressHrp) -> Result<Self> {
         SeedPhrase::from_str(phrase)?.with_hrp(hrp)
     }
