@@ -302,6 +302,8 @@ fn global_secp() -> &'static Secp256k1<All> {
 
 impl Wallet {
     /// Generate a random wallet
+    ///
+    /// If you want more control over the derivation settings, use [SeedPhrase::random] instead.
     pub fn generate(hrp: AddressHrp) -> Result<Self> {
         SeedPhrase::random().with_hrp(hrp)
     }
