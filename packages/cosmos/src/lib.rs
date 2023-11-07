@@ -27,3 +27,5 @@ mod wallet;
 
 #[cfg(feature = "clap")]
 pub mod clap;
+
+pub mod error;
