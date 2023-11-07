@@ -59,9 +59,10 @@ struct FinalizedCosmosBuilder(Arc<CosmosBuilder>);
 
 impl std::fmt::Debug for Cosmos {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let builder = self.get_cosmos_builder();
         f.debug_struct("Cosmos")
-            .field("grpc_url", &self.get_grpc_url())
-            .field("network", &self.get_network())
+            .field("grpc_url", &builder.grpc_url)
+            .field("chain-id", &builder.chain_id)
             .finish()
     }
 }
@@ -158,12 +159,9 @@ impl Cosmos {
         }
     }
 
+    /// Get the [CosmosBuilder] used to construct this connection.
     pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
         &self.builder
-    }
-
-    pub fn get_network(&self) -> CosmosNetwork {
-        self.get_cosmos_builder().network
     }
 
     /// Sanity check the connection, ensuring that the chain ID we found matches what we expected.
@@ -179,11 +177,6 @@ impl Cosmos {
                 "Mismatched chain IDs. Actual: {actual}. Expected: {expected}."
             ))
         }
-    }
-
-    /// Get the gRPC endpoint used here
-    pub fn get_grpc_url(&self) -> &str {
-        &self.get_cosmos_builder().grpc_url
     }
 }
 
@@ -227,6 +220,11 @@ pub struct CosmosInner {
     is_broken: bool,
 }
 
+/// A set of known networks.
+///
+/// This library is designed to work with arbitrary other chains too, but
+/// providing this built-in list is intended to provide convenience for users of
+/// the library.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CosmosNetwork {
     JunoTestnet,
@@ -253,7 +251,6 @@ pub struct CosmosBuilder {
     pub gas_coin: String,
     pub hrp: AddressHrp,
     pub config: CosmosConfig,
-    pub network: CosmosNetwork,
 }
 
 /// Optional config values.
@@ -922,7 +919,6 @@ impl CosmosBuilder {
             gas_coin: "ujunox".to_owned(),
             hrp: AddressHrp::from_static("juno"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::JunoTestnet,
         }
     }
 
@@ -936,7 +932,6 @@ impl CosmosBuilder {
                 transaction_attempts: 3, // fail faster during testing
                 ..CosmosConfig::default()
             },
-            network: CosmosNetwork::JunoLocal,
         }
     }
 
@@ -948,7 +943,6 @@ impl CosmosBuilder {
             gas_coin: "ujuno".to_owned(),
             hrp: AddressHrp::from_static("juno"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::JunoMainnet,
         }
     }
 
@@ -960,7 +954,6 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::OsmosisMainnet,
         }
     }
 
@@ -972,7 +965,6 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::OsmosisTestnet,
         }
     }
 
@@ -983,7 +975,6 @@ impl CosmosBuilder {
             gas_coin: "uosmo".to_owned(),
             hrp: AddressHrp::from_static("osmo"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::OsmosisLocal,
         }
     }
 
@@ -994,7 +985,6 @@ impl CosmosBuilder {
             gas_coin: "uwasm".to_owned(),
             hrp: AddressHrp::from_static("wasm"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::WasmdLocal,
         }
     }
     async fn new_sei_mainnet() -> Result<CosmosBuilder> {
@@ -1024,7 +1014,6 @@ impl CosmosBuilder {
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
-            network: CosmosNetwork::SeiMainnet,
         })
     }
     async fn new_sei_testnet() -> Result<CosmosBuilder> {
@@ -1053,7 +1042,6 @@ impl CosmosBuilder {
                 gas_price_retry_attempts: 6,
                 ..CosmosConfig::default()
             },
-            network: CosmosNetwork::SeiTestnet,
         })
     }
 
@@ -1066,7 +1054,6 @@ impl CosmosBuilder {
             gas_coin: "ustars".to_owned(),
             hrp: AddressHrp::from_static("stars"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::StargazeTestnet,
         }
     }
 
@@ -1079,7 +1066,6 @@ impl CosmosBuilder {
             gas_coin: "ustars".to_owned(),
             hrp: AddressHrp::from_static("stars"),
             config: CosmosConfig::default(),
-            network: CosmosNetwork::StargazeMainnet,
         }
     }
 
@@ -1096,7 +1082,6 @@ impl CosmosBuilder {
                 gas_price_high: 900000000.0,
                 ..CosmosConfig::default()
             },
-            network: CosmosNetwork::InjectiveTestnet,
         }
     }
 
@@ -1113,7 +1098,6 @@ impl CosmosBuilder {
                 gas_price_high: 900000000.0,
                 ..CosmosConfig::default()
             },
-            network: CosmosNetwork::InjectiveMainnet,
         }
     }
 

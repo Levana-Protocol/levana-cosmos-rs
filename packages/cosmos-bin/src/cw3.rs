@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use cosmos::{Address, ContractAdmin, Cosmos, CosmosNetwork, HasAddress, HasAddressHrp, TxBuilder};
+use cosmos::{Address, ContractAdmin, Cosmos, HasAddress, HasAddressHrp, TxBuilder};
 use cosmwasm_std::{to_binary, CosmosMsg, Decimal, Empty, WasmMsg};
 use cw3::{ProposalListResponse, ProposalResponse};
 use cw4::Member;
@@ -13,18 +13,18 @@ enum ContractType {
     Cw4Group,
 }
 
-fn get_code_id(network: CosmosNetwork, contract_type: ContractType) -> Result<u64> {
-    match (network, contract_type) {
-        (CosmosNetwork::OsmosisTestnet, ContractType::Cw3Flex) => Ok(1519),
-        (CosmosNetwork::OsmosisTestnet, ContractType::Cw4Group) => Ok(1521),
-        (CosmosNetwork::OsmosisMainnet, ContractType::Cw3Flex) => Ok(100),
-        (CosmosNetwork::OsmosisMainnet, ContractType::Cw4Group) => Ok(101),
-        (CosmosNetwork::SeiMainnet, ContractType::Cw3Flex) => Ok(46),
-        (CosmosNetwork::SeiMainnet, ContractType::Cw4Group) => Ok(47),
-        (CosmosNetwork::InjectiveMainnet, ContractType::Cw3Flex) => Ok(124),
-        (CosmosNetwork::InjectiveMainnet, ContractType::Cw4Group) => Ok(125),
+fn get_code_id(chain_id: &str, contract_type: ContractType) -> Result<u64> {
+    match (chain_id, contract_type) {
+        ("osmo-test-5", ContractType::Cw3Flex) => Ok(1519),
+        ("osmo-test-5", ContractType::Cw4Group) => Ok(1521),
+        ("osmosis-1", ContractType::Cw3Flex) => Ok(100),
+        ("osmosis-1", ContractType::Cw4Group) => Ok(101),
+        ("pacific-1", ContractType::Cw3Flex) => Ok(46),
+        ("pacific-1", ContractType::Cw4Group) => Ok(47),
+        ("injective-1", ContractType::Cw3Flex) => Ok(124),
+        ("injective-1", ContractType::Cw4Group) => Ok(125),
         _ => Err(anyhow::anyhow!(
-            "No code ID found for combo {network}/{contract_type:?}"
+            "No code ID found for combo {chain_id}/{contract_type:?}"
         )),
     }
 }
@@ -124,10 +124,10 @@ async fn new_flex(
         duration,
     }: NewFlexOpt,
 ) -> Result<()> {
-    let network = cosmos.get_network();
-    let wallet = tx_opt.get_wallet(network.get_address_hrp())?;
-    let cw3 = cosmos.make_code_id(get_code_id(network, ContractType::Cw3Flex)?);
-    let cw4 = cosmos.make_code_id(get_code_id(network, ContractType::Cw4Group)?);
+    let chain_id = &cosmos.get_cosmos_builder().chain_id;
+    let wallet = tx_opt.get_wallet(cosmos.get_address_hrp())?;
+    let cw3 = cosmos.make_code_id(get_code_id(chain_id, ContractType::Cw3Flex)?);
+    let cw4 = cosmos.make_code_id(get_code_id(chain_id, ContractType::Cw4Group)?);
 
     anyhow::ensure!(!members.is_empty(), "Must provide at least one member");
 
