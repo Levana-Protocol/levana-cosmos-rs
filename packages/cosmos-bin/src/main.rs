@@ -282,7 +282,7 @@ impl Subcommand {
         match self {
             Subcommand::ShowConfig {} => {
                 let cosmos = opt.network_opt.build().await?;
-                println!("{:#?}", cosmos.get_config())
+                println!("{:#?}", cosmos);
             }
             Subcommand::StoreCode { tx_opt, file } => {
                 let cosmos = opt.network_opt.build().await?;

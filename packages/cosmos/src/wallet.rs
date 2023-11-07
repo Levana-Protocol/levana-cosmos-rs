@@ -374,7 +374,7 @@ impl Wallet {
                 from_address: self.to_string(),
                 to_address: dest.get_address_string(),
                 amount: vec![Coin {
-                    denom: cosmos.get_gas_coin().clone(),
+                    denom: cosmos.get_gas_coin().to_owned(),
                     amount: amount.to_string(),
                 }],
             },

@@ -365,7 +365,7 @@ impl HasAddressHrp for Cosmos {
 
 impl HasAddressHrp for CosmosBuilder {
     fn get_address_hrp(&self) -> AddressHrp {
-        self.hrp
+        self.hrp()
     }
 }
 

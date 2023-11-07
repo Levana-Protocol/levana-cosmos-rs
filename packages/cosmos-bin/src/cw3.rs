@@ -124,7 +124,7 @@ async fn new_flex(
         duration,
     }: NewFlexOpt,
 ) -> Result<()> {
-    let chain_id = &cosmos.get_cosmos_builder().chain_id;
+    let chain_id = cosmos.get_cosmos_builder().chain_id();
     let wallet = tx_opt.get_wallet(cosmos.get_address_hrp())?;
     let cw3 = cosmos.make_code_id(get_code_id(chain_id, ContractType::Cw3Flex)?);
     let cw4 = cosmos.make_code_id(get_code_id(chain_id, ContractType::Cw4Group)?);

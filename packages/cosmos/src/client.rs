@@ -1,6 +1,6 @@
 mod query;
 
-use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool};
@@ -28,7 +28,6 @@ use cosmos_sdk_proto::{
     },
     traits::Message,
 };
-use serde::{de::Visitor, Deserialize};
 use tokio::time::error::Elapsed;
 use tonic::{
     async_trait,
@@ -38,11 +37,7 @@ use tonic::{
     Status,
 };
 
-use crate::{
-    address::{AddressHrp, HasAddressHrp},
-    wallet::WalletPublicKey,
-    Address, HasAddress,
-};
+use crate::{address::HasAddressHrp, wallet::WalletPublicKey, Address, CosmosBuilder, HasAddress};
 
 use self::query::GrpcRequest;
 
@@ -58,11 +53,11 @@ pub struct Cosmos {
 struct FinalizedCosmosBuilder(Arc<CosmosBuilder>);
 
 impl std::fmt::Debug for Cosmos {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let builder = self.get_cosmos_builder();
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cosmos")
-            .field("grpc_url", &builder.grpc_url)
-            .field("chain-id", &builder.chain_id)
+            .field("pool", &self.pool)
+            .field("builder", &self.builder)
+            .field("height", &self.height)
             .finish()
     }
 }
@@ -116,7 +111,7 @@ impl Cosmos {
         loop {
             let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
             let duration =
-                tokio::time::Duration::from_secs(self.builder.config.query_timeout_seconds.into());
+                tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
             let mut req = tonic::Request::new(req.clone());
             if let Some(height) = self.height {
                 // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
@@ -147,13 +142,13 @@ impl Cosmos {
                     PerformQueryError::Timeout(e)
                 }
             };
-            if attempt >= self.builder.config.query_retries || !should_retry {
+            if attempt >= self.builder.query_retries() || !should_retry {
                 return Err(e);
             } else {
                 attempt += 1;
                 log::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
-                    self.builder.config.query_retries
+                    self.builder.query_retries()
                 );
             }
         }
@@ -169,7 +164,7 @@ impl Cosmos {
     /// Called automatically by [CosmosBuilder::build], but not by [CosmosBuilder::build_lazy].
     pub async fn sanity_check(&self) -> Result<()> {
         let actual = &self.get_latest_block_info().await?.chain_id;
-        let expected = &self.get_cosmos_builder().chain_id;
+        let expected = &self.get_cosmos_builder().chain_id();
         if actual == expected {
             Ok(())
         } else {
@@ -220,118 +215,6 @@ pub struct CosmosInner {
     is_broken: bool,
 }
 
-/// A set of known networks.
-///
-/// This library is designed to work with arbitrary other chains too, but
-/// providing this built-in list is intended to provide convenience for users of
-/// the library.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CosmosNetwork {
-    JunoTestnet,
-    JunoMainnet,
-    JunoLocal,
-    OsmosisMainnet,
-    OsmosisTestnet,
-    OsmosisLocal,
-    WasmdLocal,
-    SeiMainnet,
-    SeiTestnet,
-    StargazeTestnet,
-    StargazeMainnet,
-    InjectiveTestnet,
-    InjectiveMainnet,
-}
-
-/// Build a connection
-#[derive(Clone)]
-pub struct CosmosBuilder {
-    // FIXME review these, decide if they should be pub, decide on CosmosNetwork future
-    pub grpc_url: String,
-    pub chain_id: String,
-    pub gas_coin: String,
-    pub hrp: AddressHrp,
-    pub config: CosmosConfig,
-}
-
-/// Optional config values.
-#[derive(Clone, Debug)]
-pub struct CosmosConfig {
-    // Add a multiplier to the gas estimate to account for any gas fluctuations
-    pub gas_estimate_multiplier: f64,
-
-    /// Amount of gas coin to send per unit of gas, at the low end.
-    pub gas_price_low: f64,
-
-    /// Amount of gas coin to send per unit of gas, at the high end.
-    pub gas_price_high: f64,
-
-    /// How many retries at different gas prices should we try before using high
-    ///
-    /// If this is 0, we'll always go straight to high. 1 means we'll try the
-    /// low and the high. 2 means we'll try low, midpoint, and high. And so on
-    /// from there.
-    pub gas_price_retry_attempts: u64,
-
-    /// How many attempts to give a transaction before giving up
-    pub transaction_attempts: usize,
-
-    /// Referrer header that can be set
-    referer_header: Option<String>,
-
-    /// Set the number of bb8 connections
-    connection_count: Option<u32>,
-
-    /// Sets the duration to wait for a connection.
-    ///
-    /// Defaults to 5 seconds
-    connection_timeout: std::time::Duration,
-
-    retry_connection: Option<bool>,
-
-    /// Sets the number of seconds before an idle connection is reaped
-    ///
-    /// Defaults to 20 seconds
-    idle_timeout_seconds: u32,
-
-    /// Sets the number of seconds before timing out a gRPC query
-    ///
-    /// Defaults to 5 seconds
-    query_timeout_seconds: u32,
-
-    /// Number of attempts to make at a query before giving up.
-    ///
-    /// Only retries if there is a tonic-level error.
-    ///
-    /// Defaults to 3
-    query_retries: u32,
-
-    /// Should we automatically retry transactions with corrected sequence numbers?
-    autofix_sequence_mismatch: bool,
-}
-
-impl Default for CosmosConfig {
-    fn default() -> Self {
-        // same amount that CosmosJS uses:  https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
-        // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
-        const DEFAULT_GAS_ESTIMATE_MULTIPLIER: f64 = 1.3;
-        Self {
-            gas_estimate_multiplier: DEFAULT_GAS_ESTIMATE_MULTIPLIER,
-            gas_price_low: 0.02,
-            gas_price_high: 0.03,
-            gas_price_retry_attempts: 3,
-            transaction_attempts: 30,
-            referer_header: None,
-            connection_count: None,
-            connection_timeout: Duration::from_secs(5),
-            retry_connection: None,
-            idle_timeout_seconds: 20,
-            query_timeout_seconds: 5,
-            query_retries: 3,
-            autofix_sequence_mismatch: false,
-        }
-    }
-}
-
 impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos> {
         let cosmos = self.build_lazy().await;
@@ -343,13 +226,13 @@ impl CosmosBuilder {
     pub async fn build_lazy(self) -> Cosmos {
         let builder = Arc::new(self);
         let mut pool_builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
-            builder.config.idle_timeout_seconds.into(),
+            builder.idle_timeout_seconds().into(),
         )));
-        if let Some(count) = builder.config.connection_count {
+        if let Some(count) = builder.connection_count() {
             pool_builder = pool_builder.max_size(count);
         }
-        pool_builder = pool_builder.connection_timeout(builder.config.connection_timeout);
-        if let Some(retry_connection) = builder.config.retry_connection {
+        pool_builder = pool_builder.connection_timeout(builder.connection_timeout());
+        if let Some(retry_connection) = builder.retry_connection() {
             pool_builder = pool_builder.retry_connection(retry_connection);
         }
         let pool = pool_builder
@@ -364,117 +247,9 @@ impl CosmosBuilder {
     }
 }
 
-impl serde::Serialize for CosmosNetwork {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for CosmosNetwork {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(CosmosNetworkVisitor)
-    }
-}
-
-struct CosmosNetworkVisitor;
-
-impl<'de> Visitor<'de> for CosmosNetworkVisitor {
-    type Value = CosmosNetwork;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("CosmosNetwork")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        CosmosNetwork::from_str(v).map_err(E::custom)
-    }
-}
-
-impl CosmosNetwork {
-    fn as_str(self) -> &'static str {
-        match self {
-            CosmosNetwork::JunoTestnet => "juno-testnet",
-            CosmosNetwork::JunoMainnet => "juno-mainnet",
-            CosmosNetwork::JunoLocal => "juno-local",
-            CosmosNetwork::OsmosisMainnet => "osmosis-mainnet",
-            CosmosNetwork::OsmosisTestnet => "osmosis-testnet",
-            CosmosNetwork::OsmosisLocal => "osmosis-local",
-            CosmosNetwork::WasmdLocal => "wasmd-local",
-            CosmosNetwork::SeiMainnet => "sei-mainnet",
-            CosmosNetwork::SeiTestnet => "sei-testnet",
-            CosmosNetwork::StargazeTestnet => "stargaze-testnet",
-            CosmosNetwork::StargazeMainnet => "stargaze-mainnet",
-            CosmosNetwork::InjectiveTestnet => "injective-testnet",
-            CosmosNetwork::InjectiveMainnet => "injective-mainnet",
-        }
-    }
-}
-
-impl Display for CosmosNetwork {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for CosmosNetwork {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "juno-testnet" => Ok(CosmosNetwork::JunoTestnet),
-            "juno-mainnet" => Ok(CosmosNetwork::JunoMainnet),
-            "juno-local" => Ok(CosmosNetwork::JunoLocal),
-            "osmosis-mainnet" => Ok(CosmosNetwork::OsmosisMainnet),
-            "osmosis-testnet" => Ok(CosmosNetwork::OsmosisTestnet),
-            "osmosis-local" => Ok(CosmosNetwork::OsmosisLocal),
-            "wasmd-local" => Ok(CosmosNetwork::WasmdLocal),
-            "sei-mainnet" => Ok(CosmosNetwork::SeiMainnet),
-            "sei-testnet" => Ok(CosmosNetwork::SeiTestnet),
-            "stargaze-testnet" => Ok(CosmosNetwork::StargazeTestnet),
-            "stargaze-mainnet" => Ok(CosmosNetwork::StargazeMainnet),
-            "injective-testnet" => Ok(CosmosNetwork::InjectiveTestnet),
-            "injective-mainnet" => Ok(CosmosNetwork::InjectiveMainnet),
-            _ => Err(anyhow::anyhow!("Unknown network: {s}")),
-        }
-    }
-}
-
-impl CosmosNetwork {
-    pub async fn connect(self) -> Result<Cosmos> {
-        self.builder().await?.build().await
-    }
-
-    pub async fn builder(self) -> Result<CosmosBuilder> {
-        Ok(match self {
-            CosmosNetwork::JunoTestnet => CosmosBuilder::new_juno_testnet(),
-            CosmosNetwork::JunoMainnet => CosmosBuilder::new_juno_mainnet(),
-            CosmosNetwork::JunoLocal => CosmosBuilder::new_juno_local(),
-            CosmosNetwork::OsmosisMainnet => CosmosBuilder::new_osmosis_mainnet(),
-            CosmosNetwork::OsmosisTestnet => CosmosBuilder::new_osmosis_testnet(),
-            CosmosNetwork::OsmosisLocal => CosmosBuilder::new_osmosis_local(),
-            CosmosNetwork::WasmdLocal => CosmosBuilder::new_wasmd_local(),
-            CosmosNetwork::SeiMainnet => CosmosBuilder::new_sei_mainnet().await?,
-            CosmosNetwork::SeiTestnet => CosmosBuilder::new_sei_testnet().await?,
-            CosmosNetwork::StargazeTestnet => CosmosBuilder::new_stargaze_testnet(),
-            CosmosNetwork::StargazeMainnet => CosmosBuilder::new_stargaze_mainnet(),
-            CosmosNetwork::InjectiveTestnet => CosmosBuilder::new_injective_testnet(),
-            CosmosNetwork::InjectiveMainnet => CosmosBuilder::new_injective_mainnet(),
-        })
-    }
-}
-
 impl CosmosBuilder {
     async fn build_inner(&self) -> Result<CosmosInner> {
-        let grpc_url = &self.grpc_url;
+        let grpc_url = &self.grpc_url();
         let grpc_endpoint = grpc_url.parse::<Endpoint>()?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
             grpc_endpoint.tls_config(ClientTlsConfig::new())?
@@ -492,7 +267,7 @@ impl CosmosBuilder {
             Err(_) => anyhow::bail!("Timed out while connecting to {grpc_url}"),
         };
 
-        let referer_header = self.config.referer_header.clone();
+        let referer_header = self.referer_header().map(|x| x.to_owned());
 
         Ok(CosmosInner {
             auth_query_client:
@@ -513,18 +288,9 @@ impl CosmosBuilder {
             is_broken: false,
         })
     }
-
-    pub fn set_gas_multiplier(&mut self, multiplier: f64) -> &mut Self {
-        self.config.gas_estimate_multiplier = multiplier;
-        self
-    }
 }
 
 impl Cosmos {
-    pub fn get_config(&self) -> &CosmosConfig {
-        &self.builder.config
-    }
-
     /// Return a modified version of this [Cosmos] that queries at the given height.
     pub fn at_height(mut self, height: Option<u64>) -> Self {
         self.height = height;
@@ -665,7 +431,7 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse)> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        for attempt in 1..=self.builder.config.transaction_attempts {
+        for attempt in 1..=self.builder.transaction_attempts() {
             let txres = self
                 .perform_query(
                     GetTxRequest {
@@ -694,7 +460,7 @@ impl Cosmos {
                 {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                        self.builder.config.transaction_attempts
+                        self.builder.transaction_attempts()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                 }
@@ -737,16 +503,15 @@ impl Cosmos {
             .collect())
     }
 
-    pub fn get_gas_coin(&self) -> &String {
-        &self.builder.gas_coin
+    pub fn get_gas_coin(&self) -> &str {
+        self.builder.gas_coin()
     }
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let config = &self.builder.config;
-        let low = config.gas_price_low;
-        let high = config.gas_price_high;
-        let attempts = config.gas_price_retry_attempts;
+        let low = self.builder.gas_price_low();
+        let high = self.builder.gas_price_high();
+        let attempts = self.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
             high
@@ -757,10 +522,6 @@ impl Cosmos {
         };
 
         (gas as f64 * gas_price) as u64
-    }
-
-    pub fn get_gas_multiplier(&self) -> f64 {
-        self.builder.config.gas_estimate_multiplier
     }
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
@@ -874,237 +635,6 @@ impl Cosmos {
             txhashes,
             chain_id: header.chain_id,
         })
-    }
-}
-
-impl CosmosBuilder {
-    pub fn set_referer_header(&mut self, value: String) {
-        self.config.referer_header = Some(value);
-    }
-
-    pub fn set_connection_count(&mut self, count: u32) {
-        self.config.connection_count = Some(count);
-    }
-
-    /// See <https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.connection_timeout>
-    pub fn set_connection_timeout(&mut self, timeout: Duration) {
-        self.config.connection_timeout = timeout;
-    }
-
-    /// See <https://docs.rs/bb8/latest/bb8/struct.Builder.html#method.retry_connection>
-    pub fn set_retry_connection(&mut self, retry_connection: bool) {
-        self.config.retry_connection = Some(retry_connection);
-    }
-
-    pub fn set_idle_timeout(&mut self, timeout_seconds: u32) {
-        self.config.idle_timeout_seconds = timeout_seconds;
-    }
-
-    pub fn set_query_timeout(&mut self, timeout_seconds: u32) {
-        self.config.query_timeout_seconds = timeout_seconds;
-    }
-
-    pub fn set_query_retries(&mut self, retries: u32) {
-        self.config.query_retries = retries;
-    }
-
-    pub fn set_autofix_sequence_mismatch(&mut self, value: bool) {
-        self.config.autofix_sequence_mismatch = value;
-    }
-
-    fn new_juno_testnet() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://juno-testnet-grpc.polkachu.com:12690".to_owned(),
-            chain_id: "uni-6".to_owned(),
-            gas_coin: "ujunox".to_owned(),
-            hrp: AddressHrp::from_static("juno"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_juno_local() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://localhost:9090".to_owned(),
-            chain_id: "testing".to_owned(),
-            gas_coin: "ujunox".to_owned(),
-            hrp: AddressHrp::from_static("juno"),
-            config: CosmosConfig {
-                transaction_attempts: 3, // fail faster during testing
-                ..CosmosConfig::default()
-            },
-        }
-    }
-
-    fn new_juno_mainnet() -> CosmosBuilder {
-        // Found at: https://cosmos.directory/juno/nodes
-        CosmosBuilder {
-            grpc_url: "http://juno-grpc.polkachu.com:12690".to_owned(),
-            chain_id: "juno-1".to_owned(),
-            gas_coin: "ujuno".to_owned(),
-            hrp: AddressHrp::from_static("juno"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_osmosis_mainnet() -> CosmosBuilder {
-        // Found at: https://docs.osmosis.zone/networks/
-        CosmosBuilder {
-            grpc_url: "http://grpc.osmosis.zone:9090".to_owned(),
-            chain_id: "osmosis-1".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            hrp: AddressHrp::from_static("osmo"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_osmosis_testnet() -> CosmosBuilder {
-        // Others available at: https://docs.osmosis.zone/networks/
-        CosmosBuilder {
-            grpc_url: "https://grpc.osmotest5.osmosis.zone".to_owned(),
-            chain_id: "osmo-test-5".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            hrp: AddressHrp::from_static("osmo"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_osmosis_local() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://localhost:9090".to_owned(),
-            chain_id: "localosmosis".to_owned(),
-            gas_coin: "uosmo".to_owned(),
-            hrp: AddressHrp::from_static("osmo"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_wasmd_local() -> CosmosBuilder {
-        CosmosBuilder {
-            grpc_url: "http://localhost:9090".to_owned(),
-            chain_id: "localwasmd".to_owned(),
-            gas_coin: "uwasm".to_owned(),
-            hrp: AddressHrp::from_static("wasm"),
-            config: CosmosConfig::default(),
-        }
-    }
-    async fn new_sei_mainnet() -> Result<CosmosBuilder> {
-        #[derive(Deserialize)]
-        struct SeiGasConfig {
-            #[serde(rename = "pacific-1")]
-            pub pacific_1: SeiGasConfigItem,
-        }
-        #[derive(Deserialize)]
-        struct SeiGasConfigItem {
-            pub min_gas_price: f64,
-        }
-
-        let url = "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json";
-        let resp = reqwest::get(url).await?;
-        let gas_config: SeiGasConfig = resp.json().await?;
-
-        // https://github.com/chainapsis/keplr-chain-registry/blob/main/cosmos/pacific.json
-        Ok(CosmosBuilder {
-            grpc_url: "https://grpc.sei-apis.com".to_owned(),
-            chain_id: "pacific-1".to_owned(),
-            gas_coin: "usei".to_owned(),
-            hrp: AddressHrp::from_static("sei"),
-            config: CosmosConfig {
-                gas_price_low: gas_config.pacific_1.min_gas_price,
-                gas_price_high: gas_config.pacific_1.min_gas_price * 2.0,
-                gas_price_retry_attempts: 6,
-                ..CosmosConfig::default()
-            },
-        })
-    }
-    async fn new_sei_testnet() -> Result<CosmosBuilder> {
-        #[derive(Deserialize)]
-        struct SeiGasConfig {
-            #[serde(rename = "atlantic-2")]
-            pub atlantic_2: SeiGasConfigItem,
-        }
-        #[derive(Deserialize)]
-        struct SeiGasConfigItem {
-            pub min_gas_price: f64,
-        }
-
-        let url = "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json";
-        let resp = reqwest::get(url).await?;
-        let gas_config: SeiGasConfig = resp.json().await?;
-
-        Ok(CosmosBuilder {
-            grpc_url: "https://grpc-testnet.sei-apis.com".to_owned(),
-            chain_id: "atlantic-2".to_owned(),
-            gas_coin: "usei".to_owned(),
-            hrp: AddressHrp::from_static("sei"),
-            config: CosmosConfig {
-                gas_price_low: gas_config.atlantic_2.min_gas_price,
-                gas_price_high: gas_config.atlantic_2.min_gas_price * 2.0,
-                gas_price_retry_attempts: 6,
-                ..CosmosConfig::default()
-            },
-        })
-    }
-
-    fn new_stargaze_testnet() -> CosmosBuilder {
-        // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/chain.json
-        CosmosBuilder {
-            grpc_url: "http://grpc-1.elgafar-1.stargaze-apis.com:26660".to_owned(),
-            chain_id: "elgafar-1".to_owned(),
-            // https://github.com/cosmos/chain-registry/blob/master/testnets/stargazetestnet/assetlist.json
-            gas_coin: "ustars".to_owned(),
-            hrp: AddressHrp::from_static("stars"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_stargaze_mainnet() -> CosmosBuilder {
-        // https://github.com/cosmos/chain-registry/blob/master/stargaze/chain.json
-        CosmosBuilder {
-            grpc_url: "http://stargaze-grpc.polkachu.com:13790".to_owned(),
-            chain_id: "stargaze-1".to_owned(),
-            // https://github.com/cosmos/chain-registry/blob/master/stargaze/assetlist.json
-            gas_coin: "ustars".to_owned(),
-            hrp: AddressHrp::from_static("stars"),
-            config: CosmosConfig::default(),
-        }
-    }
-
-    fn new_injective_testnet() -> CosmosBuilder {
-        // https://github.com/cosmos/chain-registry/blob/master/testnets/injectivetestnet/chain.json
-        // https://docs.injective.network/develop/public-endpoints/
-        CosmosBuilder {
-            grpc_url: "https://testnet.sentry.chain.grpc.injective.network:443".to_owned(),
-            chain_id: "injective-888".to_owned(),
-            gas_coin: "inj".to_owned(),
-            hrp: AddressHrp::from_static("inj"),
-            config: CosmosConfig {
-                gas_price_low: 500000000.0,
-                gas_price_high: 900000000.0,
-                ..CosmosConfig::default()
-            },
-        }
-    }
-
-    fn new_injective_mainnet() -> CosmosBuilder {
-        // https://github.com/cosmos/chain-registry/blob/master/injective/chain.json
-        // https://docs.injective.network/develop/public-endpoints/
-        CosmosBuilder {
-            grpc_url: "https://sentry.chain.grpc.injective.network:443".to_owned(),
-            chain_id: "injective-1".to_owned(),
-            gas_coin: "inj".to_owned(),
-            hrp: AddressHrp::from_static("inj"),
-            config: CosmosConfig {
-                gas_price_low: 500000000.0,
-                gas_price_high: 900000000.0,
-                ..CosmosConfig::default()
-            },
-        }
-    }
-
-    /// Set the human-readable part (HRP) for the network.
-    pub fn set_address_hrp(&mut self, hrp: AddressHrp) -> &mut Self {
-        self.hrp = hrp;
-        self
     }
 }
 
@@ -1270,7 +800,7 @@ impl TxBuilder {
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
-    /// the multiplier can by adjusted by calling [CosmosBuilder::set_gas_multiplier]
+    /// the multiplier can by adjusted by calling [CosmosBuilder::set_gas_estimate_multiplier]
     pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
         let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
         self.inner_sign_and_broadcast(
@@ -1279,7 +809,7 @@ impl TxBuilder {
             simres.body,
             // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
             // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-            (simres.gas_used as f64 * cosmos.get_gas_multiplier()) as u64,
+            (simres.gas_used as f64 * cosmos.builder.gas_estimate_multiplier()) as u64,
         )
         .await
     }
@@ -1475,7 +1005,7 @@ impl TxBuilder {
                 signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.builder.gas_coin.clone(),
+                        denom: cosmos.builder.gas_coin().to_owned(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -1487,7 +1017,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.builder.chain_id.clone(),
+                chain_id: cosmos.builder.chain_id().to_owned(),
                 account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -1550,7 +1080,7 @@ impl TxBuilder {
             Ok(res)
         };
 
-        let attempts = cosmos.get_cosmos_builder().config.gas_price_retry_attempts;
+        let attempts = cosmos.get_cosmos_builder().gas_price_retry_attempts();
         for attempt_number in 0..attempts {
             let amount = cosmos
                 .gas_to_coins(gas_to_request, attempt_number)
@@ -1666,7 +1196,7 @@ impl<T: HasCosmos> HasCosmos for &T {
 /// Always returns [None] if autofix_sequence_mismatch is disabled (the default).
 impl Cosmos {
     fn get_expected_sequence(&self, message: &str) -> Option<u64> {
-        if self.get_config().autofix_sequence_mismatch {
+        if self.builder.autofix_sequence_mismatch() {
             get_expected_sequence_inner(message)
         } else {
             None
@@ -1712,6 +1242,8 @@ impl From<ExpectedSequenceError> for anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::CosmosNetwork;
+
     use super::*;
 
     #[test]
@@ -1766,15 +1298,15 @@ mod tests {
 
     #[test]
     fn gas_estimate_multiplier() {
-        let mut cosmos = CosmosBuilder::new_osmosis_testnet();
+        let mut cosmos = CosmosNetwork::OsmosisTestnet.builder_local();
 
         // the same as sign_and_broadcast()
         let multiply_estimated_gas = |cosmos: &CosmosBuilder, gas_used: u64| -> u64 {
-            (gas_used as f64 * cosmos.config.gas_estimate_multiplier) as u64
+            (gas_used as f64 * cosmos.gas_estimate_multiplier()) as u64
         };
 
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 1604);
-        cosmos.config.gas_estimate_multiplier = 4.2;
+        cosmos.set_gas_estimate_multiplier(Some(4.2));
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 5182);
     }
 
@@ -1782,10 +1314,10 @@ mod tests {
 
     async fn lazy_load() {
         let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
-        builder.set_query_retries(0);
-        builder.set_retry_connection(false);
+        builder.set_query_retries(Some(0));
+        builder.set_retry_connection(Some(false));
         // something that clearly won't work
-        builder.grpc_url = "https://0.0.0.0:0".to_owned();
+        builder.set_grpc_url("https://0.0.0.0:0".to_owned());
 
         builder.clone().build().await.unwrap_err();
         let cosmos = builder.build_lazy().await;
