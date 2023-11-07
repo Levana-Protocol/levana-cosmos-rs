@@ -37,7 +37,7 @@ use tonic::{
 use crate::{
     address::HasAddressHrp,
     error::{Action, BuilderError, ConnectionError, QueryError, QueryErrorDetails},
-    txbuilder::TypedMessage,
+    txbuilder::TxMessage,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
@@ -949,10 +949,10 @@ impl TxBuilder {
     }
 }
 
-impl TypedMessage {
+impl TxMessage {
     /// Generate a new [TypedMessage] from a raw protocol value.
     pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
-        TypedMessage(inner)
+        TxMessage(inner)
     }
 
     /// Extract the underlying raw protocol value.
@@ -961,54 +961,54 @@ impl TypedMessage {
     }
 }
 
-impl From<MsgStoreCode> for TypedMessage {
+impl From<MsgStoreCode> for TxMessage {
     fn from(msg: MsgStoreCode) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmwasm.wasm.v1.MsgStoreCode".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgInstantiateContract> for TypedMessage {
+impl From<MsgInstantiateContract> for TxMessage {
     fn from(msg: MsgInstantiateContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmwasm.wasm.v1.MsgInstantiateContract".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgMigrateContract> for TypedMessage {
+impl From<MsgMigrateContract> for TxMessage {
     fn from(msg: MsgMigrateContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmwasm.wasm.v1.MsgMigrateContract".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgExecuteContract> for TypedMessage {
+impl From<MsgExecuteContract> for TxMessage {
     fn from(msg: MsgExecuteContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmwasm.wasm.v1.MsgExecuteContract".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgUpdateAdmin> for TypedMessage {
+impl From<MsgUpdateAdmin> for TxMessage {
     fn from(msg: MsgUpdateAdmin) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmwasm.wasm.v1.MsgUpdateAdmin".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgSend> for TypedMessage {
+impl From<MsgSend> for TxMessage {
     fn from(msg: MsgSend) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
+        TxMessage(cosmos_sdk_proto::Any {
             type_url: "/cosmos.bank.v1beta1.MsgSend".to_owned(),
             value: msg.encode_to_vec(),
         })

@@ -12,7 +12,7 @@ use cosmos::{
         cosmwasm::wasm::v1::MsgExecuteContract,
         traits::Message,
     },
-    Address, Cosmos, HasAddress, HasAddressHrp, MsgGrantHelper, TxBuilder, TypedMessage,
+    Address, Cosmos, HasAddress, HasAddressHrp, MsgGrantHelper, TxBuilder, TxMessage,
 };
 
 use crate::{my_duration::MyDuration, parsed_coin::ParsedCoin, TxOpt};
@@ -248,7 +248,7 @@ async fn execute_contract(
     let mut txbuilder = TxBuilder::default();
     let msg = MsgExec {
         grantee: wallet.get_address_string(),
-        msgs: vec![TypedMessage::from(msg_exec_contract).into_inner()],
+        msgs: vec![TxMessage::from(msg_exec_contract).into_inner()],
     };
     txbuilder.add_message(msg);
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;

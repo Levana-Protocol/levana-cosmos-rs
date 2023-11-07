@@ -1,7 +1,7 @@
 use crate::{
     address::{AddressHrp, HasAddressHrp},
     error::TokenFactoryError,
-    Cosmos, HasAddress, TypedMessage, Wallet,
+    Cosmos, HasAddress, TxMessage, Wallet,
 };
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
@@ -130,33 +130,33 @@ fn into_typed_message<T: prost::Message>(
     kind: TokenFactoryKind,
     type_url_suffix: &str,
     msg: T,
-) -> TypedMessage {
-    TypedMessage::new(cosmos_sdk_proto::Any {
+) -> TxMessage {
+    TxMessage::new(cosmos_sdk_proto::Any {
         type_url: type_url(kind, type_url_suffix),
         value: msg.encode_to_vec(),
     })
 }
 
 impl MsgCreateDenom {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
         into_typed_message(kind, "MsgCreateDenom", self)
     }
 }
 
 impl MsgMint {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
         into_typed_message(kind, "MsgMint", self)
     }
 }
 
 impl MsgBurn {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
         into_typed_message(kind, "MsgBurn", self)
     }
 }
 
 impl MsgChangeAdmin {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
         into_typed_message(kind, "MsgChangeAdmin", self)
     }
 }

@@ -9,20 +9,20 @@ use cosmos_sdk_proto::cosmos::{
 use prost::Message;
 use prost_types::Timestamp;
 
-use crate::{error::Action, Address, Cosmos, HasAddress, TypedMessage};
+use crate::{error::Action, Address, Cosmos, HasAddress, TxMessage};
 
-impl From<MsgGrant> for TypedMessage {
+impl From<MsgGrant> for TxMessage {
     fn from(msg: MsgGrant) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
+        TxMessage::new(cosmos_sdk_proto::Any {
             type_url: "/cosmos.authz.v1beta1.MsgGrant".to_owned(),
             value: msg.encode_to_vec(),
         })
     }
 }
 
-impl From<MsgExec> for TypedMessage {
+impl From<MsgExec> for TxMessage {
     fn from(msg: MsgExec) -> Self {
-        TypedMessage::new(cosmos_sdk_proto::Any {
+        TxMessage::new(cosmos_sdk_proto::Any {
             type_url: "/cosmos.authz.v1beta1.MsgExec".to_owned(),
             value: msg.encode_to_vec(),
         })
@@ -41,7 +41,7 @@ pub struct MsgGrantHelper {
     pub expiration: Option<DateTime<Utc>>,
 }
 
-impl From<MsgGrantHelper> for TypedMessage {
+impl From<MsgGrantHelper> for TxMessage {
     fn from(value: MsgGrantHelper) -> Self {
         MsgGrant::from(value).into()
     }

@@ -7,8 +7,8 @@ use cosmos_sdk_proto::{
 };
 
 use crate::{
-    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxResponseExt,
-    TypedMessage, Wallet,
+    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxMessage,
+    TxResponseExt, Wallet,
 };
 
 /// Represents the uploaded code on a specific blockchain connection.
@@ -78,7 +78,7 @@ impl Cosmos {
         let mut txbuilder = TxBuilder::default();
         let msg = MsgExec {
             grantee: wallet.get_address_string(),
-            msgs: vec![TypedMessage::from(store_code).into_inner()],
+            msgs: vec![TxMessage::from(store_code).into_inner()],
         };
         txbuilder.add_message(msg);
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;

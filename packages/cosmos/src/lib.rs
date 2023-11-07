@@ -12,7 +12,7 @@ pub use cosmos_sdk_proto::cosmos::base::v1beta1::Coin;
 pub use error::Error;
 pub use ext::TxResponseExt;
 pub use tokenfactory::TokenFactory;
-pub use txbuilder::{TxBuilder, TypedMessage};
+pub use txbuilder::{TxBuilder, TxMessage};
 pub use wallet::{SeedPhrase, Wallet};
 
 mod address;

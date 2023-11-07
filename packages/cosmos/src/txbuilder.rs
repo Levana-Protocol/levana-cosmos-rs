@@ -25,7 +25,7 @@ impl Display for TxBuilder {
 
 impl TxBuilder {
     /// Add a message to this transaction.
-    pub fn add_message(&mut self, msg: impl Into<TypedMessage>) -> &mut Self {
+    pub fn add_message(&mut self, msg: impl Into<TxMessage>) -> &mut Self {
         self.messages.push(msg.into().0);
         self
     }
@@ -35,7 +35,7 @@ impl TxBuilder {
     /// This is for types which may fail during conversion to [TypedMessage].
     pub fn try_add_message<T>(&mut self, msg: T) -> Result<&mut Self, T::Error>
     where
-        T: TryInto<TypedMessage>,
+        T: TryInto<TxMessage>,
     {
         self.messages.push(msg.try_into()?.0);
         Ok(self)
@@ -114,5 +114,5 @@ impl TxBuilder {
     }
 }
 
-/// A message to include in a transaction, including the type URL string.
-pub struct TypedMessage(pub(crate) cosmos_sdk_proto::Any);
+/// A message to include in a transaction.
+pub struct TxMessage(pub(crate) cosmos_sdk_proto::Any);
