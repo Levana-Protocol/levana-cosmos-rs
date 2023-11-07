@@ -15,6 +15,7 @@ use cosmos_sdk_proto::{
 
 use crate::{
     address::{AddressHrp, HasAddressHrp},
+    error::Action,
     TxResponseExt,
 };
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
@@ -176,12 +177,17 @@ impl Contract {
 
     /// Perform a raw query
     pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+        let key = key.into();
         Ok(self
             .client
             .perform_query(
                 QueryRawContractStateRequest {
                     address: self.address.into(),
-                    query_data: key.into(),
+                    query_data: key.clone(),
+                },
+                Action::RawQuery {
+                    contract: self.address,
+                    key: key.into(),
                 },
                 true,
             )
@@ -198,12 +204,17 @@ impl Contract {
 
     /// Perform a query and return the raw unparsed JSON bytes.
     pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
+        let msg = serde_json::to_vec(&msg)?;
         let res = self
             .client
             .perform_query(
                 QuerySmartContractStateRequest {
                     address: self.address.into(),
-                    query_data: serde_json::to_vec(&msg)?,
+                    query_data: msg.clone(),
+                },
+                Action::SmartQuery {
+                    contract: self.address,
+                    message: msg.into(),
                 },
                 true,
             )
@@ -256,6 +267,7 @@ impl Contract {
                 QueryContractInfoRequest {
                     address: self.address.into(),
                 },
+                Action::ContractInfo(self.address),
                 true,
             )
             .await?
@@ -273,6 +285,7 @@ impl Contract {
                     address: self.address.into(),
                     pagination: None,
                 },
+                Action::ContractHistory(self.address),
                 true,
             )
             .await?

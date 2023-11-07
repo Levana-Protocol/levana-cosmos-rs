@@ -7,12 +7,9 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use cosmos::{
-    proto::{
-        cosmos::authz::v1beta1::{MsgExec, MsgGrant},
-        cosmwasm::wasm::v1::MsgExecuteContract,
-        traits::Message,
-    },
-    Address, Cosmos, HasAddress, HasAddressHrp, MsgGrantHelper, TxBuilder, TypedMessage,
+    messages::{MsgExecHelper, MsgGrantHelper},
+    proto::cosmwasm::wasm::v1::MsgExecuteContract,
+    Address, Cosmos, HasAddress, HasAddressHrp, TxBuilder, TxMessage,
 };
 
 use crate::{my_duration::MyDuration, parsed_coin::ParsedCoin, TxOpt};
@@ -175,14 +172,14 @@ fn cw3_grant(
     expiration: DateTime<Utc>,
     grant_type: GrantType,
 ) -> Result<()> {
-    let msg: MsgGrant = MsgGrantHelper {
+    let any = TxMessage::from(MsgGrantHelper {
         granter,
         grantee,
         authorization: grant_type.as_url().to_owned(),
         expiration: Some(expiration),
-    }
-    .try_into()?;
-    let msg = msg.encode_to_vec();
+    })
+    .into_protobuf()
+    .0;
 
     #[derive(serde::Serialize)]
     #[serde(rename_all = "snake_case")]
@@ -191,8 +188,8 @@ fn cw3_grant(
     }
 
     let stargate = Msg::Stargate {
-        type_url: "/cosmos.authz.v1beta1.MsgGrant".to_owned(),
-        value: into_base64(&msg),
+        type_url: any.type_url,
+        value: into_base64(&any.value),
     };
 
     let mut stdout = std::io::stdout();
@@ -246,9 +243,9 @@ async fn execute_contract(
     };
 
     let mut txbuilder = TxBuilder::default();
-    let msg = MsgExec {
-        grantee: wallet.get_address_string(),
-        msgs: vec![TypedMessage::from(msg_exec_contract).into_inner()],
+    let msg = MsgExecHelper {
+        grantee: wallet.get_address(),
+        msgs: vec![TxMessage::from(msg_exec_contract)],
     };
     txbuilder.add_message(msg);
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;

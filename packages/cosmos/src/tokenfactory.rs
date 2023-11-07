@@ -1,7 +1,7 @@
 use crate::{
     address::{AddressHrp, HasAddressHrp},
     error::TokenFactoryError,
-    Cosmos, HasAddress, TypedMessage, Wallet,
+    Cosmos, HasAddress, TxMessage, Wallet,
 };
 use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
@@ -129,35 +129,59 @@ fn type_url(kind: TokenFactoryKind, s: &str) -> String {
 fn into_typed_message<T: prost::Message>(
     kind: TokenFactoryKind,
     type_url_suffix: &str,
+    desc: impl Into<String>,
     msg: T,
-) -> TypedMessage {
-    TypedMessage::new(cosmos_sdk_proto::Any {
-        type_url: type_url(kind, type_url_suffix),
-        value: msg.encode_to_vec(),
-    })
+) -> TxMessage {
+    TxMessage::new(type_url(kind, type_url_suffix), msg.encode_to_vec(), desc)
 }
 
 impl MsgCreateDenom {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
-        into_typed_message(kind, "MsgCreateDenom", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
+        into_typed_message(
+            kind,
+            "MsgCreateDenom",
+            format!(
+                "tokenfactory: {} creating subdenom {}",
+                self.sender, self.subdenom
+            ),
+            self,
+        )
     }
 }
 
 impl MsgMint {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
-        into_typed_message(kind, "MsgMint", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
+        into_typed_message(
+            kind,
+            "MsgMint",
+            format!("tokenfactory: {} minting {:?}", self.sender, self.amount),
+            self,
+        )
     }
 }
 
 impl MsgBurn {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
-        into_typed_message(kind, "MsgBurn", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
+        into_typed_message(
+            kind,
+            "MsgBurn",
+            format!("tokenfactory: {} burning {:?}", self.sender, self.amount),
+            self,
+        )
     }
 }
 
 impl MsgChangeAdmin {
-    fn into_typed_message(self, kind: TokenFactoryKind) -> TypedMessage {
-        into_typed_message(kind, "MsgChangeAdmin", self)
+    fn into_typed_message(self, kind: TokenFactoryKind) -> TxMessage {
+        into_typed_message(
+            kind,
+            "MsgChangeAdmin",
+            format!(
+                "tokenfactory: {} changing admin on {} to {}",
+                self.sender, self.denom, self.new_admin
+            ),
+            self,
+        )
     }
 }
 

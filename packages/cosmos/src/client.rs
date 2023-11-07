@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
         auth::v1beta1::{BaseAccount, QueryAccountRequest},
-        bank::v1beta1::{MsgSend, QueryAllBalancesRequest},
+        bank::v1beta1::QueryAllBalancesRequest,
         base::{
             abci::v1beta1::TxResponse,
             query::v1beta1::PageRequest,
@@ -20,13 +20,9 @@ use cosmos_sdk_proto::{
             ModeInfo, OrderBy, SignDoc, SignerInfo, SimulateRequest, SimulateResponse, Tx, TxBody,
         },
     },
-    cosmwasm::wasm::v1::{
-        MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
-        MsgUpdateAdmin, QueryCodeRequest,
-    },
+    cosmwasm::wasm::v1::QueryCodeRequest,
     traits::Message,
 };
-use tokio::time::error::Elapsed;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -37,9 +33,9 @@ use tonic::{
 
 use crate::{
     address::HasAddressHrp,
-    error::{BuilderError, ConnectionError},
+    error::{Action, BuilderError, ConnectionError, QueryError, QueryErrorDetails},
     wallet::WalletPublicKey,
-    Address, CosmosBuilder, HasAddress,
+    Address, CosmosBuilder, HasAddress, TxBuilder,
 };
 
 use self::query::GrpcRequest;
@@ -97,70 +93,79 @@ trait WithCosmosInner {
     async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
 }
 
-#[derive(thiserror::Error, Debug)]
-pub(crate) enum PerformQueryError {
-    #[error("Error getting a gRPC connection from the pool: {0:?}")]
-    Pool(bb8::RunError<ConnectionError>),
-    #[error("Error response from gRPC endpoint: {0:?}")]
-    Tonic(tonic::Status),
-    #[error("Query timed out, total elapsed time: {0}")]
-    Timeout(Elapsed),
-}
-
 impl Cosmos {
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
+        action: Action,
         should_retry: bool,
-    ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
+    ) -> Result<tonic::Response<Request::Response>, QueryError> {
         let mut attempt = 0;
         loop {
-            let mut cosmos_inner = self.pool.get().await.map_err(PerformQueryError::Pool)?;
-            let duration =
-                tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
-            let mut req = tonic::Request::new(req.clone());
-            if let Some(height) = self.height {
-                // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
-                let metadata = req.metadata_mut();
-                metadata.insert("x-cosmos-block-height", height.into());
-            }
-            let res =
-                tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
-            let e = match res {
-                Ok(Ok(x)) => return Ok(x),
-                Ok(Err(err)) => {
-                    // Basic sanity check that we can still talk to the blockchain
-                    match GrpcRequest::perform(
-                        tonic::Request::new(GetLatestBlockRequest {}),
-                        &mut cosmos_inner,
-                    )
-                    .await
-                    {
-                        Ok(_) => (),
-                        Err(source) => {
-                            cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
-                                grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                                source,
-                            });
-                        }
-                    }
-                    PerformQueryError::Tonic(err)
-                }
-                Err(e) => {
-                    cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
-                        grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                    });
-                    PerformQueryError::Timeout(e)
-                }
+            let err = match self.perform_query_inner(req.clone()).await {
+                Ok(x) => break Ok(x),
+                Err(err) => err,
             };
-            if attempt >= self.builder.query_retries() || !should_retry {
-                return Err(e);
+            if attempt >= self.builder.query_retries() || !should_retry && err.should_be_retried() {
+                return Err(QueryError {
+                    action,
+                    builder: self.builder.clone(),
+                    height: self.height,
+                    query: err,
+                });
             } else {
                 attempt += 1;
                 log::debug!(
-                    "Error performing a query, retrying. Attempt {attempt} of {}. {e:?}",
+                    "Error performing a query, retrying. Attempt {attempt} of {}. {err:?}",
                     self.builder.query_retries()
                 );
+            }
+        }
+    }
+
+    pub(crate) async fn perform_query_inner<Request: GrpcRequest>(
+        &self,
+        req: Request,
+    ) -> Result<tonic::Response<Request::Response>, QueryErrorDetails> {
+        let mut cosmos_inner = self.pool.get().await.map_err(|err| match err {
+            bb8::RunError::User(e) => QueryErrorDetails::ConnectionError(e),
+            bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
+        })?;
+        let duration =
+            tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
+        let mut req = tonic::Request::new(req.clone());
+        if let Some(height) = self.height {
+            // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
+            let metadata = req.metadata_mut();
+            metadata.insert("x-cosmos-block-height", height.into());
+        }
+        let res =
+            tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+        match res {
+            Ok(Ok(x)) => Ok(x),
+            Ok(Err(err)) => {
+                // Basic sanity check that we can still talk to the blockchain
+                match GrpcRequest::perform(
+                    tonic::Request::new(GetLatestBlockRequest {}),
+                    &mut cosmos_inner,
+                )
+                .await
+                {
+                    Ok(_) => (),
+                    Err(source) => {
+                        cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
+                            grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                            source,
+                        });
+                    }
+                }
+                Err(QueryErrorDetails::Tonic(err))
+            }
+            Err(_) => {
+                cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
+                    grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                });
+                Err(QueryErrorDetails::QueryTimeout)
             }
         }
     }
@@ -329,6 +334,7 @@ impl Cosmos {
                 QueryAccountRequest {
                     address: address.get_address_string(),
                 },
+                Action::GetBaseAccount(address),
                 true,
             )
             .await?
@@ -356,6 +362,7 @@ impl Cosmos {
                         address: address.get_address_string(),
                         pagination: pagination.take(),
                     },
+                    Action::QueryAllBalances(address),
                     true,
                 )
                 .await?
@@ -378,7 +385,11 @@ impl Cosmos {
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
-            .perform_query(QueryCodeRequest { code_id }, true)
+            .perform_query(
+                QueryCodeRequest { code_id },
+                Action::CodeInfo(code_id),
+                true,
+            )
             .await?;
         Ok(res.into_inner().data)
     }
@@ -394,6 +405,7 @@ impl Cosmos {
                 GetTxRequest {
                     hash: txhash.clone(),
                 },
+                Action::GetTransactionBody(txhash.clone()),
                 true,
             )
             .await
@@ -425,6 +437,7 @@ impl Cosmos {
                     GetTxRequest {
                         hash: txhash.clone(),
                     },
+                    Action::GetTransactionBody(txhash.clone()),
                     false,
                 )
                 .await;
@@ -443,9 +456,10 @@ impl Cosmos {
                     ));
                 }
                 // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
-                Err(PerformQueryError::Tonic(e))
-                    if e.code() == tonic::Code::NotFound || e.message().contains("not found") =>
-                {
+                Err(QueryError {
+                    query: QueryErrorDetails::Tonic(e),
+                    ..
+                }) if e.code() == tonic::Code::NotFound || e.message().contains("not found") => {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
                         self.builder.transaction_attempts()
@@ -482,6 +496,7 @@ impl Cosmos {
                     }),
                     order_by: OrderBy::Asc as i32,
                 },
+                Action::ListTransactionsFor(address),
                 true,
             )
             .await?;
@@ -512,7 +527,11 @@ impl Cosmos {
     /// Get information on the given block height.
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .perform_query(GetBlockByHeightRequest { height }, true)
+            .perform_query(
+                GetBlockByHeightRequest { height },
+                Action::GetBlock(height),
+                true,
+            )
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -571,7 +590,7 @@ impl Cosmos {
     /// Get the latest block available
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
-            .perform_query(GetLatestBlockRequest {}, true)
+            .perform_query(GetLatestBlockRequest {}, Action::GetLatestBlock, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -612,105 +631,7 @@ pub struct BlockInfo {
     pub chain_id: String,
 }
 
-/// Transaction builder
-///
-/// This is the core interface for producing, simulating, and broadcasting transactions.
-#[derive(Default)]
-pub struct TxBuilder {
-    messages: Vec<cosmos_sdk_proto::Any>,
-    memo: Option<String>,
-    skip_code_check: bool,
-}
-
 impl TxBuilder {
-    /// Add a message to this transaction.
-    pub fn add_message(&mut self, msg: impl Into<TypedMessage>) -> &mut Self {
-        self.messages.push(msg.into().0);
-        self
-    }
-
-    /// Try adding a message to this transaction.
-    ///
-    /// This is for types which may fail during conversion to [TypedMessage].
-    pub fn try_add_message<T>(&mut self, msg: T) -> Result<&mut Self, T::Error>
-    where
-        T: TryInto<TypedMessage>,
-    {
-        self.messages.push(msg.try_into()?.0);
-        Ok(self)
-    }
-
-    /// Add a message to update a contract admin.
-    pub fn add_update_contract_admin(
-        &mut self,
-        contract: impl HasAddress,
-        wallet: impl HasAddress,
-        new_admin: impl HasAddress,
-    ) -> &mut Self {
-        self.add_message(MsgUpdateAdmin {
-            sender: wallet.get_address_string(),
-            new_admin: new_admin.get_address_string(),
-            contract: contract.get_address_string(),
-        });
-        self
-    }
-
-    /// Add an execute message on a contract.
-    pub fn add_execute_message(
-        &mut self,
-        contract: impl HasAddress,
-        wallet: impl HasAddress,
-        funds: Vec<Coin>,
-        msg: impl serde::Serialize,
-    ) -> Result<&mut Self> {
-        Ok(self.add_message(MsgExecuteContract {
-            sender: wallet.get_address_string(),
-            contract: contract.get_address_string(),
-            msg: serde_json::to_vec(&msg)?,
-            funds,
-        }))
-    }
-
-    /// Add a contract migration message.
-    pub fn add_migrate_message(
-        &mut self,
-        contract: impl HasAddress,
-        wallet: impl HasAddress,
-        code_id: u64,
-        msg: impl serde::Serialize,
-    ) -> Result<&mut Self> {
-        Ok(self.add_message(MsgMigrateContract {
-            sender: wallet.get_address_string(),
-            contract: contract.get_address_string(),
-            code_id,
-            msg: serde_json::to_vec(&msg)?,
-        }))
-    }
-
-    /// Set the memo field.
-    pub fn set_memo(&mut self, memo: impl Into<String>) -> &mut Self {
-        self.memo = Some(memo.into());
-        self
-    }
-
-    /// Clear the memo field
-    pub fn clear_memo(&mut self) -> &mut Self {
-        self.memo = None;
-        self
-    }
-
-    /// Either set or clear the memo field.
-    pub fn set_optional_memo(&mut self, memo: impl Into<Option<String>>) -> &mut Self {
-        self.memo = memo.into();
-        self
-    }
-
-    /// When calling [TxBuilder::sign_and_broadcast], skip the check of whether the code is 0
-    pub fn set_skip_code_check(&mut self, skip_code_check: bool) -> &mut Self {
-        self.skip_code_check = skip_code_check;
-        self
-    }
-
     /// Simulate the transaction with the given signer or signers.
     ///
     /// Note that for simulation purposes you do not need to provide valid
@@ -844,7 +765,7 @@ impl TxBuilder {
     /// Make a [TxBody] for this builder
     fn make_tx_body(&self) -> TxBody {
         TxBody {
-            messages: self.messages.clone(),
+            messages: self.messages.iter().map(|msg| msg.get_protobuf()).collect(),
             memo: self.memo.as_deref().unwrap_or_default().to_owned(),
             timeout_height: 0,
             extension_options: vec![],
@@ -885,7 +806,7 @@ impl TxBuilder {
         };
 
         let simres = cosmos
-            .perform_query(simulate_req, true)
+            .perform_query(simulate_req, Action::Simulate(self.clone()), true)
             .await
             .context("Unable to simulate transaction")?
             .into_inner();
@@ -957,6 +878,7 @@ impl TxBuilder {
                         tx_bytes: tx.encode_to_vec(),
                         mode: BroadcastMode::Sync as i32,
                     },
+                    Action::Broadcast(self.clone()),
                     true,
                 )
                 .await
@@ -1020,75 +942,6 @@ impl TxBuilder {
     /// Does this transaction have any messages already?
     pub fn has_messages(&self) -> bool {
         !self.messages.is_empty()
-    }
-}
-
-/// A message to include in a transaction, including the type URL string.
-pub struct TypedMessage(cosmos_sdk_proto::Any);
-
-impl TypedMessage {
-    /// Generate a new [TypedMessage] from a raw protocol value.
-    pub fn new(inner: cosmos_sdk_proto::Any) -> Self {
-        TypedMessage(inner)
-    }
-
-    /// Extract the underlying raw protocol value.
-    pub fn into_inner(self) -> cosmos_sdk_proto::Any {
-        self.0
-    }
-}
-
-impl From<MsgStoreCode> for TypedMessage {
-    fn from(msg: MsgStoreCode) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgStoreCode".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgInstantiateContract> for TypedMessage {
-    fn from(msg: MsgInstantiateContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgInstantiateContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgMigrateContract> for TypedMessage {
-    fn from(msg: MsgMigrateContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgMigrateContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgExecuteContract> for TypedMessage {
-    fn from(msg: MsgExecuteContract) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgExecuteContract".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgUpdateAdmin> for TypedMessage {
-    fn from(msg: MsgUpdateAdmin) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmwasm.wasm.v1.MsgUpdateAdmin".to_owned(),
-            value: msg.encode_to_vec(),
-        })
-    }
-}
-
-impl From<MsgSend> for TypedMessage {
-    fn from(msg: MsgSend) -> Self {
-        TypedMessage(cosmos_sdk_proto::Any {
-            type_url: "/cosmos.bank.v1beta1.MsgSend".to_owned(),
-            value: msg.encode_to_vec(),
-        })
     }
 }
 

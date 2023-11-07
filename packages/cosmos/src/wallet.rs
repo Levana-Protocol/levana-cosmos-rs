@@ -17,7 +17,7 @@ use tiny_keccak::{Hasher, Keccak};
 
 use crate::address::{AddressHrp, HasAddressHrp, PublicKeyMethod, RawAddress};
 use crate::error::WalletError;
-use crate::{Address, Cosmos, HasAddress, TxBuilder, TypedMessage};
+use crate::{Address, Cosmos, HasAddress, TxBuilder, TxMessage};
 
 /// A seed phrase for a wallet, together with an optional derivation path.
 ///
@@ -346,7 +346,7 @@ impl Wallet {
     pub async fn broadcast_message(
         &self,
         cosmos: &Cosmos,
-        msg: impl Into<TypedMessage>,
+        msg: impl Into<TxMessage>,
     ) -> anyhow::Result<TxResponse> {
         TxBuilder::default()
             .add_message(msg.into())

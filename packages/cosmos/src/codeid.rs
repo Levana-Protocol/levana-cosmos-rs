@@ -1,14 +1,15 @@
-use std::{fmt::Display, path::Path};
-
-use anyhow::{Context, Result};
-use cosmos_sdk_proto::{
-    cosmos::{authz::v1beta1::MsgExec, base::abci::v1beta1::TxResponse},
-    cosmwasm::wasm::v1::MsgStoreCode,
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
 };
 
+use anyhow::{Context, Result};
+use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
+
 use crate::{
-    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxResponseExt,
-    TypedMessage, Wallet,
+    messages::{MsgExecHelper, MsgStoreCodeHelper},
+    Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxMessage,
+    TxResponseExt, Wallet,
 };
 
 /// Represents the uploaded code on a specific blockchain connection.
@@ -38,11 +39,16 @@ pub(crate) fn strip_quotes(s: &str) -> &str {
 
 impl Cosmos {
     /// Convenience helper for uploading code to the blockchain
-    pub async fn store_code(&self, wallet: &Wallet, wasm_byte_code: Vec<u8>) -> Result<CodeId> {
-        let msg = MsgStoreCode {
-            sender: wallet.get_address().to_string(),
+    pub async fn store_code(
+        &self,
+        wallet: &Wallet,
+        wasm_byte_code: Vec<u8>,
+        source: Option<PathBuf>,
+    ) -> Result<CodeId> {
+        let msg = MsgStoreCodeHelper {
+            sender: wallet.get_address(),
             wasm_byte_code,
-            instantiate_permission: None,
+            source,
         };
         let res = wallet
             .broadcast_message(self, msg)
@@ -56,7 +62,7 @@ impl Cosmos {
     pub async fn store_code_path(&self, wallet: &Wallet, path: impl AsRef<Path>) -> Result<CodeId> {
         let path = path.as_ref();
         let wasm_byte_code = fs_err::read(path)?;
-        self.store_code(wallet, wasm_byte_code)
+        self.store_code(wallet, wasm_byte_code, Some(path.to_owned()))
             .await
             .with_context(|| format!("Storing code in file {}", path.display()))
     }
@@ -68,17 +74,18 @@ impl Cosmos {
         path: impl AsRef<Path>,
         granter: Address,
     ) -> Result<(TxResponse, CodeId)> {
+        let path = path.as_ref();
         let wasm_byte_code = fs_err::read(path)?;
-        let store_code = MsgStoreCode {
-            sender: granter.get_address_string(),
+        let store_code = MsgStoreCodeHelper {
+            sender: granter.get_address(),
             wasm_byte_code,
-            instantiate_permission: None,
+            source: Some(path.to_owned()),
         };
 
         let mut txbuilder = TxBuilder::default();
-        let msg = MsgExec {
-            grantee: wallet.get_address_string(),
-            msgs: vec![TypedMessage::from(store_code).into_inner()],
+        let msg = MsgExecHelper {
+            grantee: wallet.get_address(),
+            msgs: vec![TxMessage::from(store_code)],
         };
         txbuilder.add_message(msg);
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
