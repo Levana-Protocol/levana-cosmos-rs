@@ -1,19 +1,19 @@
 use std::{
     collections::HashSet,
-    convert::{Infallible, TryFrom},
     fmt::{Debug, Display},
     str::FromStr,
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
 use bech32::{FromBase32, ToBase32};
 use bitcoin::util::bip32::DerivationPath;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use serde::de::Visitor;
 
-use crate::{wallet::DerivationPathConfig, Cosmos, CosmosBuilder, CosmosNetwork};
+use crate::{
+    error::AddressError, wallet::DerivationPathConfig, Cosmos, CosmosBuilder, CosmosNetwork,
+};
 
 /// A raw address value not connected to a specific blockchain.
 ///
@@ -31,24 +31,46 @@ enum RawAddressInner {
 
 impl RawAddress {
     /// Parse a Cosmos-compatible address into an HRP and [RawAddress].
-    pub fn parse_with_hrp(s: &str) -> Result<(String, RawAddress)> {
-        let (hrp, data, variant) = bech32::decode(s).context("Invalid bech32 data")?;
+    pub fn parse_with_hrp(s: &str) -> Result<(String, RawAddress), AddressError> {
+        let (hrp, data, variant) =
+            bech32::decode(s).map_err(|source| AddressError::InvalidBech32 {
+                address: s.to_owned(),
+                source,
+            })?;
         match variant {
             bech32::Variant::Bech32 => (),
-            bech32::Variant::Bech32m => anyhow::bail!("Must use Bech32 variant"),
+            bech32::Variant::Bech32m => {
+                return Err(AddressError::InvalidVariant {
+                    address: s.to_owned(),
+                    variant,
+                });
+            }
         }
-        let data = Vec::<u8>::from_base32(&data)?;
-        let raw_address = data
-            .as_slice()
-            .try_into()
-            .with_context(|| format!("Total bytes found: {}", data.len()))?;
+        let data = Vec::<u8>::from_base32(&data).map_err(|source| AddressError::InvalidBase32 {
+            address: s.to_owned(),
+            source,
+        })?;
+        let data = data.as_slice();
+
+        let raw_address_inner = match data.try_into() {
+            Ok(raw_address) => RawAddressInner::Twenty { raw_address },
+            Err(_) => data
+                .try_into()
+                .map(|raw_address| RawAddressInner::ThirtyTwo { raw_address })
+                .map_err(|_| AddressError::InvalidByteCount {
+                    address: s.to_owned(),
+                    actual: data.len(),
+                })?,
+        };
+
+        let raw_address = RawAddress(raw_address_inner);
         Ok((hrp, raw_address))
     }
 }
 
 /// Note that using this instance throws away the Human Readable Parse (HRP) of the address!
 impl FromStr for RawAddress {
-    type Err = anyhow::Error;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         RawAddress::parse_with_hrp(s).map(|x| x.1)
@@ -102,20 +124,6 @@ impl From<[u8; 20]> for RawAddress {
 impl From<[u8; 32]> for RawAddress {
     fn from(raw_address: [u8; 32]) -> Self {
         RawAddress(RawAddressInner::ThirtyTwo { raw_address })
-    }
-}
-
-impl TryFrom<&[u8]> for RawAddress {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        match value.try_into().ok() {
-            Some(raw_address) => Ok(RawAddress(RawAddressInner::Twenty { raw_address })),
-            None => value
-                .try_into()
-                .map(|raw_address| RawAddress(RawAddressInner::ThirtyTwo { raw_address }))
-                .context("Invalid data size for a RawAddress, need either 20 or 32 bytes"),
-        }
     }
 }
 
@@ -181,12 +189,14 @@ impl From<&Address> for String {
 }
 
 impl FromStr for Address {
-    type Err = anyhow::Error;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        RawAddress::parse_with_hrp(s)
-            .map(|(hrp, raw_address)| raw_address.with_hrp(AddressHrp::from_string(hrp)))
-            .with_context(|| format!("Unable to parse Cosmos address {s}"))
+        RawAddress::parse_with_hrp(s).map(|(hrp, raw_address)| {
+            raw_address.with_hrp(
+                AddressHrp::from_string(hrp).expect("parse_with_hrp gave back in invalid HRP"),
+            )
+        })
     }
 }
 
@@ -229,10 +239,10 @@ impl<T: HasAddress> HasAddress for &T {
 pub struct AddressHrp(&'static str);
 
 impl FromStr for AddressHrp {
-    type Err = Infallible;
+    type Err = AddressError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(AddressHrp::new(s))
+        AddressHrp::new(s)
     }
 }
 
@@ -280,26 +290,30 @@ impl AddressHrp {
     }
 
     /// Generate a new value from a [String]-like value.
-    pub fn new(s: impl AsRef<str>) -> Self {
-        // FIXME validate the str as a valid HRP?
+    pub fn new(s: impl AsRef<str>) -> Result<Self, AddressError> {
         let s = s.as_ref();
+        if !is_valid_hrp(s) {
+            return Err(AddressError::InvalidHrp { hrp: s.to_owned() });
+        }
         let set = Self::get_set();
         {
             if let Some(s) = set.read().get(s) {
-                return AddressHrp(s);
+                return Ok(AddressHrp(s));
             }
         }
         let mut guard = set.write();
         // Deal with race condition: was this added between our read and now?
         if let Some(s) = guard.get(s) {
-            return AddressHrp(s);
+            return Ok(AddressHrp(s));
         }
         let s = Box::leak(s.to_owned().into_boxed_str());
         guard.insert(s);
-        AddressHrp(s)
+        Ok(AddressHrp(s))
     }
 
     /// Minor optimization over [AddressHrp::new]: use a static string for initializing.
+    ///
+    /// Note that this bypasses the check that the HRP is valid.
     pub fn from_static(s: &'static str) -> Self {
         let set = Self::get_set();
         {
@@ -317,27 +331,34 @@ impl AddressHrp {
     }
 
     /// Minor optimization over [AddressHrp::new]: use an owned [String] for initializing.
-    pub fn from_string(s: String) -> Self {
-        // FIXME validate the str as a valid HRP?
+    pub fn from_string(s: String) -> Result<Self, AddressError> {
+        if !is_valid_hrp(&s) {
+            return Err(AddressError::InvalidHrp { hrp: s });
+        }
         let set = Self::get_set();
         {
             if let Some(s) = set.read().get(&*s) {
-                return AddressHrp(s);
+                return Ok(AddressHrp(s));
             }
         }
         let mut guard = set.write();
         // Deal with race condition: was this added between our read and now?
         if let Some(s) = guard.get(&*s) {
-            return AddressHrp(s);
+            return Ok(AddressHrp(s));
         }
         let s = Box::leak(s.into_boxed_str());
         guard.insert(s);
-        AddressHrp(s)
+        Ok(AddressHrp(s))
     }
 
     pub(crate) fn as_str(self) -> &'static str {
         self.0
     }
+}
+
+fn is_valid_hrp(hrp: &str) -> bool {
+    // Unfortunately `check_hrp` isn't exposed from bech32, so doing something silly...
+    bech32::encode(hrp, [], bech32::Variant::Bech32).is_ok()
 }
 
 /// Trait for any values that can report their bech32 HRP (human-readable part).
@@ -445,6 +466,24 @@ mod tests {
         const S: &str = "juno168gdk6r58jdwfv49kuesq2rs747jawnnt2584c";
         let address: Address = S.parse().unwrap();
         assert_eq!(S, &address.to_string());
+    }
+
+    #[test]
+    fn valid_hrp() {
+        AddressHrp::new("juno").unwrap();
+        AddressHrp::new("osmo").unwrap();
+        AddressHrp::new("levana").unwrap();
+        AddressHrp::new("btc").unwrap();
+        AddressHrp::new("foobar").unwrap();
+
+        // To my surprise this is actually allowed per spec
+        AddressHrp::new("osmo1").unwrap();
+        AddressHrp::new("levana2").unwrap();
+    }
+
+    #[test]
+    fn invalid_hrp() {
+        AddressHrp::new("juno with space").unwrap_err();
     }
 }
 

@@ -35,7 +35,10 @@ use tonic::{
     Status,
 };
 
-use crate::{address::HasAddressHrp, wallet::WalletPublicKey, Address, CosmosBuilder, HasAddress};
+use crate::{
+    address::HasAddressHrp, error::CosmosBuilderError, wallet::WalletPublicKey, Address,
+    CosmosBuilder, HasAddress,
+};
 
 use self::query::GrpcRequest;
 
@@ -222,11 +225,13 @@ pub struct CosmosInner {
 
 impl CosmosBuilder {
     /// Create a new [Cosmos] and perform a sanity check to make sure the connection works.
-    pub async fn build(self) -> Result<Cosmos> {
+    pub async fn build(self) -> Result<Cosmos, CosmosBuilderError> {
         let cosmos = self.build_lazy().await;
         // Force strict connection
-        cosmos.sanity_check().await?;
-        Ok(cosmos)
+        match cosmos.sanity_check().await {
+            Ok(()) => Ok(cosmos),
+            Err(source) => Err(CosmosBuilderError::FailedSanityCheck { cosmos, source }),
+        }
     }
 
     /// Create a new [Cosmos] but do not perform any sanity checks.
