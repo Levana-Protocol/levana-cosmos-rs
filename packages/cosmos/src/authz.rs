@@ -69,6 +69,7 @@ fn datetime_to_timestamp(x: DateTime<Utc>) -> Result<Timestamp> {
 }
 
 impl Cosmos {
+    /// Check which grants the given address has authorized.
     pub async fn query_granter_grants(
         &self,
         granter: impl HasAddress,

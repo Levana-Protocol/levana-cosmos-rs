@@ -8,7 +8,8 @@ use cosmos_sdk_proto::{
     },
     cosmwasm::wasm::v1::{
         ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract,
-        QueryContractHistoryResponse,
+        QueryContractHistoryRequest, QueryContractHistoryResponse, QueryContractInfoRequest,
+        QueryRawContractStateRequest, QuerySmartContractStateRequest,
     },
 };
 
@@ -96,13 +97,13 @@ impl CodeId {
             funds,
         };
         let res = wallet.broadcast_message(&self.client, msg).await?;
-        self.client.parse_contract_address_from_instantiate(&res)
+        self.client.contract_address_from_instantiate(&res)
     }
 }
 
 impl Cosmos {
     /// Parse the contract address from the given [TxResponse].
-    pub fn parse_contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
+    pub fn contract_address_from_instantiate(&self, res: &TxResponse) -> Result<Contract> {
         for log in &res.logs {
             for event in &log.events {
                 if event.r#type == "instantiate"
@@ -195,7 +196,18 @@ impl Contract {
 
     /// Perform a raw query
     pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
-        self.client.wasm_raw_query(self.address, key).await
+        Ok(self
+            .client
+            .perform_query(
+                QueryRawContractStateRequest {
+                    address: self.address.into(),
+                    query_data: key.into(),
+                },
+                true,
+            )
+            .await?
+            .into_inner()
+            .data)
     }
 
     /// Return a modified [Contract] that queries at the given height.
@@ -206,9 +218,18 @@ impl Contract {
 
     /// Perform a query and return the raw unparsed JSON bytes.
     pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
-        self.client
-            .wasm_query(self.address, serde_json::to_vec(&msg)?)
-            .await
+        let res = self
+            .client
+            .perform_query(
+                QuerySmartContractStateRequest {
+                    address: self.address.into(),
+                    query_data: serde_json::to_vec(&msg)?,
+                },
+                true,
+            )
+            .await?
+            .into_inner();
+        Ok(res.data)
     }
 
     pub async fn query<T: serde::de::DeserializeOwned>(
@@ -248,12 +269,32 @@ impl Contract {
 
     /// Get the contract info metadata
     pub async fn info(&self) -> Result<ContractInfo> {
-        self.client.contract_info(&self.address).await
+        self.client
+            .perform_query(
+                QueryContractInfoRequest {
+                    address: self.address.into(),
+                },
+                true,
+            )
+            .await?
+            .into_inner()
+            .contract_info
+            .context("contract_info: missing contract_info (ironic...)")
     }
 
     /// Get the contract history
     pub async fn history(&self) -> Result<QueryContractHistoryResponse> {
-        self.client.contract_history(&self.address).await
+        Ok(self
+            .client
+            .perform_query(
+                QueryContractHistoryRequest {
+                    address: self.address.into(),
+                    pagination: None,
+                },
+                true,
+            )
+            .await?
+            .into_inner())
     }
 }
 

@@ -21,10 +21,8 @@ use cosmos_sdk_proto::{
         },
     },
     cosmwasm::wasm::v1::{
-        ContractInfo, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
-        MsgUpdateAdmin, QueryCodeRequest, QueryContractHistoryRequest,
-        QueryContractHistoryResponse, QueryContractInfoRequest, QueryRawContractStateRequest,
-        QuerySmartContractStateRequest,
+        MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
+        MsgUpdateAdmin, QueryCodeRequest,
     },
     traits::Message,
 };
@@ -216,6 +214,7 @@ pub struct CosmosInner {
 }
 
 impl CosmosBuilder {
+    /// Create a new [Cosmos] and perform a sanity check to make sure the connection works.
     pub async fn build(self) -> Result<Cosmos> {
         let cosmos = self.build_lazy().await;
         // Force strict connection
@@ -223,6 +222,7 @@ impl CosmosBuilder {
         Ok(cosmos)
     }
 
+    /// Create a new [Cosmos] but do not perform any sanity checks.
     pub async fn build_lazy(self) -> Cosmos {
         let builder = Arc::new(self);
         let mut pool_builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
@@ -350,52 +350,11 @@ impl Cosmos {
         }
     }
 
-    pub async fn wasm_query(
-        &self,
-        address: impl Into<String>,
-        query_data: impl Into<Vec<u8>>,
-    ) -> Result<Vec<u8>> {
-        let res = self
-            .perform_query(
-                QuerySmartContractStateRequest {
-                    address: address.into(),
-                    query_data: query_data.into(),
-                },
-                true,
-            )
-            .await?
-            .into_inner();
-        Ok(res.data)
-    }
-
-    pub async fn wasm_raw_query(
-        &self,
-        address: impl Into<String>,
-        key: impl Into<Vec<u8>>,
-    ) -> Result<Vec<u8>> {
-        Ok(self
-            .perform_query(
-                QueryRawContractStateRequest {
-                    address: address.into(),
-                    query_data: key.into(),
-                },
-                true,
-            )
-            .await?
-            .into_inner()
-            .data)
-    }
-
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
             .perform_query(QueryCodeRequest { code_id }, true)
             .await?;
         Ok(res.into_inner().data)
-    }
-
-    /// Implements a retry loop waiting for a transaction to be ready
-    pub async fn wait_for_transaction(&self, txhash: impl Into<String>) -> Result<TxResponse> {
-        self.wait_for_transaction_body(txhash).await.map(|x| x.1)
     }
 
     /// Get a transaction, failing immediately if not present
@@ -425,7 +384,7 @@ impl Cosmos {
         Ok((txbody, txres))
     }
 
-    pub async fn wait_for_transaction_body(
+    pub async fn wait_for_transaction(
         &self,
         txhash: impl Into<String>,
     ) -> Result<(TxBody, TxResponse)> {
@@ -474,6 +433,7 @@ impl Cosmos {
         ))
     }
 
+    /// Get a list of txhashes for transactions send by the given address.
     pub async fn list_transactions_for(
         &self,
         address: Address,
@@ -503,10 +463,6 @@ impl Cosmos {
             .collect())
     }
 
-    pub fn get_gas_coin(&self) -> &str {
-        self.builder.gas_coin()
-    }
-
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
         let low = self.builder.gas_price_low();
@@ -522,35 +478,6 @@ impl Cosmos {
         };
 
         (gas as f64 * gas_price) as u64
-    }
-
-    pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
-        self.perform_query(
-            QueryContractInfoRequest {
-                address: address.into(),
-            },
-            true,
-        )
-        .await?
-        .into_inner()
-        .contract_info
-        .context("contract_info: missing contract_info (ironic...)")
-    }
-
-    pub async fn contract_history(
-        &self,
-        address: impl Into<String>,
-    ) -> Result<QueryContractHistoryResponse> {
-        Ok(self
-            .perform_query(
-                QueryContractHistoryRequest {
-                    address: address.into(),
-                    pagination: None,
-                },
-                true,
-            )
-            .await?
-            .into_inner())
     }
 
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
@@ -1061,7 +988,7 @@ impl TxBuilder {
 
             log::debug!("Initial BroadcastTxResponse: {res:?}");
 
-            let res = cosmos.wait_for_transaction(res.txhash).await?;
+            let (_, res) = cosmos.wait_for_transaction(res.txhash).await?;
             if !self.skip_code_check && res.code != 0 {
                 // We don't do the account sequence mismatch hack work here, once a
                 // transaction actually lands on the chain we don't want to ever

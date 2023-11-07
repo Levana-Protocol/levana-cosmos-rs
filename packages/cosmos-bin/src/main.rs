@@ -115,7 +115,7 @@ enum Subcommand {
     /// Query contract
     QueryContract {
         /// Contract address
-        address: String,
+        address: Address,
         /// Query (in JSON)
         query: String,
         /// Optional Height. Use latest if not passed.
@@ -124,7 +124,7 @@ enum Subcommand {
     /// Look up a raw value in the contract's storage
     RawQueryContract {
         /// Contract address
-        address: String,
+        address: Address,
         /// Key
         key: String,
         /// Optional Height. Use latest if not passed.
@@ -328,7 +328,7 @@ impl Subcommand {
                 height,
             } => {
                 let cosmos = opt.network_opt.build().await?.at_height(height);
-                let x = cosmos.wasm_query(address, query).await?;
+                let x = cosmos.make_contract(address).query_bytes(query).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
@@ -340,7 +340,7 @@ impl Subcommand {
                 height,
             } => {
                 let cosmos = opt.network_opt.build().await?.at_height(height);
-                let x = cosmos.wasm_raw_query(address, key).await?;
+                let x = cosmos.make_contract(address).query_raw(key).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
@@ -453,7 +453,7 @@ impl Subcommand {
                     tx,
                     timestamp,
                     events,
-                } = cosmos.wait_for_transaction(txhash).await?;
+                } = cosmos.wait_for_transaction(txhash).await?.1;
                 println!("Height: {height}");
                 println!("Code: {code}");
                 println!("Codespace: {codespace}");
