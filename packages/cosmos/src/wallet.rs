@@ -306,10 +306,7 @@ impl Wallet {
         SeedPhrase::random().with_hrp(hrp)
     }
 
-    pub fn from_phrase(phrase: &str, hrp: AddressHrp) -> Result<Self> {
-        SeedPhrase::from_str(phrase)?.with_hrp(hrp)
-    }
-
+    /// Get the byte representation of the public key used on chain.
     pub fn public_key_bytes(&self) -> &[u8] {
         match &self.public_key {
             WalletPublicKey::Cosmos(public_key) => public_key,
@@ -317,6 +314,10 @@ impl Wallet {
         }
     }
 
+    /// Sign the given bytes with this wallet
+    ///
+    /// Note that the signature will depend on the [PublicKeyMethod] used when
+    /// deriving this wallet.
     pub fn sign_bytes(&self, msg: &[u8]) -> Signature {
         let msg = match self.public_key {
             WalletPublicKey::Cosmos(_) => sha256::Hash::hash(msg).into_inner(),
@@ -326,9 +327,14 @@ impl Wallet {
         global_secp().sign_ecdsa(&msg, &self.privkey.private_key)
     }
 
+    // Technically these functions are redundant, but keeping them as
+    // convenient/ergonomic helpers.
+
     /// A simple helper function for signing and broadcasting a single message and waiting for a response.
     ///
     /// Generates an error if the transaction failed.
+    ///
+    /// Note: this is just a helper around the more general [TxBuilder] interface.
     pub async fn broadcast_message(
         &self,
         cosmos: &Cosmos,
@@ -341,6 +347,8 @@ impl Wallet {
     }
 
     /// Send coins to the given wallet
+    ///
+    /// Note: this is just a helper around the more general [TxBuilder] interface.
     pub async fn send_coins(
         &self,
         cosmos: &Cosmos,
@@ -359,6 +367,8 @@ impl Wallet {
     }
 
     /// Send a given amount of gas coin
+    ///
+    /// Note: this is just a helper around the more general [TxBuilder] interface.
     pub async fn send_gas_coin(
         &self,
         cosmos: &Cosmos,
@@ -431,7 +441,8 @@ mod tests {
             "entire clap mystery embrace blame doll volcano face trust mom cruel load";
         const ADDRESS: &str = "0x00980adc74d3d2053c011cb0528fbe1fa91a352c";
         let address = ADDRESS.chars().skip(2).collect::<String>();
-        let wallet = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
+        let phrase = SeedPhrase::from_str(PHRASE).unwrap();
+        let wallet = phrase.with_hrp(AddressHrp::from_static("inj")).unwrap();
         let eth_address = eth_address_from_public_key(match &wallet.public_key {
             WalletPublicKey::Cosmos(_) => panic!("Should not be Cosmos"),
             WalletPublicKey::Ethereum(public_key) => public_key,
@@ -449,8 +460,13 @@ mod tests {
         let expected_injective: Address = "inj15sws48vv977kmgawqfegptw0pqs7cfeq7mpr4c"
             .parse()
             .unwrap();
-        let osmosis = Wallet::from_phrase(PHRASE, AddressHrp::from_static("osmo")).unwrap();
-        let injective = Wallet::from_phrase(PHRASE, AddressHrp::from_static("inj")).unwrap();
+        let seed_phrase = SeedPhrase::from_str(PHRASE).unwrap();
+        let osmosis = seed_phrase
+            .with_hrp(AddressHrp::from_static("osmo"))
+            .unwrap();
+        let injective = seed_phrase
+            .with_hrp(AddressHrp::from_static("inj"))
+            .unwrap();
         assert_eq!(expected_osmosis, osmosis.get_address());
         assert_eq!(expected_injective, injective.get_address());
     }
