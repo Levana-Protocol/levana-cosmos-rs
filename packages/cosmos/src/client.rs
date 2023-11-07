@@ -52,6 +52,7 @@ use super::Wallet;
 pub struct Cosmos {
     pool: Pool<FinalizedCosmosBuilder>,
     builder: Arc<CosmosBuilder>,
+    height: Option<u64>,
 }
 
 struct FinalizedCosmosBuilder(Arc<CosmosBuilder>);
@@ -107,7 +108,6 @@ pub(crate) enum PerformQueryError {
 impl Cosmos {
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
-        height: Option<u64>,
         req: Request,
         should_retry: bool,
     ) -> Result<tonic::Response<Request::Response>, PerformQueryError> {
@@ -117,7 +117,7 @@ impl Cosmos {
             let duration =
                 tokio::time::Duration::from_secs(self.builder.config.query_timeout_seconds.into());
             let mut req = tonic::Request::new(req.clone());
-            if let Some(height) = height {
+            if let Some(height) = self.height {
                 // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
                 let metadata = req.metadata_mut();
                 metadata.insert("x-cosmos-block-height", height.into());
@@ -359,7 +359,11 @@ impl CosmosBuilder {
             .build(FinalizedCosmosBuilder(builder.clone()))
             .await
             .expect("Unexpected pool build error");
-        Cosmos { pool, builder }
+        Cosmos {
+            pool,
+            builder,
+            height: None,
+        }
     }
 }
 
@@ -524,10 +528,15 @@ impl Cosmos {
         &self.builder.config
     }
 
+    /// Return a modified version of this [Cosmos] that queries at the given height.
+    pub fn at_height(mut self, height: Option<u64>) -> Self {
+        self.height = height;
+        self
+    }
+
     pub async fn get_base_account(&self, address: impl Into<String>) -> Result<BaseAccount> {
         let res = self
             .perform_query(
-                None,
                 QueryAccountRequest {
                     address: address.into(),
                 },
@@ -548,21 +557,12 @@ impl Cosmos {
     }
 
     pub async fn all_balances(&self, address: impl Into<String>) -> Result<Vec<Coin>> {
-        self.all_balances_at(address, None).await
-    }
-
-    pub async fn all_balances_at(
-        &self,
-        address: impl Into<String>,
-        height: Option<u64>,
-    ) -> Result<Vec<Coin>> {
         let address = address.into();
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
             let mut res = self
                 .perform_query(
-                    height,
                     QueryAllBalancesRequest {
                         address: address.clone(),
                         pagination: pagination.take(),
@@ -594,7 +594,6 @@ impl Cosmos {
     ) -> Result<Vec<u8>> {
         let res = self
             .perform_query(
-                None,
                 QuerySmartContractStateRequest {
                     address: address.into(),
                     query_data: query_data.into(),
@@ -606,26 +605,6 @@ impl Cosmos {
         Ok(res.data)
     }
 
-    pub async fn wasm_query_at_height(
-        &self,
-        address: impl Into<String>,
-        query_data: impl Into<Vec<u8>>,
-        height: u64,
-    ) -> Result<Vec<u8>> {
-        Ok(self
-            .perform_query(
-                Some(height),
-                QuerySmartContractStateRequest {
-                    address: address.into(),
-                    query_data: query_data.into(),
-                },
-                true,
-            )
-            .await?
-            .into_inner()
-            .data)
-    }
-
     pub async fn wasm_raw_query(
         &self,
         address: impl Into<String>,
@@ -633,27 +612,6 @@ impl Cosmos {
     ) -> Result<Vec<u8>> {
         Ok(self
             .perform_query(
-                None,
-                QueryRawContractStateRequest {
-                    address: address.into(),
-                    query_data: key.into(),
-                },
-                true,
-            )
-            .await?
-            .into_inner()
-            .data)
-    }
-
-    pub async fn wasm_raw_query_at_height(
-        &self,
-        address: impl Into<String>,
-        key: impl Into<Vec<u8>>,
-        height: u64,
-    ) -> Result<Vec<u8>> {
-        Ok(self
-            .perform_query(
-                Some(height),
                 QueryRawContractStateRequest {
                     address: address.into(),
                     query_data: key.into(),
@@ -667,7 +625,7 @@ impl Cosmos {
 
     pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
         let res = self
-            .perform_query(None, QueryCodeRequest { code_id }, true)
+            .perform_query(QueryCodeRequest { code_id }, true)
             .await?;
         Ok(res.into_inner().data)
     }
@@ -685,7 +643,6 @@ impl Cosmos {
         let txhash = txhash.into();
         let txres = self
             .perform_query(
-                None,
                 GetTxRequest {
                     hash: txhash.clone(),
                 },
@@ -714,7 +671,6 @@ impl Cosmos {
         for attempt in 1..=self.builder.config.transaction_attempts {
             let txres = self
                 .perform_query(
-                    None,
                     GetTxRequest {
                         hash: txhash.clone(),
                     },
@@ -763,7 +719,6 @@ impl Cosmos {
     ) -> Result<Vec<String>> {
         let x = self
             .perform_query(
-                None,
                 GetTxsEventRequest {
                     events: vec![format!("message.sender='{address}'")],
                     pagination: Some(PageRequest {
@@ -813,7 +768,6 @@ impl Cosmos {
 
     pub async fn contract_info(&self, address: impl Into<String>) -> Result<ContractInfo> {
         self.perform_query(
-            None,
             QueryContractInfoRequest {
                 address: address.into(),
             },
@@ -831,7 +785,6 @@ impl Cosmos {
     ) -> Result<QueryContractHistoryResponse> {
         Ok(self
             .perform_query(
-                None,
                 QueryContractHistoryRequest {
                     address: address.into(),
                     pagination: None,
@@ -844,7 +797,7 @@ impl Cosmos {
 
     pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
         let res = self
-            .perform_query(None, GetBlockByHeightRequest { height }, true)
+            .perform_query(GetBlockByHeightRequest { height }, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -901,7 +854,7 @@ impl Cosmos {
 
     pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
         let res = self
-            .perform_query(None, GetLatestBlockRequest {}, true)
+            .perform_query(GetLatestBlockRequest {}, true)
             .await?
             .into_inner();
         let block_id = res.block_id.context("get_block_info: block_id is None")?;
@@ -1486,7 +1439,7 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
-        let simres = cosmos.perform_query(None, simulate_req, true).await;
+        let simres = cosmos.perform_query(simulate_req, true).await;
         // PERP-283: detect account sequence mismatches
         let simres = match simres {
             Ok(simres) => simres.into_inner(),
@@ -1564,7 +1517,6 @@ impl TxBuilder {
 
             let res = cosmos
                 .perform_query(
-                    None,
                     BroadcastTxRequest {
                         tx_bytes: tx.encode_to_vec(),
                         mode: BroadcastMode::Sync as i32,

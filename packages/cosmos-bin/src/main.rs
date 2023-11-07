@@ -314,7 +314,7 @@ impl Subcommand {
             }
             Subcommand::PrintBalances { address, height } => {
                 let cosmos = opt.network_opt.build().await?;
-                let balances = cosmos.all_balances_at(address, height).await?;
+                let balances = cosmos.at_height(height).all_balances(address).await?;
                 for Coin { denom, amount } in &balances {
                     println!("{amount}{denom}");
                 }
@@ -327,11 +327,8 @@ impl Subcommand {
                 query,
                 height,
             } => {
-                let cosmos = opt.network_opt.build().await?;
-                let x = match height {
-                    Some(height) => cosmos.wasm_query_at_height(address, query, height).await?,
-                    None => cosmos.wasm_query(address, query).await?,
-                };
+                let cosmos = opt.network_opt.build().await?.at_height(height);
+                let x = cosmos.wasm_query(address, query).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
@@ -342,15 +339,8 @@ impl Subcommand {
                 key,
                 height,
             } => {
-                let cosmos = opt.network_opt.build().await?;
-                let x = match height {
-                    Some(height) => {
-                        cosmos
-                            .wasm_raw_query_at_height(address, key, height)
-                            .await?
-                    }
-                    None => cosmos.wasm_raw_query(address, key).await?,
-                };
+                let cosmos = opt.network_opt.build().await?.at_height(height);
+                let x = cosmos.wasm_raw_query(address, key).await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;
