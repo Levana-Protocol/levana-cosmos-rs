@@ -292,7 +292,7 @@ impl AddressHrp {
     /// Generate a new value from a [String]-like value.
     pub fn new(s: impl AsRef<str>) -> Result<Self, AddressError> {
         let s = s.as_ref();
-        if !is_valid_hrp(&s) {
+        if !is_valid_hrp(s) {
             return Err(AddressError::InvalidHrp { hrp: s.to_owned() });
         }
         let set = Self::get_set();
@@ -358,7 +358,7 @@ impl AddressHrp {
 
 fn is_valid_hrp(hrp: &str) -> bool {
     // Unfortunately `check_hrp` isn't exposed from bech32, so doing something silly...
-    bech32::encode(hrp, &[], bech32::Variant::Bech32).is_ok()
+    bech32::encode(hrp, [], bech32::Variant::Bech32).is_ok()
 }
 
 /// Trait for any values that can report their bech32 HRP (human-readable part).
