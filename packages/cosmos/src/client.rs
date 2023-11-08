@@ -105,7 +105,7 @@ impl FinalizedCosmosBuilder {
     /// If we should use a fallback next, return it and update internal structures.
     fn get_fallback_url(&self) -> Option<&Arc<String>> {
         let fallbacks = self.builder.grpc_fallback_urls();
-        if fallbacks.len() == 0 {
+        if fallbacks.is_empty() {
             return None;
         }
         let mut guard = self.fallback.lock();
