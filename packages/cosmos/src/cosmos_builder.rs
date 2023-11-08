@@ -59,8 +59,8 @@ impl CosmosBuilder {
     }
 
     /// See [Self::grpc_url]
-    pub fn set_grpc_url(&mut self, grpc_url: String) {
-        self.grpc_url = grpc_url;
+    pub fn set_grpc_url(&mut self, grpc_url: impl Into<String>) {
+        self.grpc_url = grpc_url.into();
     }
 
     /// Chain ID we want to communicate with
