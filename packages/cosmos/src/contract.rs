@@ -337,7 +337,7 @@ impl Contract {
             .into_inner()
             .contract_info
             .ok_or_else(|| crate::Error::InvalidChainResponse {
-                message: format!("Missing contract_info field"),
+                message: "Missing contract_info field".to_string(),
                 action,
             })
     }

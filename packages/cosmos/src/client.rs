@@ -1007,7 +1007,7 @@ impl TxBuilder {
             .as_ref()
             .ok_or_else(|| crate::Error::InvalidChainResponse {
                 message: "Missing gas_info in SimulateResponse".to_owned(),
-                action: action,
+                action,
             })?
             .gas_used;
 
