@@ -351,7 +351,8 @@ impl AddressHrp {
         Ok(AddressHrp(s))
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    /// Get the raw string HRP
+    pub fn as_str(self) -> &'static str {
         self.0
     }
 }
