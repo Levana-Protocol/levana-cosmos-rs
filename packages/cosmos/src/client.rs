@@ -33,7 +33,9 @@ use tonic::{
 
 use crate::{
     address::HasAddressHrp,
-    error::{Action, BuilderError, ConnectionError, QueryError, QueryErrorDetails},
+    error::{
+        Action, BuilderError, ConnectionError, QueryError, QueryErrorCategory, QueryErrorDetails,
+    },
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
@@ -102,12 +104,12 @@ impl Cosmos {
     ) -> Result<tonic::Response<Request::Response>, QueryError> {
         let mut attempt = 0;
         loop {
-            let err = match self.perform_query_inner(req.clone()).await {
+            let (err, can_retry) = match self.perform_query_inner(req.clone()).await {
                 Ok(x) => break Ok(x),
                 Err(err) => err,
             };
-            if attempt >= self.builder.query_retries() || !should_retry && err.should_be_retried() {
-                return Err(QueryError {
+            if attempt >= self.builder.query_retries() || !should_retry || !can_retry {
+                break Err(QueryError {
                     action,
                     builder: self.builder.clone(),
                     height: self.height,
@@ -123,13 +125,19 @@ impl Cosmos {
         }
     }
 
-    pub(crate) async fn perform_query_inner<Request: GrpcRequest>(
+    /// Error return: the details itself, and whether a retry can be attempted.
+    async fn perform_query_inner<Request: GrpcRequest>(
         &self,
         req: Request,
-    ) -> Result<tonic::Response<Request::Response>, QueryErrorDetails> {
-        let mut cosmos_inner = self.pool.get().await.map_err(|err| match err {
-            bb8::RunError::User(e) => QueryErrorDetails::ConnectionError(e),
-            bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
+    ) -> Result<tonic::Response<Request::Response>, (QueryErrorDetails, bool)> {
+        let mut cosmos_inner = self.pool.get().await.map_err(|err| {
+            (
+                match err {
+                    bb8::RunError::User(e) => QueryErrorDetails::ConnectionError(e),
+                    bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
+                },
+                true,
+            )
         })?;
         let duration =
             tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
@@ -143,29 +151,51 @@ impl Cosmos {
             tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
         match res {
             Ok(Ok(x)) => Ok(x),
-            Ok(Err(err)) => {
-                // Basic sanity check that we can still talk to the blockchain
-                match GrpcRequest::perform(
-                    tonic::Request::new(GetLatestBlockRequest {}),
-                    &mut cosmos_inner,
-                )
-                .await
-                {
-                    Ok(_) => (),
-                    Err(source) => {
-                        cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
+            Ok(Err(status)) => {
+                let err = QueryErrorDetails::from_tonic_status(status);
+                let can_retry = match err.error_category() {
+                    QueryErrorCategory::NetworkIssue => {
+                        cosmos_inner.is_broken = Err(ConnectionError::QueryFailed {
                             grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                            source,
                         });
+                        true
                     }
-                }
-                Err(QueryErrorDetails::from_tonic_status(err))
+                    QueryErrorCategory::ConnectionIsFine => false,
+                    QueryErrorCategory::Unsure => {
+                        // Not enough info from the error to determine what went
+                        // wrong. Send a basic request that should always
+                        // succeed to determine if it's a network issue or not.
+                        match GrpcRequest::perform(
+                            tonic::Request::new(GetLatestBlockRequest {}),
+                            &mut cosmos_inner,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                // OK, connection looks fine, don't bother retrying
+                                false
+                            }
+                            Err(status) => {
+                                // Something went wrong. Don't even bother
+                                // looking at _what_ went wrong, just kill this
+                                // connection and retry.
+                                cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
+                                    grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
+                                    source: status,
+                                });
+                                true
+                            }
+                        }
+                    }
+                };
+
+                Err((err, can_retry))
             }
             Err(_) => {
                 cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
                     grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
                 });
-                Err(QueryErrorDetails::QueryTimeout)
+                Err((QueryErrorDetails::QueryTimeout, true))
             }
         }
     }
