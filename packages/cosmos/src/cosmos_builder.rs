@@ -1,11 +1,12 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::AddressHrp;
 
 /// Used to build a [crate::Cosmos].
 #[derive(Clone, Debug)]
 pub struct CosmosBuilder {
-    grpc_url: String,
+    grpc_url: Arc<String>,
+    grpc_fallback_urls: Vec<Arc<String>>,
     chain_id: String,
     gas_coin: String,
     hrp: AddressHrp,
@@ -34,7 +35,8 @@ impl CosmosBuilder {
         grpc_url: impl Into<String>,
     ) -> CosmosBuilder {
         Self {
-            grpc_url: grpc_url.into(),
+            grpc_url: Arc::new(grpc_url.into()),
+            grpc_fallback_urls: vec![],
             chain_id: chain_id.into(),
             gas_coin: gas_coin.into(),
             hrp,
@@ -54,13 +56,28 @@ impl CosmosBuilder {
     }
 
     /// gRPC endpoint to connect to
+    ///
+    /// This is the primary endpoint, not any fallbacks provided
     pub fn grpc_url(&self) -> &str {
         self.grpc_url.as_ref()
     }
 
+    pub(crate) fn grpc_url_arc(&self) -> &Arc<String> {
+        &self.grpc_url
+    }
+
     /// See [Self::grpc_url]
     pub fn set_grpc_url(&mut self, grpc_url: impl Into<String>) {
-        self.grpc_url = grpc_url.into();
+        self.grpc_url = grpc_url.into().into();
+    }
+
+    /// Add a fallback gRPC URL
+    pub fn add_grpc_fallback_url(&mut self, url: impl Into<String>) {
+        self.grpc_fallback_urls.push(url.into().into());
+    }
+
+    pub(crate) fn grpc_fallback_urls(&self) -> &Vec<Arc<String>> {
+        &self.grpc_fallback_urls
     }
 
     /// Chain ID we want to communicate with

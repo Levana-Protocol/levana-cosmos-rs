@@ -23,6 +23,7 @@ use cosmos_sdk_proto::{
     cosmwasm::wasm::v1::QueryCodeRequest,
     traits::Message,
 };
+use parking_lot::Mutex;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -54,17 +55,86 @@ use super::Wallet;
 #[derive(Clone)]
 pub struct Cosmos {
     pool: Pool<FinalizedCosmosBuilder>,
-    builder: Arc<CosmosBuilder>,
+    finalized: FinalizedCosmosBuilder,
     height: Option<u64>,
 }
 
-struct FinalizedCosmosBuilder(Arc<CosmosBuilder>);
+#[derive(Clone)]
+struct FinalizedCosmosBuilder {
+    builder: Arc<CosmosBuilder>,
+    fallback: Arc<Mutex<FallbackStatus>>,
+}
+
+/// Keeps track of the gRPC fallback status.
+///
+/// Alright, so things are a bit complicated, hopefully this will summarize the
+/// way the whole system works. Our goal is that, when something goes wrong with
+/// our primary gRPC endpoint, we can retry on a new connection targeted at a
+/// different, fallback endpoint. However, we constantly want to try to go back
+/// to the main endpoint, and we never want to use a fallback endpoint if the
+/// primary endpoint is working.
+///
+/// Because of the interaction between failures occurring inside queries and
+/// wanting to use bb8 for connection pooling, we need to be a bit stateful
+/// about tracking fallbacks. The idea is:
+///
+/// * This data structure keeps track of (1) which fallback to use next and (2)
+///   whether our next new connection should try to use a fallback.
+///
+/// * If we get a network error during connection creation or during a query, we
+///   kick in the "use fallback for next connection" logic.
+///
+/// * We only try using a fallback once per `use_fallback` setting, that way we
+///   switch back to trying the main connection quickly.
+///
+/// * Whenever we create a new connection, we check (and clear) the
+///   `use_fallback` flag before trying the main endpoint.
+///
+/// Yes, this is complicated. The connection pooling also means we get some lack
+/// of determinism in how all of this works. However, the theory is that the
+/// downsides are outweighed by the end-user gains of the library simply
+/// continuing to work when there are (hopefully temporary) node outages.
+struct FallbackStatus {
+    /// Next index to use
+    next_index: usize,
+    /// Should our next connection use a fallback URL?
+    use_fallback: bool,
+}
+
+impl FinalizedCosmosBuilder {
+    /// If we should use a fallback next, return it and update internal structures.
+    fn get_fallback_url(&self) -> Option<&Arc<String>> {
+        let fallbacks = self.builder.grpc_fallback_urls();
+        if fallbacks.is_empty() {
+            return None;
+        }
+        let mut guard = self.fallback.lock();
+        if !guard.use_fallback {
+            return None;
+        }
+        let next_index = guard.next_index;
+        assert!(next_index < fallbacks.len());
+        guard.next_index = (guard.next_index + 1) % fallbacks.len();
+
+        // We only try a fallback once before trying the primary again
+        guard.use_fallback = false;
+
+        Some(&fallbacks[next_index])
+    }
+
+    /// Indicate that we should try a fallback for the next connection
+    fn set_use_fallback(&self) {
+        if !self.builder.grpc_fallback_urls().is_empty() {
+            self.fallback.lock().use_fallback = true;
+        }
+    }
+}
 
 impl std::fmt::Debug for Cosmos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cosmos")
             .field("pool", &self.pool)
-            .field("builder", &self.builder)
+            .field("builder", &self.finalized.builder)
             .field("height", &self.height)
             .finish()
     }
@@ -77,7 +147,23 @@ impl ManageConnection for FinalizedCosmosBuilder {
     type Error = ConnectionError;
 
     async fn connect(&self) -> Result<Self::Connection, ConnectionError> {
-        self.0.build_inner().await
+        match self.get_fallback_url() {
+            None => {
+                match self
+                    .builder
+                    .build_inner(self.builder.grpc_url_arc(), false)
+                    .await
+                {
+                    Ok(cosmos) => Ok(cosmos),
+                    Err(e) => {
+                        // Connection to the primary URL failed, so try a fallback instead.
+                        self.set_use_fallback();
+                        Err(e)
+                    }
+                }
+            }
+            Some(fallback) => self.builder.build_inner(fallback, true).await,
+        }
     }
 
     async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), ConnectionError> {
@@ -108,10 +194,10 @@ impl Cosmos {
                 Ok(x) => break Ok(x),
                 Err(err) => err,
             };
-            if attempt >= self.builder.query_retries() || !should_retry || !can_retry {
+            if attempt >= self.finalized.builder.query_retries() || !should_retry || !can_retry {
                 break Err(QueryError {
                     action,
-                    builder: self.builder.clone(),
+                    builder: self.finalized.builder.clone(),
                     height: self.height,
                     query: err,
                 });
@@ -119,7 +205,7 @@ impl Cosmos {
                 attempt += 1;
                 log::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {err:?}",
-                    self.builder.query_retries()
+                    self.finalized.builder.query_retries()
                 );
             }
         }
@@ -140,7 +226,7 @@ impl Cosmos {
             )
         })?;
         let duration =
-            tokio::time::Duration::from_secs(self.builder.query_timeout_seconds().into());
+            tokio::time::Duration::from_secs(self.finalized.builder.query_timeout_seconds().into());
         let mut req = tonic::Request::new(req.clone());
         if let Some(height) = self.height {
             // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
@@ -155,9 +241,10 @@ impl Cosmos {
                 let err = QueryErrorDetails::from_tonic_status(status);
                 let can_retry = match err.error_category() {
                     QueryErrorCategory::NetworkIssue => {
-                        cosmos_inner.is_broken = Err(ConnectionError::QueryFailed {
-                            grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                        });
+                        cosmos_inner.set_broken(
+                            |grpc_url| ConnectionError::QueryFailed { grpc_url },
+                            &self.finalized,
+                        );
                         true
                     }
                     QueryErrorCategory::ConnectionIsFine => false,
@@ -179,10 +266,13 @@ impl Cosmos {
                                 // Something went wrong. Don't even bother
                                 // looking at _what_ went wrong, just kill this
                                 // connection and retry.
-                                cosmos_inner.is_broken = Err(ConnectionError::SanityCheckFailed {
-                                    grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                                    source: status,
-                                });
+                                cosmos_inner.set_broken(
+                                    |grpc_url| ConnectionError::SanityCheckFailed {
+                                        grpc_url,
+                                        source: status,
+                                    },
+                                    &self.finalized,
+                                );
                                 true
                             }
                         }
@@ -192,9 +282,10 @@ impl Cosmos {
                 Err((err, can_retry))
             }
             Err(_) => {
-                cosmos_inner.is_broken = Err(ConnectionError::TimeoutQuery {
-                    grpc_url: self.get_cosmos_builder().grpc_url().to_owned(),
-                });
+                cosmos_inner.set_broken(
+                    |grpc_url| ConnectionError::TimeoutQuery { grpc_url },
+                    &self.finalized,
+                );
                 Err((QueryErrorDetails::QueryTimeout, true))
             }
         }
@@ -202,7 +293,21 @@ impl Cosmos {
 
     /// Get the [CosmosBuilder] used to construct this connection.
     pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
-        &self.builder
+        &self.finalized.builder
+    }
+}
+
+impl CosmosInner {
+    fn set_broken(
+        &mut self,
+        err: impl FnOnce(Arc<String>) -> ConnectionError,
+        finalized: &FinalizedCosmosBuilder,
+    ) {
+        self.is_broken = Err(err(self.grpc_url.clone()));
+        // No point going back to a fallback if it's a fallback that failed.
+        if !self.is_fallback {
+            finalized.set_use_fallback();
+        }
     }
 }
 
@@ -244,6 +349,8 @@ pub struct CosmosInner {
             InterceptedService<Channel, CosmosInterceptor>,
         >,
     is_broken: Result<(), ConnectionError>,
+    grpc_url: Arc<String>,
+    is_fallback: bool,
 }
 
 impl CosmosBuilder {
@@ -251,16 +358,19 @@ impl CosmosBuilder {
     pub async fn build(self) -> Result<Cosmos, BuilderError> {
         let cosmos = self.build_lazy().await;
 
-        let actual = cosmos
-            .get_latest_block_info()
+        let resp = cosmos
+            .perform_query(GetLatestBlockRequest {}, Action::GetLatestBlock, false)
             .await
-            .map_err(|source| BuilderError::SanityQueryFailed {
-                grpc_url: cosmos.get_cosmos_builder().grpc_url().to_owned(),
-                source,
-            })?
-            .chain_id;
+            .map_err(|source| BuilderError::SanityQueryFailed { source })?;
+
+        let actual = resp
+            .into_inner()
+            .block
+            .and_then(|block| block.header)
+            .map(|header| header.chain_id);
+
         let expected = cosmos.get_cosmos_builder().chain_id();
-        if actual == expected {
+        if actual.as_deref() == Some(expected) {
             Ok(cosmos)
         } else {
             Err(BuilderError::MismatchedChainIds {
@@ -284,33 +394,41 @@ impl CosmosBuilder {
         if let Some(retry_connection) = builder.retry_connection() {
             pool_builder = pool_builder.retry_connection(retry_connection);
         }
+        let fallback = Arc::new(Mutex::new(FallbackStatus {
+            next_index: 0,
+            use_fallback: false,
+        }));
+        let finalized = FinalizedCosmosBuilder { builder, fallback };
         let pool = pool_builder
-            .build(FinalizedCosmosBuilder(builder.clone()))
+            .build(finalized.clone())
             .await
             .expect("Unexpected pool build error");
         Cosmos {
             pool,
-            builder,
+            finalized,
             height: None,
         }
     }
 }
 
 impl CosmosBuilder {
-    async fn build_inner(&self) -> Result<CosmosInner, ConnectionError> {
-        let grpc_url = self.grpc_url();
+    async fn build_inner(
+        &self,
+        grpc_url: &Arc<String>,
+        is_fallback: bool,
+    ) -> Result<CosmosInner, ConnectionError> {
         let grpc_endpoint =
             grpc_url
                 .parse::<Endpoint>()
                 .map_err(|source| ConnectionError::InvalidGrpcUrl {
-                    grpc_url: grpc_url.to_owned(),
+                    grpc_url: grpc_url.clone(),
                     source: source.into(),
                 })?;
         let grpc_endpoint = if grpc_url.starts_with("https://") {
             grpc_endpoint
                 .tls_config(ClientTlsConfig::new())
                 .map_err(|source| ConnectionError::TlsConfig {
-                    grpc_url: grpc_url.to_owned(),
+                    grpc_url: grpc_url.clone(),
                     source: source.into(),
                 })?
         } else {
@@ -320,10 +438,10 @@ impl CosmosBuilder {
             tokio::time::timeout(tokio::time::Duration::from_secs(5), grpc_endpoint.connect())
                 .await
                 .map_err(|_| ConnectionError::TimeoutConnecting {
-                    grpc_url: grpc_url.to_owned(),
+                    grpc_url: grpc_url.clone(),
                 })?
                 .map_err(|source| ConnectionError::CannotEstablishConnection {
-                    grpc_url: grpc_url.to_owned(),
+                    grpc_url: grpc_url.clone(),
                     source: source.into(),
                 })?;
 
@@ -346,6 +464,8 @@ impl CosmosBuilder {
             tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: Ok(()),
+            grpc_url: grpc_url.clone(),
+            is_fallback
         })
     }
 }
@@ -461,7 +581,7 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse)> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        for attempt in 1..=self.builder.transaction_attempts() {
+        for attempt in 1..=self.finalized.builder.transaction_attempts() {
             let txres = self
                 .perform_query(
                     GetTxRequest {
@@ -491,7 +611,7 @@ impl Cosmos {
                 }) => {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                        self.builder.transaction_attempts()
+                        self.finalized.builder.transaction_attempts()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                 }
@@ -538,9 +658,9 @@ impl Cosmos {
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let low = self.builder.gas_price_low();
-        let high = self.builder.gas_price_high();
-        let attempts = self.builder.gas_price_retry_attempts();
+        let low = self.finalized.builder.gas_price_low();
+        let high = self.finalized.builder.gas_price_high();
+        let attempts = self.finalized.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
             high
@@ -701,7 +821,7 @@ impl TxBuilder {
             simres.body,
             // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
             // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-            (simres.gas_used as f64 * cosmos.builder.gas_estimate_multiplier()) as u64,
+            (simres.gas_used as f64 * cosmos.finalized.builder.gas_estimate_multiplier()) as u64,
         )
         .await
     }
@@ -877,7 +997,7 @@ impl TxBuilder {
                 signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.builder.gas_coin().to_owned(),
+                        denom: cosmos.finalized.builder.gas_coin().to_owned(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -889,7 +1009,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.builder.chain_id().to_owned(),
+                chain_id: cosmos.finalized.builder.chain_id().to_owned(),
                 account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -1024,6 +1144,15 @@ mod tests {
         builder.clone().build().await.unwrap_err();
         let cosmos = builder.build_lazy().await;
         cosmos.get_latest_block_info().await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn fallback() {
+        let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
+        builder.add_grpc_fallback_url(builder.grpc_url().to_owned());
+        builder.set_grpc_url("http://0.0.0.0:0");
+        let cosmos = builder.build_lazy().await;
+        cosmos.get_latest_block_info().await.unwrap();
     }
 }
 

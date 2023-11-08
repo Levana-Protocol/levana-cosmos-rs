@@ -65,24 +65,16 @@ pub enum WalletError {
 pub enum BuilderError {
     #[error("Error downloading chain information from {url}: {source:?}")]
     DownloadChainInfo { url: String, source: reqwest::Error },
-    #[error("Failed sanity check on Cosmos value:\n{cosmos:?}\n{source:?}")]
-    FailedSanityCheck {
-        cosmos: crate::Cosmos,
-        source: anyhow::Error,
-    },
     #[error("Unknown Cosmos network value {network:?}")]
     UnknownCosmosNetwork { network: String },
-    #[error("Mismatched chain IDs during sanity check of {grpc_url}. Expected: {expected}. Actual: {actual}.")]
+    #[error("Mismatched chain IDs during sanity check of {grpc_url}. Expected: {expected}. Actual: {actual:?}.")]
     MismatchedChainIds {
         grpc_url: String,
         expected: String,
-        actual: String,
+        actual: Option<String>,
     },
-    #[error("Basic query to {grpc_url} failed during sanity check: {source:?}")]
-    SanityQueryFailed {
-        grpc_url: String,
-        source: anyhow::Error,
-    },
+    #[error("Connection sanity check failed: {source:}")]
+    SanityQueryFailed { source: QueryError },
 }
 
 /// Parse errors while interacting with chain data.
@@ -121,28 +113,28 @@ pub enum ChainParseError {
 pub enum ConnectionError {
     #[error("Invalid gRPC URL: {grpc_url}: {source:?}")]
     InvalidGrpcUrl {
-        grpc_url: String,
+        grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
     },
     #[error("Unable to configure TLS when connecting to {grpc_url}: {source:?}")]
     TlsConfig {
-        grpc_url: String,
+        grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
     },
     #[error("Sanity check on connection to {grpc_url} failed with gRPC status {source}")]
     SanityCheckFailed {
-        grpc_url: String,
+        grpc_url: Arc<String>,
         source: tonic::Status,
     },
     #[error("Network error occured while performing query to {grpc_url}")]
-    QueryFailed { grpc_url: String },
+    QueryFailed { grpc_url: Arc<String> },
     #[error("Timeout hit when querying gRPC endpoint {grpc_url}")]
-    TimeoutQuery { grpc_url: String },
+    TimeoutQuery { grpc_url: Arc<String> },
     #[error("Timeout hit when connecting to gRPC endpoint {grpc_url}")]
-    TimeoutConnecting { grpc_url: String },
+    TimeoutConnecting { grpc_url: Arc<String> },
     #[error("Cannot establish connection to {grpc_url}: {source:?}")]
     CannotEstablishConnection {
-        grpc_url: String,
+        grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
     },
 }
