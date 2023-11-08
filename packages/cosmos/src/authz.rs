@@ -26,7 +26,7 @@ impl Cosmos {
     pub async fn query_granter_grants(
         &self,
         granter: impl HasAddress,
-    ) -> anyhow::Result<Vec<GrantAuthorization>> {
+    ) -> Result<Vec<GrantAuthorization>, crate::Error> {
         let mut res = vec![];
         let mut pagination = None;
 
@@ -50,18 +50,15 @@ impl Cosmos {
 
             res.append(&mut grants);
 
-            pagination = match pag_res {
-                Some(PageResponse { next_key, total: _ }) => Some(PageRequest {
-                    key: next_key,
-                    // Ideally we'd just leave this out so we use next_key
-                    // instead, but the Rust types don't allow this
-                    offset: res.len().try_into()?,
-                    limit: 10,
-                    count_total: false,
-                    reverse: false,
-                }),
-                None => None,
-            };
+            pagination = pag_res.map(|PageResponse { next_key, total: _ }| PageRequest {
+                key: next_key,
+                // Ideally we'd just leave this out so we use next_key
+                // instead, but the Rust types don't allow this
+                offset: res.len().try_into().unwrap_or(u64::MAX),
+                limit: 10,
+                count_total: false,
+                reverse: false,
+            });
         }
     }
 }

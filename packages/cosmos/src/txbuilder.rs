@@ -69,7 +69,7 @@ impl TxBuilder {
         wallet: impl HasAddress,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> anyhow::Result<&mut Self> {
+    ) -> Result<&mut Self, serde_json::Error> {
         Ok(self.add_message(MsgExecuteContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),
@@ -85,8 +85,7 @@ impl TxBuilder {
         wallet: impl HasAddress,
         code_id: u64,
         msg: impl serde::Serialize,
-        // FIXME remove anyhow
-    ) -> anyhow::Result<&mut Self> {
+    ) -> Result<&mut Self, serde_json::Error> {
         Ok(self.add_message(MsgMigrateContract {
             sender: wallet.get_address_string(),
             contract: contract.get_address_string(),

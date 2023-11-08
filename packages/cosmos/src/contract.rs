@@ -1,6 +1,5 @@
 use std::{fmt::Display, str::FromStr};
 
-use anyhow::{Context, Result};
 use cosmos_sdk_proto::{
     cosmos::{
         base::{abci::v1beta1::TxResponse, v1beta1::Coin},
@@ -15,7 +14,7 @@ use cosmos_sdk_proto::{
 
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    error::Action,
+    error::{Action, ContractAdminParseError, QueryError},
     TxResponseExt,
 };
 use crate::{Address, CodeId, Cosmos, HasAddress, HasCosmos, TxBuilder, Wallet};
@@ -75,7 +74,7 @@ impl CodeId {
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
         admin: ContractAdmin,
-    ) -> Result<Contract> {
+    ) -> Result<Contract, crate::Error> {
         self.instantiate_rendered(wallet, label, funds, serde_json::to_string(&msg)?, admin)
             .await
     }
@@ -88,7 +87,7 @@ impl CodeId {
         funds: Vec<Coin>,
         msg: impl Into<String>,
         admin: ContractAdmin,
-    ) -> Result<Contract> {
+    ) -> Result<Contract, crate::Error> {
         let msg = msg.into();
         let msg = MsgInstantiateContract {
             sender: wallet.get_address().to_string(),
@@ -102,11 +101,30 @@ impl CodeId {
             msg: msg.into_bytes(),
             funds,
         };
-        let res = wallet.broadcast_message(&self.client, msg).await?;
+        let mut txbuilder = TxBuilder::default();
+        txbuilder.add_message(msg);
+        let res = txbuilder.sign_and_broadcast(&self.client, wallet).await?;
 
-        let addr = res.parse_first_instantiated_contract()?;
-        anyhow::ensure!(addr.get_address_hrp() == self.get_address_hrp());
-        Ok(self.client.make_contract(addr))
+        let addr =
+            res.parse_first_instantiated_contract()
+                .map_err(|source| crate::Error::ChainParse {
+                    source: source.into(),
+                    action: Action::Broadcast(txbuilder.clone()),
+                })?;
+
+        if addr.get_address_hrp() == self.get_address_hrp() {
+            Ok(self.client.make_contract(addr))
+        } else {
+            Err(crate::Error::InvalidChainResponse {
+                message: format!(
+                    "Network has address HRP {}, but new contract {} has HRP {}",
+                    self.get_address_hrp(),
+                    addr,
+                    addr.get_address_hrp()
+                ),
+                action: Action::Broadcast(txbuilder),
+            })
+        }
     }
 }
 
@@ -117,9 +135,13 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
-    ) -> Result<TxResponse> {
-        self.execute_rendered(wallet, funds, serde_json::to_string(&msg)?)
-            .await
+    ) -> Result<TxResponse, crate::Error> {
+        self.execute_rendered(
+            wallet,
+            funds,
+            serde_json::to_string(&msg).map_err(crate::Error::JsonSerialize)?,
+        )
+        .await
     }
 
     /// Simulate executing a message against this contract.
@@ -129,9 +151,14 @@ impl Contract {
         funds: Vec<Coin>,
         msg: impl serde::Serialize,
         memo: Option<String>,
-    ) -> Result<SimulateResponse> {
-        self.simulate_binary(wallet, funds, serde_json::to_vec(&msg)?, memo)
-            .await
+    ) -> Result<SimulateResponse, crate::Error> {
+        self.simulate_binary(
+            wallet,
+            funds,
+            serde_json::to_vec(&msg).map_err(crate::Error::JsonSerialize)?,
+            memo,
+        )
+        .await
     }
 
     /// Same as [Contract::execute] but the msg is serialized
@@ -140,7 +167,7 @@ impl Contract {
         wallet: &Wallet,
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         let msg = MsgExecuteContract {
             sender: wallet.get_address_string(),
             contract: self.address.to_string(),
@@ -157,7 +184,7 @@ impl Contract {
         funds: Vec<Coin>,
         msg: impl Into<Vec<u8>>,
         memo: Option<String>,
-    ) -> Result<SimulateResponse> {
+    ) -> Result<SimulateResponse, crate::Error> {
         let msg = MsgExecuteContract {
             sender: wallet.get_address().to_string(),
             contract: self.address.to_string(),
@@ -176,7 +203,7 @@ impl Contract {
     }
 
     /// Perform a raw query
-    pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+    pub async fn query_raw(&self, key: impl Into<Vec<u8>>) -> Result<Vec<u8>, crate::Error> {
         let key = key.into();
         Ok(self
             .client
@@ -203,12 +230,17 @@ impl Contract {
     }
 
     /// Perform a query and return the raw unparsed JSON bytes.
-    pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
-        self.query_rendered_bytes(serde_json::to_vec(&msg)?).await
+    pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>, crate::Error> {
+        self.query_rendered_bytes(serde_json::to_vec(&msg).map_err(crate::Error::JsonSerialize)?)
+            .await
+            .map_err(|e| e.into())
     }
 
     /// Like [Self::query_bytes], but the provided message is already serialized.
-    pub async fn query_rendered_bytes(&self, msg: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+    pub async fn query_rendered_bytes(
+        &self,
+        msg: impl Into<Vec<u8>>,
+    ) -> Result<Vec<u8>, QueryError> {
         let msg = msg.into();
         let res = self
             .client
@@ -232,9 +264,34 @@ impl Contract {
     pub async fn query<T: serde::de::DeserializeOwned>(
         &self,
         msg: impl serde::Serialize,
-    ) -> Result<T> {
-        serde_json::from_slice(&self.query_bytes(msg).await?)
-            .context("Invalid JSON response from smart contract query")
+    ) -> Result<T, crate::Error> {
+        self.query_rendered(serde_json::to_vec(&msg)?).await
+    }
+
+    /// Like [Self::query], but the provided message is already serialized.
+    pub async fn query_rendered<T: serde::de::DeserializeOwned>(
+        &self,
+        msg: impl Into<Vec<u8>>,
+    ) -> Result<T, crate::Error> {
+        let msg = msg.into();
+        let action = Action::SmartQuery {
+            contract: self.address,
+            message: msg.clone().into(),
+        };
+        let res = self
+            .client
+            .perform_query(
+                QuerySmartContractStateRequest {
+                    address: self.address.into(),
+                    query_data: msg,
+                },
+                action.clone(),
+                true,
+            )
+            .await?
+            .into_inner();
+        serde_json::from_slice(&res.data)
+            .map_err(|source| crate::Error::JsonDeserialize { source, action })
     }
 
     /// Perform a contract migration with the given message
@@ -243,7 +300,7 @@ impl Contract {
         wallet: &Wallet,
         code_id: u64,
         msg: impl serde::Serialize,
-    ) -> Result<()> {
+    ) -> Result<(), crate::Error> {
         self.migrate_binary(wallet, code_id, serde_json::to_vec(&msg)?)
             .await
     }
@@ -254,7 +311,7 @@ impl Contract {
         wallet: &Wallet,
         code_id: u64,
         msg: impl Into<Vec<u8>>,
-    ) -> Result<()> {
+    ) -> Result<(), crate::Error> {
         let msg = MsgMigrateContract {
             sender: wallet.get_address_string(),
             contract: self.get_address_string(),
@@ -266,23 +323,27 @@ impl Contract {
     }
 
     /// Get the contract info metadata
-    pub async fn info(&self) -> Result<ContractInfo> {
+    pub async fn info(&self) -> Result<ContractInfo, crate::Error> {
+        let action = Action::ContractInfo(self.address);
         self.client
             .perform_query(
                 QueryContractInfoRequest {
                     address: self.address.into(),
                 },
-                Action::ContractInfo(self.address),
+                action.clone(),
                 true,
             )
             .await?
             .into_inner()
             .contract_info
-            .context("contract_info: missing contract_info (ironic...)")
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Missing contract_info field".to_string(),
+                action,
+            })
     }
 
     /// Get the contract history
-    pub async fn history(&self) -> Result<QueryContractHistoryResponse> {
+    pub async fn history(&self) -> Result<QueryContractHistoryResponse, crate::Error> {
         Ok(self
             .client
             .perform_query(
@@ -334,13 +395,18 @@ pub enum ContractAdmin {
 }
 
 impl FromStr for ContractAdmin {
-    type Err = anyhow::Error;
+    type Err = ContractAdminParseError;
 
-    fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "no-admin" => Ok(ContractAdmin::NoAdmin),
             "sender" => Ok(ContractAdmin::Sender),
-            _ => s.parse().map(ContractAdmin::Addr).map_err(|_| anyhow::anyhow!("Invalid contract admin. Must be 'no-admin', 'sender', or a valid address. Received: {s:?}"))
+            _ => s
+                .parse()
+                .map(ContractAdmin::Addr)
+                .map_err(|_| ContractAdminParseError {
+                    input: s.to_owned(),
+                }),
         }
     }
 }
