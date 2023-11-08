@@ -178,7 +178,7 @@ pub enum Error {
     Query(#[from] QueryError),
     #[error("Error parsing data returned from chain: {source}. While performing: {action}")]
     ChainParse {
-        source: crate::error::ChainParseError,
+        source: Box<crate::error::ChainParseError>,
         action: Action,
     },
     #[error("Invalid response from chain: {message}. While performing: {action}")]

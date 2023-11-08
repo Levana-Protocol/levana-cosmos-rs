@@ -108,7 +108,7 @@ impl CodeId {
         let addr =
             res.parse_first_instantiated_contract()
                 .map_err(|source| crate::Error::ChainParse {
-                    source,
+                    source: source.into(),
                     action: Action::Broadcast(txbuilder.clone()),
                 })?;
 

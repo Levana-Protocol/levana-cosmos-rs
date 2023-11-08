@@ -57,7 +57,7 @@ impl Cosmos {
         Ok(
             self.make_code_id(res.parse_first_stored_code_id().map_err(|source| {
                 crate::Error::ChainParse {
-                    source,
+                    source: source.into(),
                     action: Action::Broadcast(txbuilder),
                 }
             })?),
@@ -108,7 +108,7 @@ impl Cosmos {
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
         let code_id = self.make_code_id(res.parse_first_stored_code_id().map_err(|source| {
             crate::Error::ChainParse {
-                source,
+                source: source.into(),
                 action: Action::Broadcast(txbuilder),
             }
         })?);
