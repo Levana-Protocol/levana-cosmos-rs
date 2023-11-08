@@ -1,9 +1,8 @@
 use crate::{
     address::{AddressHrp, HasAddressHrp},
-    error::TokenFactoryError,
-    Cosmos, HasAddress, TxMessage, Wallet,
+    error::{Action, TokenFactoryError},
+    Cosmos, HasAddress, TxBuilder, TxMessage, Wallet,
 };
-use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::{
     bank::v1beta1::Metadata,
     base::{abci::v1beta1::TxResponse, v1beta1::Coin},
@@ -45,14 +44,20 @@ impl Cosmos {
 
 impl TokenFactory {
     /// Create a new token with the given subdenom.
-    pub async fn create(&self, wallet: &Wallet, subdenom: String) -> Result<(TxResponse, String)> {
+    pub async fn create(
+        &self,
+        wallet: &Wallet,
+        subdenom: String,
+    ) -> Result<(TxResponse, String), crate::Error> {
         let msg = MsgCreateDenom {
             sender: wallet.get_address_string(),
             subdenom,
         }
         .into_typed_message(self.kind);
 
-        let res = wallet.broadcast_message(&self.client, msg).await?;
+        let mut txbuilder = TxBuilder::default();
+        txbuilder.add_message(msg);
+        let res = txbuilder.sign_and_broadcast(&self.client, wallet).await?;
 
         let denom = res
             .events
@@ -70,13 +75,21 @@ impl TokenFactory {
                     None
                 }
             })
-            .context("Failed to get denom from tx events")?;
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Failed to get denom from tx events".to_owned(),
+                action: Action::Broadcast(txbuilder),
+            })?;
 
         Ok((res, denom))
     }
 
     /// Mint some tokens for the given denom.
-    pub async fn mint(&self, wallet: &Wallet, denom: String, amount: u128) -> Result<TxResponse> {
+    pub async fn mint(
+        &self,
+        wallet: &Wallet,
+        denom: String,
+        amount: u128,
+    ) -> Result<TxResponse, crate::Error> {
         let msg = MsgMint {
             sender: wallet.get_address_string(),
             amount: Some(Coin {
@@ -89,7 +102,12 @@ impl TokenFactory {
     }
 
     /// Burn tokens for the given denom
-    pub async fn burn(&self, wallet: &Wallet, denom: String, amount: u128) -> Result<TxResponse> {
+    pub async fn burn(
+        &self,
+        wallet: &Wallet,
+        denom: String,
+        amount: u128,
+    ) -> Result<TxResponse, crate::Error> {
         let msg = MsgBurn {
             sender: wallet.get_address_string(),
             burn_from_address: wallet.get_address_string(),
@@ -108,7 +126,7 @@ impl TokenFactory {
         wallet: &Wallet,
         denom: String,
         addr: String,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         let msg = MsgChangeAdmin {
             sender: wallet.get_address_string(),
             denom: denom.clone(),

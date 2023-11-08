@@ -3,10 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
 use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
 
 use crate::{
+    error::Action,
     messages::{MsgExecHelper, MsgStoreCodeHelper},
     Address, AddressHrp, Cosmos, HasAddress, HasAddressHrp, HasCosmos, TxBuilder, TxMessage,
     TxResponseExt, Wallet,
@@ -26,7 +26,7 @@ impl CodeId {
     }
 
     /// Download the WASM content of this code ID.
-    pub async fn download(&self) -> Result<Vec<u8>> {
+    pub async fn download(&self) -> Result<Vec<u8>, crate::Error> {
         self.client.code_info(self.code_id).await
     }
 }
@@ -44,27 +44,40 @@ impl Cosmos {
         wallet: &Wallet,
         wasm_byte_code: Vec<u8>,
         source: Option<PathBuf>,
-    ) -> Result<CodeId> {
+    ) -> Result<CodeId, crate::Error> {
         let msg = MsgStoreCodeHelper {
             sender: wallet.get_address(),
             wasm_byte_code,
             source,
         };
-        let res = wallet
-            .broadcast_message(self, msg)
-            .await
-            .context("Storing WASM contract")?;
+        let mut txbuilder = TxBuilder::default();
+        txbuilder.add_message(msg);
+        let res = txbuilder.sign_and_broadcast(self, wallet).await?;
 
-        Ok(self.make_code_id(res.parse_first_stored_code_id()?))
+        Ok(
+            self.make_code_id(res.parse_first_stored_code_id().map_err(|source| {
+                crate::Error::ChainParse {
+                    source,
+                    action: Action::Broadcast(txbuilder),
+                }
+            })?),
+        )
     }
 
     /// Convenience wrapper for [Cosmos::store_code] that works on file paths
-    pub async fn store_code_path(&self, wallet: &Wallet, path: impl AsRef<Path>) -> Result<CodeId> {
+    pub async fn store_code_path(
+        &self,
+        wallet: &Wallet,
+        path: impl AsRef<Path>,
+    ) -> Result<CodeId, crate::Error> {
         let path = path.as_ref();
-        let wasm_byte_code = fs_err::read(path)?;
+        let wasm_byte_code =
+            fs_err::read(path).map_err(|source| crate::Error::LoadingWasmFromFile {
+                path: path.to_owned(),
+                source,
+            })?;
         self.store_code(wallet, wasm_byte_code, Some(path.to_owned()))
             .await
-            .with_context(|| format!("Storing code in file {}", path.display()))
     }
 
     /// Like [Self::store_code_path], but uses the authz grant mechanism
@@ -73,9 +86,13 @@ impl Cosmos {
         wallet: &Wallet,
         path: impl AsRef<Path>,
         granter: Address,
-    ) -> Result<(TxResponse, CodeId)> {
+    ) -> Result<(TxResponse, CodeId), crate::Error> {
         let path = path.as_ref();
-        let wasm_byte_code = fs_err::read(path)?;
+        let wasm_byte_code =
+            fs_err::read(path).map_err(|source| crate::Error::LoadingWasmFromFile {
+                path: path.to_owned(),
+                source,
+            })?;
         let store_code = MsgStoreCodeHelper {
             sender: granter.get_address(),
             wasm_byte_code,
@@ -89,7 +106,12 @@ impl Cosmos {
         };
         txbuilder.add_message(msg);
         let res = txbuilder.sign_and_broadcast(self, wallet).await?;
-        let code_id = self.make_code_id(res.parse_first_stored_code_id()?);
+        let code_id = self.make_code_id(res.parse_first_stored_code_id().map_err(|source| {
+            crate::Error::ChainParse {
+                source,
+                action: Action::Broadcast(txbuilder),
+            }
+        })?);
         Ok((res, code_id))
     }
 }

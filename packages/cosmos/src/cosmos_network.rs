@@ -56,12 +56,14 @@ impl CosmosNetwork {
 
     /// Construct a [CosmosBuilder] without loading settings from the internet.
     pub fn builder_local(self) -> CosmosBuilder {
-        CosmosBuilder::new(
+        let mut builder = CosmosBuilder::new(
             self.chain_id(),
             self.gas_coin(),
             self.get_address_hrp(),
             self.grpc_url(),
-        )
+        );
+        self.local_settings(&mut builder);
+        builder
     }
 
     /// Chain ID for the network

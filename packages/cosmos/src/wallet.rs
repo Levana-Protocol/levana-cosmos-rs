@@ -347,7 +347,7 @@ impl Wallet {
         &self,
         cosmos: &Cosmos,
         msg: impl Into<TxMessage>,
-    ) -> anyhow::Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         TxBuilder::default()
             .add_message(msg.into())
             .sign_and_broadcast(cosmos, self)
@@ -362,7 +362,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: Address,
         amount: Vec<Coin>,
-    ) -> anyhow::Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         self.broadcast_message(
             cosmos,
             MsgSend {
@@ -382,7 +382,7 @@ impl Wallet {
         cosmos: &Cosmos,
         dest: &impl HasAddress,
         amount: u128,
-    ) -> anyhow::Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         self.broadcast_message(
             cosmos,
             MsgSend {

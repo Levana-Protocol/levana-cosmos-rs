@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 //! Error types exposed by this package.
 
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
 
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
@@ -139,6 +139,15 @@ pub enum ConnectionError {
     },
 }
 
+/// Error while parsing a [crate::ContractAdmin].
+#[derive(thiserror::Error, Debug, Clone)]
+#[error(
+    "Invalid contract admin. Must be 'no-admin', 'sender', or a valid address. Received: {input:?}"
+)]
+pub struct ContractAdminParseError {
+    pub input: String,
+}
+
 /// Errors that occur while querying the chain.
 #[derive(thiserror::Error, Debug, Clone)]
 #[error("On connection to {}, while performing:\n{action}\n{query}\nHeight set to: {height:?}", builder.grpc_url())]
@@ -154,8 +163,42 @@ pub struct QueryError {
 /// This error type is used by the majority of the codebase. The idea is that
 /// the other error types will represent "preparation" errors, and this will
 /// represent errors during normal interaction.
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum Error {}
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Unable to serialize value to JSON: {0}")]
+    JsonSerialize(#[from] serde_json::Error),
+    #[error(
+        "Unable to deserialize value from JSON while performing: {action}. Parse error: {source}"
+    )]
+    JsonDeserialize {
+        source: serde_json::Error,
+        action: Action,
+    },
+    #[error(transparent)]
+    Query(#[from] QueryError),
+    #[error("Error parsing data returned from chain: {source}. While performing: {action}")]
+    ChainParse {
+        source: crate::error::ChainParseError,
+        action: Action,
+    },
+    #[error("Invalid response from chain: {message}. While performing: {action}")]
+    InvalidChainResponse { message: String, action: Action },
+    #[error("Timed out waiting for transaction {txhash}")]
+    WaitForTransactionTimedOut { txhash: String },
+    #[error("Timed out waiting for transaction {txhash} during {action}")]
+    WaitForTransactionTimedOutWhile { txhash: String, action: Action },
+    #[error("Unable to load WASM code from {}: {source}", path.display())]
+    LoadingWasmFromFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("Transaction failed with code {code} and log: {raw_log}. Action: {action}.")]
+    TransactionFailed {
+        code: u32,
+        raw_log: String,
+        action: Action,
+    },
+}
 
 /// The action being performed when an error occurred.
 #[derive(Debug, Clone)]
@@ -180,6 +223,8 @@ pub enum Action {
     },
     ContractInfo(Address),
     ContractHistory(Address),
+    GetEarliestBlock,
+    WaitForTransaction(String),
 }
 
 impl Display for Action {
@@ -203,6 +248,8 @@ impl Display for Action {
             }
             Action::ContractInfo(address) => write!(f, "contract info for {address}"),
             Action::ContractHistory(address) => write!(f, "contract history for {address}"),
+            Action::GetEarliestBlock => f.write_str("get earliest block"),
+            Action::WaitForTransaction(txhash) => write!(f, "wait for transaction {txhash}"),
         }
     }
 }
@@ -242,15 +289,22 @@ pub enum QueryErrorDetails {
     ConnectionError(ConnectionError),
     #[error("Not found returned from chain: {0}")]
     NotFound(String),
-    #[error("Cosmos SDK error code {error_code} returned: {status:?}")]
+    #[error("Cosmos SDK error code {error_code} returned: {source:?}")]
     CosmosSdk {
         error_code: u32,
-        status: tonic::Status,
+        source: tonic::Status,
     },
     #[error("Error parsing message into expected type: {0:?}")]
     JsonParseError(tonic::Status),
     #[error("{0:?}")]
     FailedToExecute(tonic::Status),
+    #[error(
+        "Requested height not available, lowest height reported: {lowest_height:?}. {source:?}"
+    )]
+    HeightNotAvailable {
+        lowest_height: Option<i64>,
+        source: tonic::Status,
+    },
 }
 
 pub(crate) enum QueryErrorCategory {
@@ -279,6 +333,11 @@ impl QueryErrorDetails {
             QueryErrorDetails::CosmosSdk { .. } => ConnectionIsFine,
             QueryErrorDetails::JsonParseError(_) => ConnectionIsFine,
             QueryErrorDetails::FailedToExecute(_) => ConnectionIsFine,
+            // Interesting case here... maybe we need to treat it as a network
+            // issue so we retry with a fallback node. Or maybe apps that need
+            // that specific case handled should implement their own fallback
+            // logic.
+            QueryErrorDetails::HeightNotAvailable { .. } => ConnectionIsFine,
         }
     }
 
@@ -291,7 +350,7 @@ impl QueryErrorDetails {
         if let Some(error_code) = extract_cosmos_sdk_error_code(err.message()) {
             return QueryErrorDetails::CosmosSdk {
                 error_code,
-                status: err,
+                source: err,
             };
         }
 
@@ -303,8 +362,29 @@ impl QueryErrorDetails {
             return QueryErrorDetails::FailedToExecute(err);
         }
 
+        if let Some(lowest_height) = get_lowest_height(err.message()) {
+            return QueryErrorDetails::HeightNotAvailable {
+                lowest_height: Some(lowest_height),
+                source: err,
+            };
+        }
+
         QueryErrorDetails::Unknown(err)
     }
+}
+
+fn get_lowest_height(message: &str) -> Option<i64> {
+    let per_needle = |needle: &str| {
+        let trimmed = message.split(needle).nth(1)?.trim();
+        let stripped = trimmed.strip_suffix(')').unwrap_or(trimmed);
+        stripped.parse().ok()
+    };
+    for needle in ["lowest height is", "base height: "] {
+        if let Some(x) = per_needle(needle) {
+            return Some(x);
+        }
+    }
+    None
 }
 
 fn extract_cosmos_sdk_error_code(message: &str) -> Option<u32> {

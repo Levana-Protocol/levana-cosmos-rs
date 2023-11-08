@@ -2,7 +2,6 @@ mod query;
 
 use std::{str::FromStr, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
 use bb8::{ManageConnection, Pool};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
@@ -16,8 +15,9 @@ use cosmos_sdk_proto::{
             v1beta1::Coin,
         },
         tx::v1beta1::{
-            AuthInfo, BroadcastMode, BroadcastTxRequest, Fee, GetTxRequest, GetTxsEventRequest,
-            ModeInfo, OrderBy, SignDoc, SignerInfo, SimulateRequest, SimulateResponse, Tx, TxBody,
+            AuthInfo, BroadcastMode, BroadcastTxRequest, Fee, GetTxRequest, GetTxResponse,
+            GetTxsEventRequest, ModeInfo, OrderBy, SignDoc, SignerInfo, SimulateRequest,
+            SimulateResponse, Tx, TxBody,
         },
     },
     cosmwasm::wasm::v1::QueryCodeRequest,
@@ -173,12 +173,6 @@ impl ManageConnection for FinalizedCosmosBuilder {
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
         inner.is_broken.is_err()
     }
-}
-
-#[async_trait]
-trait WithCosmosInner {
-    type Output;
-    async fn call(self, inner: &CosmosInner) -> Result<Self::Output>;
 }
 
 impl Cosmos {
@@ -478,13 +472,14 @@ impl Cosmos {
     }
 
     /// Get the base account information for the given address.
-    pub async fn get_base_account(&self, address: Address) -> Result<BaseAccount> {
+    pub async fn get_base_account(&self, address: Address) -> Result<BaseAccount, crate::Error> {
+        let action = Action::GetBaseAccount(address);
         let res = self
             .perform_query(
                 QueryAccountRequest {
                     address: address.get_address_string(),
                 },
-                Action::GetBaseAccount(address),
+                action.clone(),
                 true,
             )
             .await?
@@ -492,17 +487,44 @@ impl Cosmos {
 
         let base_account = if self.get_address_hrp().as_str() == "inj" {
             let eth_account: crate::injective::EthAccount = prost::Message::decode(
-                res.account.context("no eth account found")?.value.as_ref(),
-            )?;
-            eth_account.base_account.context("no base account found")?
+                res.account
+                    .ok_or_else(|| crate::Error::InvalidChainResponse {
+                        message: "no eth account found".to_owned(),
+                        action: action.clone(),
+                    })?
+                    .value
+                    .as_ref(),
+            )
+            .map_err(|source| crate::Error::InvalidChainResponse {
+                message: format!("Unable to parse eth_account: {source}"),
+                action: action.clone(),
+            })?;
+            eth_account
+                .base_account
+                .ok_or_else(|| crate::Error::InvalidChainResponse {
+                    message: "no base account found".to_owned(),
+                    action: action.clone(),
+                })?
         } else {
-            prost::Message::decode(res.account.context("no account found")?.value.as_ref())?
+            prost::Message::decode(
+                res.account
+                    .ok_or_else(|| crate::Error::InvalidChainResponse {
+                        message: "no account found".to_owned(),
+                        action: action.clone(),
+                    })?
+                    .value
+                    .as_ref(),
+            )
+            .map_err(|source| crate::Error::InvalidChainResponse {
+                message: format!("Unable to parse account: {source}"),
+                action,
+            })?
         };
         Ok(base_account)
     }
 
     /// Get the coin balances for the given address.
-    pub async fn all_balances(&self, address: Address) -> Result<Vec<Coin>> {
+    pub async fn all_balances(&self, address: Address) -> Result<Vec<Coin>, crate::Error> {
         let mut coins = Vec::new();
         let mut pagination = None;
         loop {
@@ -533,7 +555,7 @@ impl Cosmos {
         }
     }
 
-    pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>> {
+    pub(crate) async fn code_info(&self, code_id: u64) -> Result<Vec<u8>, crate::Error> {
         let res = self
             .perform_query(
                 QueryCodeRequest { code_id },
@@ -544,32 +566,48 @@ impl Cosmos {
         Ok(res.into_inner().data)
     }
 
+    fn txres_to_pair(
+        txres: GetTxResponse,
+        action: Action,
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
+        let txbody = txres
+            .tx
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Missing tx field".to_owned(),
+                action: action.clone(),
+            })?
+            .body
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Missing tx.body field".to_owned(),
+                action: action.clone(),
+            })?;
+        let txres = txres
+            .tx_response
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Missing tx_response field".to_owned(),
+                action: action.clone(),
+            })?;
+        Ok((txbody, txres))
+    }
+
     /// Get a transaction, failing immediately if not present
     pub async fn get_transaction_body(
         &self,
         txhash: impl Into<String>,
-    ) -> Result<(TxBody, TxResponse)> {
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
         let txhash = txhash.into();
+        let action = Action::GetTransactionBody(txhash.clone());
         let txres = self
             .perform_query(
                 GetTxRequest {
                     hash: txhash.clone(),
                 },
-                Action::GetTransactionBody(txhash.clone()),
+                action.clone(),
                 true,
             )
-            .await
-            .with_context(|| format!("Unable to get transaction {txhash}"))?
+            .await?
             .into_inner();
-        let txbody = txres
-            .tx
-            .with_context(|| format!("Missing tx for transaction {txhash}"))?
-            .body
-            .with_context(|| format!("Missing body for transaction {txhash}"))?;
-        let txres = txres
-            .tx_response
-            .with_context(|| format!("Missing tx_response for transaction {txhash}"))?;
-        Ok((txbody, txres))
+        Self::txres_to_pair(txres, action)
     }
 
     /// Wait for a transaction to land on-chain using a busy loop.
@@ -578,7 +616,15 @@ impl Cosmos {
     pub async fn wait_for_transaction(
         &self,
         txhash: impl Into<String>,
-    ) -> Result<(TxBody, TxResponse)> {
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
+        self.wait_for_transaction_with_action(txhash, None).await
+    }
+
+    async fn wait_for_transaction_with_action(
+        &self,
+        txhash: impl Into<String>,
+        action: Option<Action>,
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
         for attempt in 1..=self.finalized.builder.transaction_attempts() {
@@ -587,23 +633,21 @@ impl Cosmos {
                     GetTxRequest {
                         hash: txhash.clone(),
                     },
-                    Action::GetTransactionBody(txhash.clone()),
+                    action
+                        .clone()
+                        .unwrap_or_else(|| Action::WaitForTransaction(txhash.clone())),
                     false,
                 )
                 .await;
             match txres {
                 Ok(txres) => {
                     let txres = txres.into_inner();
-                    return Ok((
-                        txres
-                            .tx
-                            .with_context(|| format!("Missing tx for transaction {txhash}"))?
-                            .body
-                            .with_context(|| format!("Missing body for transaction {txhash}"))?,
-                        txres.tx_response.with_context(|| {
-                            format!("Missing tx_response for transaction {txhash}")
-                        })?,
-                    ));
+                    return Self::txres_to_pair(
+                        txres,
+                        action
+                            .clone()
+                            .unwrap_or_else(|| Action::WaitForTransaction(txhash.clone())),
+                    );
                 }
                 Err(QueryError {
                     query: QueryErrorDetails::NotFound(_),
@@ -620,9 +664,10 @@ impl Cosmos {
                 }
             }
         }
-        Err(anyhow::anyhow!(
-            "Timed out waiting for {txhash} to be ready"
-        ))
+        Err(match action {
+            None => crate::Error::WaitForTransactionTimedOut { txhash },
+            Some(action) => crate::Error::WaitForTransactionTimedOutWhile { txhash, action },
+        })
     }
 
     /// Get a list of txhashes for transactions send by the given address.
@@ -631,29 +676,30 @@ impl Cosmos {
         address: Address,
         limit: Option<u64>,
         offset: Option<u64>,
-    ) -> Result<Vec<String>> {
-        let x = self
-            .perform_query(
-                GetTxsEventRequest {
-                    events: vec![format!("message.sender='{address}'")],
-                    pagination: Some(PageRequest {
-                        key: vec![],
-                        offset: offset.unwrap_or_default(),
-                        limit: limit.unwrap_or(10),
-                        count_total: false,
-                        reverse: false,
-                    }),
-                    order_by: OrderBy::Asc as i32,
-                },
-                Action::ListTransactionsFor(address),
-                true,
-            )
-            .await?;
-        Ok(x.into_inner()
-            .tx_responses
-            .into_iter()
-            .map(|x| x.txhash)
-            .collect())
+    ) -> Result<Vec<String>, QueryError> {
+        self.perform_query(
+            GetTxsEventRequest {
+                events: vec![format!("message.sender='{address}'")],
+                pagination: Some(PageRequest {
+                    key: vec![],
+                    offset: offset.unwrap_or_default(),
+                    limit: limit.unwrap_or(10),
+                    count_total: false,
+                    reverse: false,
+                }),
+                order_by: OrderBy::Asc as i32,
+            },
+            Action::ListTransactionsFor(address),
+            true,
+        )
+        .await
+        .map(|x| {
+            x.into_inner()
+                .tx_responses
+                .into_iter()
+                .map(|x| x.txhash)
+                .collect()
+        })
     }
 
     /// attempt_number starts at 0
@@ -674,94 +720,38 @@ impl Cosmos {
     }
 
     /// Get information on the given block height.
-    pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo> {
+    pub async fn get_block_info(&self, height: i64) -> Result<BlockInfo, crate::Error> {
+        let action = Action::GetBlock(height);
         let res = self
-            .perform_query(
-                GetBlockByHeightRequest { height },
-                Action::GetBlock(height),
-                true,
-            )
+            .perform_query(GetBlockByHeightRequest { height }, action.clone(), true)
             .await?
             .into_inner();
-        let block_id = res.block_id.context("get_block_info: block_id is None")?;
-        let block = res.block.context("get_block_info: block is None")?;
-        let header = block.header.context("get_block_info: header is None")?;
-        let time = header.time.context("get_block_info: time is None")?;
-        let data = block.data.context("get_block_info: data is None")?;
-        anyhow::ensure!(
-            height == header.height,
-            "Mismatched height from blockchain. Got {}, expected {height}",
-            header.height
-        );
-        let mut txhashes = vec![];
-        for tx in data.txs {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(tx);
-            let digest = hasher.finalize();
-            txhashes.push(hex::encode_upper(digest));
-        }
-        Ok(BlockInfo {
-            height: header.height,
-            block_hash: hex::encode_upper(block_id.hash),
-            timestamp: Utc.timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
-            txhashes,
-            chain_id: header.chain_id,
-        })
+        BlockInfo::new(action, res.block_id, res.block, Some(height))
     }
 
     /// Get information on the earliest block available from this node
-    pub async fn get_earliest_block_info(&self) -> Result<BlockInfo> {
-        // Really hacky, there must be a better way
-        let err = match self.get_block_info(1).await {
-            Ok(x) => return Ok(x),
-            Err(err) => err,
-        };
-        if let Some(height) = err.downcast_ref::<tonic::Status>().and_then(|status| {
-            let per_needle = |needle: &str| {
-                let trimmed = status.message().split(needle).nth(1)?.trim();
-                let stripped = trimmed.strip_suffix(')').unwrap_or(trimmed);
-                stripped.parse().ok()
-            };
-            for needle in ["lowest height is", "base height: "] {
-                if let Some(x) = per_needle(needle) {
-                    return Some(x);
-                }
-            }
-            None
-        }) {
-            self.get_block_info(height).await
-        } else {
-            Err(err)
+    pub async fn get_earliest_block_info(&self) -> Result<BlockInfo, crate::Error> {
+        match self.get_block_info(1).await {
+            Err(crate::Error::Query(QueryError {
+                query:
+                    QueryErrorDetails::HeightNotAvailable {
+                        lowest_height: Some(lowest_height),
+                        ..
+                    },
+                ..
+            })) => self.get_block_info(lowest_height).await,
+            x => x,
         }
     }
 
     /// Get the latest block available
-    pub async fn get_latest_block_info(&self) -> Result<BlockInfo> {
+    pub async fn get_latest_block_info(&self) -> Result<BlockInfo, crate::Error> {
+        let action = Action::GetLatestBlock;
         let res = self
-            .perform_query(GetLatestBlockRequest {}, Action::GetLatestBlock, true)
+            .perform_query(GetLatestBlockRequest {}, action.clone(), true)
             .await?
             .into_inner();
-        let block_id = res.block_id.context("get_block_info: block_id is None")?;
-        let block = res.block.context("get_block_info: block is None")?;
-        let header = block.header.context("get_block_info: header is None")?;
-        let time = header.time.context("get_block_info: time is None")?;
-        let data = block.data.context("get_block_info: data is None")?;
-        let mut txhashes = vec![];
-        for tx in data.txs {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(tx);
-            let digest = hasher.finalize();
-            txhashes.push(hex::encode_upper(digest));
-        }
-        Ok(BlockInfo {
-            height: header.height,
-            block_hash: hex::encode_upper(block_id.hash),
-            timestamp: Utc.timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
-            txhashes,
-            chain_id: header.chain_id,
-        })
+        BlockInfo::new(action, res.block_id, res.block, None)
     }
 }
 
@@ -780,6 +770,54 @@ pub struct BlockInfo {
     pub chain_id: String,
 }
 
+impl BlockInfo {
+    fn new(
+        action: Action,
+        block_id: Option<cosmos_sdk_proto::tendermint::types::BlockId>,
+        block: Option<cosmos_sdk_proto::tendermint::types::Block>,
+        height: Option<i64>,
+    ) -> Result<BlockInfo, crate::Error> {
+        (|| {
+            let block_id = block_id.ok_or("get_block_info: block_id is None".to_owned())?;
+            let block = block.ok_or("get_block_info: block is None".to_owned())?;
+            let header = block
+                .header
+                .ok_or("get_block_info: header is None".to_owned())?;
+            let time = header
+                .time
+                .ok_or("get_block_info: time is None".to_owned())?;
+            let data = block
+                .data
+                .ok_or("get_block_info: data is None".to_owned())?;
+            if let Some(height) = height {
+                if height != header.height {
+                    return Err(format!(
+                        "Mismatched height from blockchain. Got {}, expected {height}",
+                        header.height
+                    ));
+                }
+            }
+            let mut txhashes = vec![];
+            for tx in data.txs {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(tx);
+                let digest = hasher.finalize();
+                txhashes.push(hex::encode_upper(digest));
+            }
+            Ok(BlockInfo {
+                height: header.height,
+                block_hash: hex::encode_upper(block_id.hash),
+                timestamp: Utc
+                    .timestamp_nanos(time.seconds * 1_000_000_000 + i64::from(time.nanos)),
+                txhashes,
+                chain_id: header.chain_id,
+            })
+        })()
+        .map_err(|message| crate::Error::InvalidChainResponse { message, action })
+    }
+}
+
 impl TxBuilder {
     /// Simulate the transaction with the given signer or signers.
     ///
@@ -789,7 +827,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         wallets: &[Address],
-    ) -> Result<FullSimulateResponse> {
+    ) -> Result<FullSimulateResponse, crate::Error> {
         let mut sequences = vec![];
         for wallet in wallets {
             sequences.push(match cosmos.get_base_account(wallet.get_address()).await {
@@ -813,7 +851,11 @@ impl TxBuilder {
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// the gas amount is determined automatically by running a simulation first and padding by a multiplier
     /// the multiplier can by adjusted by calling [CosmosBuilder::set_gas_estimate_multiplier]
-    pub async fn sign_and_broadcast(&self, cosmos: &Cosmos, wallet: &Wallet) -> Result<TxResponse> {
+    pub async fn sign_and_broadcast(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+    ) -> Result<TxResponse, crate::Error> {
         let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
         self.inner_sign_and_broadcast(
             cosmos,
@@ -833,7 +875,7 @@ impl TxBuilder {
         cosmos: &Cosmos,
         wallet: &Wallet,
         gas_to_request: u64,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         self.inner_sign_and_broadcast(cosmos, wallet, self.make_tx_body(), gas_to_request)
             .await
     }
@@ -844,7 +886,7 @@ impl TxBuilder {
         wallet: &Wallet,
         body: TxBody,
         gas_to_request: u64,
-    ) -> Result<TxResponse> {
+    ) -> Result<TxResponse, crate::Error> {
         let base_account = cosmos.get_base_account(wallet.get_address()).await?;
 
         self.sign_and_broadcast_with(
@@ -927,7 +969,7 @@ impl TxBuilder {
         &self,
         cosmos: &Cosmos,
         sequences: &[u64],
-    ) -> Result<FullSimulateResponse> {
+    ) -> Result<FullSimulateResponse, crate::Error> {
         let body = self.make_tx_body();
 
         // First simulate the request with no signature and fake gas
@@ -954,16 +996,19 @@ impl TxBuilder {
             tx_bytes: simulate_tx.encode_to_vec(),
         };
 
+        let action = Action::Simulate(self.clone());
         let simres = cosmos
-            .perform_query(simulate_req, Action::Simulate(self.clone()), true)
-            .await
-            .context("Unable to simulate transaction")?
+            .perform_query(simulate_req, action.clone(), true)
+            .await?
             .into_inner();
 
         let gas_used = simres
             .gas_info
             .as_ref()
-            .context("Missing gas_info in SimulateResponse")?
+            .ok_or_else(|| crate::Error::InvalidChainResponse {
+                message: "Missing gas_info in SimulateResponse".to_owned(),
+                action: action,
+            })?
             .gas_used;
 
         Ok(FullSimulateResponse {
@@ -981,16 +1026,16 @@ impl TxBuilder {
         sequence: u64,
         body: TxBody,
         gas_to_request: u64,
-    ) -> Result<TxResponse> {
-        enum AttemptError {
-            Inner(anyhow::Error),
-            InsufficientGas(anyhow::Error),
-        }
-        impl From<anyhow::Error> for AttemptError {
-            fn from(e: anyhow::Error) -> Self {
-                AttemptError::Inner(e)
-            }
-        }
+    ) -> Result<TxResponse, crate::Error> {
+        // enum AttemptError {
+        //     Inner(Infallible),
+        //     InsufficientGas(Infallible),
+        // }
+        // impl From<anyhow::Error> for AttemptError {
+        //     fn from(e: anyhow::Error) -> Self {
+        //         AttemptError::Inner(e)
+        //     }
+        // }
         let body_ref = &body;
         let retry_with_price = |amount| async move {
             let auth_info = AuthInfo {
@@ -1030,33 +1075,33 @@ impl TxBuilder {
                     Action::Broadcast(self.clone()),
                     true,
                 )
-                .await
-                .context("Unable to broadcast transaction")?
+                .await?
                 .into_inner()
                 .tx_response
-                .context("Missing inner tx_response")?;
+                .ok_or_else(|| crate::Error::InvalidChainResponse {
+                    message: "Missing inner tx_response".to_owned(),
+                    action: Action::Broadcast(self.clone()),
+                })?;
 
             if !self.skip_code_check && res.code != 0 {
-                let e = anyhow::anyhow!(
-                    "Initial transaction broadcast failed with code {}. Raw log: {}",
-                    res.code,
-                    res.raw_log
-                );
-                if res.code == 13 {
-                    return Err(AttemptError::InsufficientGas(e));
-                }
-                return Err(AttemptError::Inner(e));
+                return Err(crate::Error::TransactionFailed {
+                    code: res.code,
+                    raw_log: res.raw_log,
+                    action: Action::Broadcast(self.clone()),
+                });
             };
 
             log::debug!("Initial BroadcastTxResponse: {res:?}");
 
-            let (_, res) = cosmos.wait_for_transaction(res.txhash).await?;
+            let (_, res) = cosmos
+                .wait_for_transaction_with_action(res.txhash, Some(Action::Broadcast(self.clone())))
+                .await?;
             if !self.skip_code_check && res.code != 0 {
-                return Err(AttemptError::Inner(anyhow::anyhow!(
-                    "Transaction failed with code {}. Raw log: {}",
-                    res.code,
-                    res.raw_log
-                )));
+                return Err(crate::Error::TransactionFailed {
+                    code: res.code,
+                    raw_log: res.raw_log,
+                    action: Action::Broadcast(self.clone()),
+                });
             };
 
             log::debug!("TxResponse: {res:?}");
@@ -1070,22 +1115,22 @@ impl TxBuilder {
                 .gas_to_coins(gas_to_request, attempt_number)
                 .to_string();
             match retry_with_price(amount).await {
-                Ok(x) => return Ok(x),
-                Err(AttemptError::InsufficientGas(e)) => {
+                Err(crate::Error::TransactionFailed {
+                    code: 13,
+                    raw_log,
+                    action: _,
+                }) => {
                     log::debug!(
-                        "Insufficient gas in attempt #{attempt_number}, retrying. Error: {e:?}"
+                        "Insufficient gas in attempt #{}, retrying. Raw log: {raw_log}",
+                        attempt_number + 1
                     );
                 }
-                Err(AttemptError::Inner(e)) => return Err(e),
+                res => return res,
             }
         }
 
         let amount = cosmos.gas_to_coins(gas_to_request, attempts).to_string();
-        match retry_with_price(amount).await {
-            Ok(x) => Ok(x),
-            Err(AttemptError::InsufficientGas(e)) => Err(e),
-            Err(AttemptError::Inner(e)) => Err(e),
-        }
+        retry_with_price(amount).await
     }
 
     /// Does this transaction have any messages already?
