@@ -134,6 +134,8 @@ pub enum ConnectionError {
         grpc_url: String,
         source: tonic::Status,
     },
+    #[error("Network error occured while performing query to {grpc_url}")]
+    QueryFailed { grpc_url: String },
     #[error("Timeout hit when querying gRPC endpoint {grpc_url}")]
     TimeoutQuery { grpc_url: String },
     #[error("Timeout hit when connecting to gRPC endpoint {grpc_url}")]
@@ -248,30 +250,102 @@ pub enum QueryErrorDetails {
     ConnectionError(ConnectionError),
     #[error("Not found returned from chain: {0}")]
     NotFound(String),
+    #[error("Cosmos SDK error code {error_code} returned: {status:?}")]
+    CosmosSdk {
+        error_code: u32,
+        status: tonic::Status,
+    },
+    #[error("Error parsing message into expected type: {0:?}")]
+    JsonParseError(tonic::Status),
+    #[error("{0:?}")]
+    FailedToExecute(tonic::Status),
+}
+
+pub(crate) enum QueryErrorCategory {
+    /// Should retry, kill the connection
+    NetworkIssue,
+    /// Don't retry, connection is fine
+    ConnectionIsFine,
+    /// No idea, make a test query and try again
+    Unsure,
 }
 
 impl QueryErrorDetails {
     /// Indicates that the error may be transient and deserves a retry.
-    pub(crate) fn should_be_retried(&self) -> bool {
+    pub(crate) fn error_category(&self) -> QueryErrorCategory {
+        use QueryErrorCategory::*;
         match self {
             // Not sure, so give it a retry
-            QueryErrorDetails::Unknown(_) => true,
+            QueryErrorDetails::Unknown(_) => Unsure,
             // Yup, may as well try to connect again.
-            QueryErrorDetails::ConnectionTimeout => true,
+            QueryErrorDetails::ConnectionTimeout => NetworkIssue,
             // Same here, maybe it was a bad connection.
-            QueryErrorDetails::QueryTimeout => true,
+            QueryErrorDetails::QueryTimeout => NetworkIssue,
             // Also possibly a bad connection
-            QueryErrorDetails::ConnectionError(_) => true,
-            QueryErrorDetails::NotFound(_) => false,
+            QueryErrorDetails::ConnectionError(_) => NetworkIssue,
+            QueryErrorDetails::NotFound(_) => ConnectionIsFine,
+            QueryErrorDetails::CosmosSdk { .. } => ConnectionIsFine,
+            QueryErrorDetails::JsonParseError(_) => ConnectionIsFine,
+            QueryErrorDetails::FailedToExecute(_) => ConnectionIsFine,
         }
     }
 
     pub(crate) fn from_tonic_status(err: tonic::Status) -> QueryErrorDetails {
         // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
         if err.message().contains("not found") || err.code() == tonic::Code::NotFound {
-            QueryErrorDetails::NotFound(err.message().to_owned())
-        } else {
-            QueryErrorDetails::Unknown(err)
+            return QueryErrorDetails::NotFound(err.message().to_owned());
         }
+
+        if let Some(error_code) = extract_cosmos_sdk_error_code(err.message()) {
+            return QueryErrorDetails::CosmosSdk {
+                error_code,
+                status: err,
+            };
+        }
+
+        if err.message().starts_with("Error parsing into type ") {
+            return QueryErrorDetails::JsonParseError(err);
+        }
+
+        if err.message().starts_with("failed to execute message;") {
+            return QueryErrorDetails::FailedToExecute(err);
+        }
+
+        QueryErrorDetails::Unknown(err)
+    }
+}
+
+fn extract_cosmos_sdk_error_code(message: &str) -> Option<u32> {
+    message
+        .strip_prefix("codespace wasm code ")?
+        .split_once(':')?
+        .0
+        .parse()
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_success() {
+        assert_eq!(
+            extract_cosmos_sdk_error_code("codespace wasm code 9: query wasm contract failed: Error parsing into type levana_perpswap_cosmos_msg::contracts::market::entry::QueryMsg: unknown variant `{\"invalid_request\":{}}`, expected one of `version`, `status`, `spot_price`, `spot_price_history`, `oracle_price`, `positions`, `limit_order`, `limit_orders`, `closed_position_history`, `nft_proxy`, `liquidity_token_proxy`, `trade_history_summary`, `position_action_history`, `trader_action_history`, `lp_action_history`, `limit_order_history`, `lp_info`, `delta_neutrality_fee`, `price_would_trigger`"),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn test_extract_fail() {
+        assert_eq!(
+            extract_cosmos_sdk_error_code("invalid Bech32 prefix; expected osmo, got inj"),
+            None
+        );
+        assert_eq!(
+            extract_cosmos_sdk_error_code("Error parsing into type levana_perpswap_cosmos_msg::contracts::factory::entry::QueryMsg: unknown variant `{\"invalid_request\":{}}`, expected one of `version`, `markets`, `market_info`, `addr_is_contract`, `factory_owner`, `shutdown_status`, `code_ids`: query wasm contract failed"),
+            None
+
+        );
     }
 }
