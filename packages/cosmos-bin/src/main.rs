@@ -329,7 +329,10 @@ impl Subcommand {
                 height,
             } => {
                 let cosmos = opt.network_opt.build().await?.at_height(height);
-                let x = cosmos.make_contract(address).query_bytes(query).await?;
+                let x = cosmos
+                    .make_contract(address)
+                    .query_rendered_bytes(query)
+                    .await?;
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 stdout.write_all(&x)?;

@@ -204,7 +204,12 @@ impl Contract {
 
     /// Perform a query and return the raw unparsed JSON bytes.
     pub async fn query_bytes(&self, msg: impl serde::Serialize) -> Result<Vec<u8>> {
-        let msg = serde_json::to_vec(&msg)?;
+        self.query_rendered_bytes(serde_json::to_vec(&msg)?).await
+    }
+
+    /// Like [Self::query_bytes], but the provided message is already serialized.
+    pub async fn query_rendered_bytes(&self, msg: impl Into<Vec<u8>>) -> Result<Vec<u8>> {
+        let msg = msg.into();
         let res = self
             .client
             .perform_query(
