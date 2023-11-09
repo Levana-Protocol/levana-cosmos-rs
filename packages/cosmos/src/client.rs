@@ -353,7 +353,7 @@ impl CosmosBuilder {
         let cosmos = self.build_lazy().await;
 
         let resp = cosmos
-            .perform_query(GetLatestBlockRequest {}, Action::GetLatestBlock, false)
+            .perform_query(GetLatestBlockRequest {}, Action::SanityCheck, false)
             .await
             .map_err(|source| BuilderError::SanityQueryFailed { source })?;
 

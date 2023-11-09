@@ -73,7 +73,7 @@ pub enum BuilderError {
         expected: String,
         actual: Option<String>,
     },
-    #[error("Connection sanity check failed: {source:}")]
+    #[error(transparent)]
     SanityQueryFailed { source: QueryError },
 }
 
@@ -225,6 +225,7 @@ pub enum Action {
     ContractHistory(Address),
     GetEarliestBlock,
     WaitForTransaction(String),
+    SanityCheck,
 }
 
 impl Display for Action {
@@ -250,6 +251,7 @@ impl Display for Action {
             Action::ContractHistory(address) => write!(f, "contract history for {address}"),
             Action::GetEarliestBlock => f.write_str("get earliest block"),
             Action::WaitForTransaction(txhash) => write!(f, "wait for transaction {txhash}"),
+            Action::SanityCheck => f.write_str("sanity check"),
         }
     }
 }
