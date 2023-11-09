@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use cosmos::{Address, Cosmos, TxResponseExt};
@@ -30,6 +32,15 @@ pub(crate) enum Subcommand {
         #[clap(long)]
         end_block: Option<i64>,
     },
+    /// Print a CSV file with gas usage in a range of blocks
+    BlockGasReport {
+        #[clap(long)]
+        start_block: i64,
+        #[clap(long)]
+        end_block: i64,
+        #[clap(long)]
+        dest: PathBuf,
+    },
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -47,6 +58,11 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
             start_block,
             end_block,
         } => archive_check(cosmos, start_block, end_block).await,
+        Subcommand::BlockGasReport {
+            start_block,
+            end_block,
+            dest,
+        } => block_gas_report(cosmos, start_block, end_block, &dest).await,
     }
 }
 
@@ -150,5 +166,43 @@ async fn archive_check(cosmos: Cosmos, start_block: i64, end_block: Option<i64>)
             }
         };
     }
+    Ok(())
+}
+
+async fn block_gas_report(
+    cosmos: Cosmos,
+    start_block: i64,
+    end_block: i64,
+    dest: &PathBuf,
+) -> Result<()> {
+    let mut csv = csv::Writer::from_path(dest)?;
+    #[derive(serde::Serialize)]
+    struct Record {
+        block: i64,
+        timestamp: DateTime<Utc>,
+        gas_used: i64,
+        gas_wanted: i64,
+        txcount: usize,
+    }
+    for height in start_block..=end_block {
+        let block = cosmos.get_block_info(height).await?;
+        let mut gas_used = 0;
+        let mut gas_wanted = 0;
+        let txcount = block.txhashes.len();
+        for txhash in block.txhashes {
+            let (_, tx) = cosmos.get_transaction_body(txhash).await?;
+            gas_used += tx.gas_used;
+            gas_wanted += tx.gas_wanted;
+        }
+        csv.serialize(Record {
+            block: block.height,
+            timestamp: block.timestamp,
+            gas_used,
+            gas_wanted,
+            txcount,
+        })?;
+        csv.flush()?;
+    }
+    csv.flush()?;
     Ok(())
 }
