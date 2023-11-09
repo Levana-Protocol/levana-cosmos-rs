@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use cosmos::{Address, Cosmos, TxResponseExt};
+use cosmos::{Address, BlockInfo, Cosmos, TxResponseExt};
 
 #[derive(clap::Parser)]
 pub(crate) struct Opt {
@@ -41,6 +41,8 @@ pub(crate) enum Subcommand {
         #[clap(long)]
         dest: PathBuf,
     },
+    /// Print the latest block info
+    Latest {},
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -63,6 +65,7 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
             end_block,
             dest,
         } => block_gas_report(cosmos, start_block, end_block, &dest).await,
+        Subcommand::Latest {} => latest(cosmos).await,
     }
 }
 
@@ -206,5 +209,23 @@ async fn block_gas_report(
         csv.flush()?;
     }
     csv.flush()?;
+    Ok(())
+}
+
+async fn latest(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
+    let BlockInfo {
+        height,
+        timestamp,
+        txhashes,
+        block_hash,
+        chain_id,
+    } = cosmos.get_latest_block_info().await?;
+    println!("Chain ID: {chain_id}");
+    println!("Height: {height}");
+    println!("Timestamp: {timestamp}");
+    println!("Block hash: {block_hash}");
+    for (idx, txhash) in txhashes.into_iter().enumerate() {
+        println!("Transaction #{}: {txhash}", idx + 1);
+    }
     Ok(())
 }
