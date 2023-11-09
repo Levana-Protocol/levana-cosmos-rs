@@ -24,6 +24,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use parking_lot::Mutex;
+use tokio::time::Instant;
 use tonic::{
     async_trait,
     codegen::InterceptedService,
@@ -57,6 +58,14 @@ pub struct Cosmos {
     pool: Pool<FinalizedCosmosBuilder>,
     finalized: FinalizedCosmosBuilder,
     height: Option<u64>,
+    block_height_tracking: Arc<Mutex<BlockHeightTracking>>,
+}
+
+struct BlockHeightTracking {
+    /// Local time when this block height was observed
+    when: Instant,
+    /// Height that was seen
+    height: i64,
 }
 
 #[derive(Clone)]
@@ -184,9 +193,23 @@ impl Cosmos {
     ) -> Result<tonic::Response<Request::Response>, QueryError> {
         let mut attempt = 0;
         loop {
-            let (err, can_retry) = match self.perform_query_inner(req.clone()).await {
-                Ok(x) => break Ok(x),
-                Err(err) => err,
+            let (err, can_retry, grpc_url) = match self.pool.get().await {
+                Err(err) => {
+                    let err = match err {
+                        bb8::RunError::User(err) => QueryErrorDetails::ConnectionError(err),
+                        bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
+                    };
+                    (err, true, self.get_cosmos_builder().grpc_url_arc().clone())
+                }
+                Ok(mut cosmos_inner) => {
+                    match self
+                        .perform_query_inner(req.clone(), &mut cosmos_inner)
+                        .await
+                    {
+                        Ok(x) => break Ok(x),
+                        Err((err, can_retry)) => (err, can_retry, cosmos_inner.grpc_url.clone()),
+                    }
+                }
             };
             if attempt >= self.finalized.builder.query_retries() || !should_retry || !can_retry {
                 break Err(QueryError {
@@ -194,6 +217,7 @@ impl Cosmos {
                     builder: self.finalized.builder.clone(),
                     height: self.height,
                     query: err,
+                    grpc_url,
                 });
             } else {
                 attempt += 1;
@@ -209,16 +233,8 @@ impl Cosmos {
     async fn perform_query_inner<Request: GrpcRequest>(
         &self,
         req: Request,
+        cosmos_inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Request::Response>, (QueryErrorDetails, bool)> {
-        let mut cosmos_inner = self.pool.get().await.map_err(|err| {
-            (
-                match err {
-                    bb8::RunError::User(e) => QueryErrorDetails::ConnectionError(e),
-                    bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
-                },
-                true,
-            )
-        })?;
         let duration =
             tokio::time::Duration::from_secs(self.finalized.builder.query_timeout_seconds().into());
         let mut req = tonic::Request::new(req.clone());
@@ -227,10 +243,15 @@ impl Cosmos {
             let metadata = req.metadata_mut();
             metadata.insert("x-cosmos-block-height", height.into());
         }
-        let res =
-            tokio::time::timeout(duration, GrpcRequest::perform(req, &mut cosmos_inner)).await;
+        let res = tokio::time::timeout(duration, GrpcRequest::perform(req, cosmos_inner)).await;
         match res {
-            Ok(Ok(x)) => Ok(x),
+            Ok(Ok(res)) => {
+                self.check_block_height(
+                    res.metadata().get("x-cosmos-block-height"),
+                    &cosmos_inner.grpc_url,
+                )?;
+                Ok(res)
+            }
             Ok(Err(status)) => {
                 let err = QueryErrorDetails::from_tonic_status(status);
                 let can_retry = match err.error_category() {
@@ -248,7 +269,7 @@ impl Cosmos {
                         // succeed to determine if it's a network issue or not.
                         match GrpcRequest::perform(
                             tonic::Request::new(GetLatestBlockRequest {}),
-                            &mut cosmos_inner,
+                            cosmos_inner,
                         )
                         .await
                         {
@@ -288,6 +309,93 @@ impl Cosmos {
     /// Get the [CosmosBuilder] used to construct this connection.
     pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
         &self.finalized.builder
+    }
+
+    fn check_block_height(
+        &self,
+        new_height: Option<&tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+        grpc_url: &Arc<String>,
+    ) -> Result<(), (QueryErrorDetails, bool)> {
+        if self.height.is_some() {
+            // Don't do a height check, we're specifically querying historical data.
+            return Ok(());
+        }
+
+        let new_height = match new_height {
+            Some(header_value) => header_value,
+            None => {
+                log::warn!(
+                    "No x-cosmos-block-height response header found on request to {grpc_url}"
+                );
+                return Ok(());
+            }
+        };
+        let new_height = match new_height.to_str() {
+            Ok(new_height) => new_height,
+            Err(err) => {
+                log::warn!("x-cosmos-block-height response header from {grpc_url} does not contain textual data: {err}");
+                return Ok(());
+            }
+        };
+        let new_height: i64 = match new_height.parse() {
+            Ok(new_height) => new_height,
+            Err(err) => {
+                log::warn!("x-cosmos-block-height response header from {grpc_url} is {new_height}, could not parse as i64: {err}");
+                return Ok(());
+            }
+        };
+        let now = Instant::now();
+
+        let mut guard = self.block_height_tracking.lock();
+
+        let BlockHeightTracking {
+            when: prev,
+            height: old_height,
+        } = *guard;
+
+        // We're moving forward so update the tracking and move on.
+        if new_height > old_height {
+            *guard = BlockHeightTracking {
+                when: now,
+                height: new_height,
+            };
+            return Ok(());
+        }
+
+        // Check if we're too many blocks lagging.
+        if old_height - new_height > self.get_cosmos_builder().block_lag_allowed().into() {
+            return Err((
+                QueryErrorDetails::BlocksLagDetected {
+                    old_height,
+                    new_height,
+                    block_lag_allowed: self.get_cosmos_builder().block_lag_allowed(),
+                },
+                true,
+            ));
+        }
+
+        // And now see if it's been too long since we've seen any new blocks.
+        let age = match now.checked_duration_since(prev) {
+            Some(age) => age,
+            None => {
+                log::warn!("Error subtracting two Instants: {now:?} - {prev:?}");
+                return Ok(());
+            }
+        };
+
+        if age > self.get_cosmos_builder().latest_block_age_allowed() {
+            return Err((
+                QueryErrorDetails::NoNewBlockFound {
+                    age,
+                    age_allowed: self.get_cosmos_builder().latest_block_age_allowed(),
+                    old_height,
+                    new_height,
+                },
+                true,
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -401,6 +509,10 @@ impl CosmosBuilder {
             pool,
             finalized,
             height: None,
+            block_height_tracking: Arc::new(Mutex::new(BlockHeightTracking {
+                when: Instant::now(),
+                height: 0,
+            })),
         }
     }
 }
@@ -459,7 +571,7 @@ impl CosmosBuilder {
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: Ok(()),
             grpc_url: grpc_url.clone(),
-            is_fallback
+            is_fallback,
         })
     }
 }

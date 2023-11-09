@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 //! Error types exposed by this package.
 
-use std::{fmt::Display, path::PathBuf, str::FromStr, sync::Arc};
+use std::{fmt::Display, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
@@ -150,12 +150,15 @@ pub struct ContractAdminParseError {
 
 /// Errors that occur while querying the chain.
 #[derive(thiserror::Error, Debug, Clone)]
-#[error("On connection to {}, while performing:\n{action}\n{query}\nHeight set to: {height:?}", builder.grpc_url())]
+#[error(
+    "On connection to {grpc_url}, while performing:\n{action}\n{query}\nHeight set to: {height:?}"
+)]
 pub struct QueryError {
     pub action: Action,
     pub builder: Arc<CosmosBuilder>,
     pub height: Option<u64>,
     pub query: QueryErrorDetails,
+    pub grpc_url: Arc<String>,
 }
 
 /// General errors while interacting with the chain
@@ -316,6 +319,19 @@ pub enum QueryErrorDetails {
     Unimplemented { source: tonic::Status },
     #[error("Transport error with gRPC endpoint. {source}")]
     TransportError { source: tonic::Status },
+    #[error("Block lag detected. Previously saw {old_height}, but just received {new_height}. Allowed lag is {block_lag_allowed}.")]
+    BlocksLagDetected {
+        old_height: i64,
+        new_height: i64,
+        block_lag_allowed: u32,
+    },
+    #[error("No new block time found in {}s ({}s allowed). Old height: {old_height}. New height: {new_height}.", age.as_secs(), age_allowed.as_secs())]
+    NoNewBlockFound {
+        age: Duration,
+        age_allowed: Duration,
+        old_height: i64,
+        new_height: i64,
+    },
 }
 
 pub(crate) enum QueryErrorCategory {
@@ -352,6 +368,8 @@ impl QueryErrorDetails {
             QueryErrorDetails::Unavailable { .. } => NetworkIssue,
             QueryErrorDetails::Unimplemented { .. } => NetworkIssue,
             QueryErrorDetails::TransportError { .. } => NetworkIssue,
+            QueryErrorDetails::BlocksLagDetected { .. } => NetworkIssue,
+            QueryErrorDetails::NoNewBlockFound { .. } => NetworkIssue,
         }
     }
 
