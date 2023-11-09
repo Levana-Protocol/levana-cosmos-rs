@@ -84,7 +84,9 @@ async fn first_block_after(
     );
     anyhow::ensure!(
         latest.timestamp > timestamp,
-        "No blocks exist after {timestamp}"
+        "No blocks exist after {timestamp}, latest block is {}@{}",
+        latest.height,
+        latest.timestamp
     );
     let mut low = earliest.height;
     let mut high = latest.height;

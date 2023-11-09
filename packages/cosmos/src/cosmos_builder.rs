@@ -24,6 +24,8 @@ pub struct CosmosBuilder {
     idle_timeout_seconds: Option<u32>,
     query_timeout_seconds: Option<u32>,
     query_retries: Option<u32>,
+    block_lag_allowed: Option<u32>,
+    latest_block_age_allowed: Option<Duration>,
 }
 
 impl CosmosBuilder {
@@ -52,6 +54,8 @@ impl CosmosBuilder {
             idle_timeout_seconds: None,
             query_timeout_seconds: None,
             query_retries: None,
+            block_lag_allowed: None,
+            latest_block_age_allowed: None,
         }
     }
 
@@ -257,5 +261,36 @@ impl CosmosBuilder {
     /// See [Self::query_retries]
     pub fn set_query_retries(&mut self, query_retries: Option<u32>) {
         self.query_retries = query_retries;
+    }
+
+    /// How many blocks a response is allowed to lag.
+    ///
+    /// Defaults to 10
+    ///
+    /// This is intended to detect when one of the nodes in a load balancer has
+    /// stopped syncing while others are making progress.
+    pub fn block_lag_allowed(&self) -> u32 {
+        self.block_lag_allowed.unwrap_or(10)
+    }
+
+    /// See [Self::block_lag_allowed]
+    pub fn set_block_lag_allowed(&mut self, block_lag_allowed: Option<u32>) {
+        self.block_lag_allowed = block_lag_allowed;
+    }
+
+    /// How long before we expect to see a new block
+    ///
+    /// Defaults to 60 seconds
+    ///
+    /// If we go this amount of time without seeing a new block, queries will
+    /// fail on the assumption that they are getting stale data.
+    pub fn latest_block_age_allowed(&self) -> Duration {
+        self.latest_block_age_allowed
+            .unwrap_or_else(|| Duration::from_secs(60))
+    }
+
+    /// See [Self::latest_block_age_allowed]
+    pub fn set_latest_block_age_allowed(&mut self, latest_block_age_allowed: Option<Duration>) {
+        self.latest_block_age_allowed = latest_block_age_allowed;
     }
 }
