@@ -305,6 +305,15 @@ pub enum QueryErrorDetails {
         lowest_height: Option<i64>,
         source: tonic::Status,
     },
+    #[error("Error querying server, received HTTP status code {status}. {source:?}")]
+    Unavailable {
+        source: tonic::Status,
+        status: reqwest::StatusCode,
+    },
+    #[error("Server does not implement expected services, it may not be a Cosmos gRPC endpoint. {source}")]
+    Unimplemented { source: tonic::Status },
+    #[error("Transport error with gRPC endpoint. {source}")]
+    TransportError { source: tonic::Status },
 }
 
 pub(crate) enum QueryErrorCategory {
@@ -338,6 +347,9 @@ impl QueryErrorDetails {
             // that specific case handled should implement their own fallback
             // logic.
             QueryErrorDetails::HeightNotAvailable { .. } => ConnectionIsFine,
+            QueryErrorDetails::Unavailable { .. } => NetworkIssue,
+            QueryErrorDetails::Unimplemented { .. } => NetworkIssue,
+            QueryErrorDetails::TransportError { .. } => NetworkIssue,
         }
     }
 
@@ -345,6 +357,24 @@ impl QueryErrorDetails {
         // For some reason, it looks like Osmosis testnet isn't returning a NotFound. Ugly workaround...
         if err.message().contains("not found") || err.code() == tonic::Code::NotFound {
             return QueryErrorDetails::NotFound(err.message().to_owned());
+        }
+
+        if err.code() == tonic::Code::Unavailable {
+            let http = err.clone().to_http();
+            return QueryErrorDetails::Unavailable {
+                source: err,
+                status: http.status(),
+            };
+        }
+
+        if err.code() == tonic::Code::Unimplemented {
+            return QueryErrorDetails::Unimplemented { source: err };
+        }
+
+        if let Some(source) = std::error::Error::source(&err) {
+            if source.downcast_ref::<tonic::transport::Error>().is_some() {
+                return QueryErrorDetails::TransportError { source: err };
+            }
         }
 
         if let Some(error_code) = extract_cosmos_sdk_error_code(err.message()) {
