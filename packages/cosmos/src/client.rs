@@ -177,11 +177,29 @@ impl ManageConnection for FinalizedCosmosBuilder {
     }
 
     async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), ConnectionError> {
-        inner.is_broken.clone()
+        if let Err(e) = inner.is_broken.clone() {
+            Err(e)
+        } else if inner.is_fallback_expired() {
+            Err(ConnectionError::DroppingFallbackConnection {
+                grpc_url: inner.grpc_url.clone(),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     fn has_broken(&self, inner: &mut CosmosInner) -> bool {
-        inner.is_broken.is_err()
+        inner.is_broken.is_err() || inner.is_fallback_expired()
+    }
+}
+
+impl CosmosInner {
+    fn is_fallback_expired(&self) -> bool {
+        match self.is_fallback {
+            // Not a fallback, don't expire it
+            None => false,
+            Some(expires_at) => expires_at <= Instant::now(),
+        }
     }
 }
 
@@ -408,7 +426,7 @@ impl CosmosInner {
     ) {
         self.is_broken = Err(err(self.grpc_url.clone()));
         // No point going back to a fallback if it's a fallback that failed.
-        if !self.is_fallback {
+        if self.is_fallback.is_none() {
             finalized.set_use_fallback();
         }
     }
@@ -453,7 +471,13 @@ pub struct CosmosInner {
         >,
     is_broken: Result<(), ConnectionError>,
     grpc_url: Arc<String>,
-    is_fallback: bool,
+    /// If this is a connection to a fallback endpoint, when should it expire?
+    ///
+    /// We always want to try and force the system to go back to primary nodes.
+    /// To do that, for a fallback node, we set an expiration timeout when the
+    /// connection is created and consider the connection dead after that
+    /// timeout.
+    is_fallback: Option<Instant>,
 }
 
 impl CosmosBuilder {
@@ -572,7 +596,18 @@ impl CosmosBuilder {
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: Ok(()),
             grpc_url: grpc_url.clone(),
-            is_fallback,
+            is_fallback: if is_fallback {
+                let now = Instant::now();
+                Some(match now.checked_add(self.fallback_timeout()) {
+                    Some(timeout) => timeout,
+                    None => {
+                        log::warn!("Couldn't add fallback_timeout to current time");
+                        now
+                    }
+                })
+            } else {
+                None
+            },
         })
     }
 }

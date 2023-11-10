@@ -137,6 +137,8 @@ pub enum ConnectionError {
         grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
     },
+    #[error("Dropping a fallback connection to {grpc_url}")]
+    DroppingFallbackConnection { grpc_url: Arc<String> },
 }
 
 /// Error while parsing a [crate::ContractAdmin].

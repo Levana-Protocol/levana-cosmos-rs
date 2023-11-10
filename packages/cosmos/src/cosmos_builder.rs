@@ -26,6 +26,7 @@ pub struct CosmosBuilder {
     query_retries: Option<u32>,
     block_lag_allowed: Option<u32>,
     latest_block_age_allowed: Option<Duration>,
+    fallback_timeout: Option<Duration>,
 }
 
 impl CosmosBuilder {
@@ -56,6 +57,7 @@ impl CosmosBuilder {
             query_retries: None,
             block_lag_allowed: None,
             latest_block_age_allowed: None,
+            fallback_timeout: None,
         }
     }
 
@@ -292,5 +294,20 @@ impl CosmosBuilder {
     /// See [Self::latest_block_age_allowed]
     pub fn set_latest_block_age_allowed(&mut self, latest_block_age_allowed: Option<Duration>) {
         self.latest_block_age_allowed = latest_block_age_allowed;
+    }
+
+    /// How long we allow a fallback connection to last before timing out.
+    ///
+    /// Defaults to 5 minutes.
+    ///
+    /// This forces systems to try to go back to the primary endpoint regularly.
+    pub fn fallback_timeout(&self) -> Duration {
+        self.fallback_timeout
+            .unwrap_or_else(|| Duration::from_secs(300))
+    }
+
+    /// See [Self::fallback_timeout]
+    pub fn set_fallback_timeout(&mut self, fallback_timeout: Option<Duration>) {
+        self.fallback_timeout = fallback_timeout;
     }
 }
