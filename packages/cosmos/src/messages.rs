@@ -1,12 +1,13 @@
 //! Message types provided directly by this library (instead of from the protobufs).
 
-use std::path::PathBuf;
+use std::{fmt::Display, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
         authz::v1beta1::{GenericAuthorization, Grant, MsgExec, MsgGrant},
         bank::v1beta1::MsgSend,
+        base::v1beta1::Coin,
     },
     cosmwasm::wasm::v1::{
         MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgStoreCode,
@@ -203,9 +204,24 @@ impl From<MsgSend> for TxMessage {
             "/cosmos.bank.v1beta1.MsgSend",
             msg.encode_to_vec(),
             format!(
-                "{} sending coins to {}: {:?}",
-                msg.from_address, msg.to_address, msg.amount
+                "{} sending {} to {}",
+                msg.from_address,
+                PrettyCoins(msg.amount.as_slice()),
+                msg.to_address,
             ),
         )
+    }
+}
+
+struct PrettyCoins<'a>(&'a [Coin]);
+impl Display for PrettyCoins<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (idx, Coin { denom, amount }) in self.0.iter().enumerate() {
+            if idx > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{amount}{denom}")?;
+        }
+        Ok(())
     }
 }

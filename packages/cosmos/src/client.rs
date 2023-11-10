@@ -36,7 +36,8 @@ use tonic::{
 use crate::{
     address::HasAddressHrp,
     error::{
-        Action, BuilderError, ConnectionError, QueryError, QueryErrorCategory, QueryErrorDetails,
+        Action, BuilderError, ConnectionError, CosmosSdkError, QueryError, QueryErrorCategory,
+        QueryErrorDetails,
     },
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
@@ -1197,7 +1198,7 @@ impl TxBuilder {
 
             if !self.skip_code_check && res.code != 0 {
                 return Err(crate::Error::TransactionFailed {
-                    code: res.code,
+                    code: res.code.into(),
                     raw_log: res.raw_log,
                     action: Action::Broadcast(self.clone()),
                 });
@@ -1210,7 +1211,7 @@ impl TxBuilder {
                 .await?;
             if !self.skip_code_check && res.code != 0 {
                 return Err(crate::Error::TransactionFailed {
-                    code: res.code,
+                    code: res.code.into(),
                     raw_log: res.raw_log,
                     action: Action::Broadcast(self.clone()),
                 });
@@ -1228,7 +1229,7 @@ impl TxBuilder {
                 .to_string();
             match retry_with_price(amount).await {
                 Err(crate::Error::TransactionFailed {
-                    code: 13,
+                    code: CosmosSdkError::InsufficientFee,
                     raw_log,
                     action: _,
                 }) => {

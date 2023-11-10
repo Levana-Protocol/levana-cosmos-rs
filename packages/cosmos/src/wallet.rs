@@ -380,7 +380,7 @@ impl Wallet {
     pub async fn send_gas_coin(
         &self,
         cosmos: &Cosmos,
-        dest: &impl HasAddress,
+        dest: impl HasAddress,
         amount: u128,
     ) -> Result<TxResponse, crate::Error> {
         self.broadcast_message(
