@@ -292,7 +292,7 @@ pub enum QueryErrorDetails {
     ConnectionTimeout,
     #[error("Query timed out")]
     QueryTimeout,
-    #[error("{0}")]
+    #[error(transparent)]
     ConnectionError(ConnectionError),
     #[error("Not found returned from chain: {0}")]
     NotFound(String),
@@ -334,6 +334,8 @@ pub enum QueryErrorDetails {
         old_height: i64,
         new_height: i64,
     },
+    #[error("Account sequence mismatch: {0}")]
+    AccountSequenceMismatch(tonic::Status),
 }
 
 /// Different known Cosmos SDK error codes
@@ -448,6 +450,8 @@ impl QueryErrorDetails {
             QueryErrorDetails::TransportError { .. } => NetworkIssue,
             QueryErrorDetails::BlocksLagDetected { .. } => NetworkIssue,
             QueryErrorDetails::NoNewBlockFound { .. } => NetworkIssue,
+            // Same logic as CosmosSdk IncorrectAccountSequence above
+            QueryErrorDetails::AccountSequenceMismatch { .. } => NetworkIssue,
         }
     }
 
@@ -488,6 +492,15 @@ impl QueryErrorDetails {
 
         if err.message().starts_with("failed to execute message;") {
             return QueryErrorDetails::FailedToExecute(err);
+        }
+
+        // This seems like a duplicate of Cosmos SDK error code 32. However,
+        // this sometimes happens during the simulate step instead of broadcast,
+        // in which case we don't get the error code. In theory, we could simply
+        // generate a 32 error code value, but keeping it as a separate variant
+        // just in case we need to distinguish the cases.
+        if err.message().starts_with("account sequence mismatch") {
+            return QueryErrorDetails::AccountSequenceMismatch(err);
         }
 
         if let Some(lowest_height) = get_lowest_height(err.message()) {
