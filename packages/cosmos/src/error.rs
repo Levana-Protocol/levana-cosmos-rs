@@ -195,9 +195,9 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("Transaction failed with code {code} and log: {raw_log}. Action: {action}.")]
+    #[error("Transaction failed with {code} and log: {raw_log}. Action: {action}.")]
     TransactionFailed {
-        code: u32,
+        code: CosmosSdkError,
         raw_log: String,
         action: Action,
     },
@@ -296,7 +296,7 @@ pub enum QueryErrorDetails {
     NotFound(String),
     #[error("Cosmos SDK error code {error_code} returned: {source:?}")]
     CosmosSdk {
-        error_code: u32,
+        error_code: CosmosSdkError,
         source: tonic::Status,
     },
     #[error("Error parsing message into expected type: {0:?}")]
@@ -334,6 +334,69 @@ pub enum QueryErrorDetails {
     },
 }
 
+/// Different known Cosmos SDK error codes
+///
+/// We can expand this over time, just including the most common ones for now
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CosmosSdkError {
+    /// Code 4
+    Unauthorized,
+    /// Code 5
+    InsufficientFunds,
+    /// Code 11
+    OutOfGas,
+    /// Code 13
+    InsufficientFee,
+    /// Code 19
+    TxInMempool,
+    /// Code 21
+    TxTooLarge,
+    /// Code 28
+    InvalidChainId,
+    /// Code 30
+    TxTimeoutHeight,
+    /// Code 32
+    IncorrectAccountSequence,
+    /// Some other error code
+    Other(u32),
+}
+
+impl Display for CosmosSdkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            CosmosSdkError::Unauthorized => f.write_str("unauthorized (4)"),
+            CosmosSdkError::InsufficientFunds => f.write_str("insufficient funds (5)"),
+            CosmosSdkError::OutOfGas => f.write_str("out of gas (11)"),
+            CosmosSdkError::InsufficientFee => f.write_str("insufficient fee (13)"),
+            CosmosSdkError::TxInMempool => f.write_str("tx already in mempool (19)"),
+            CosmosSdkError::TxTooLarge => f.write_str("tx too large (21)"),
+            CosmosSdkError::InvalidChainId => f.write_str("invalid chain ID (28)"),
+            CosmosSdkError::TxTimeoutHeight => f.write_str("tx timeout height (30)"),
+            CosmosSdkError::IncorrectAccountSequence => {
+                f.write_str("incorrect account sequence (32)")
+            }
+            CosmosSdkError::Other(code) => write!(f, "Cosmos SDK error {code}"),
+        }
+    }
+}
+
+impl From<u32> for CosmosSdkError {
+    fn from(value: u32) -> Self {
+        match value {
+            4 => Self::Unauthorized,
+            5 => Self::InsufficientFunds,
+            11 => Self::OutOfGas,
+            13 => Self::InsufficientFee,
+            19 => Self::TxInMempool,
+            21 => Self::TxTooLarge,
+            28 => Self::InvalidChainId,
+            30 => Self::TxTimeoutHeight,
+            32 => Self::IncorrectAccountSequence,
+            _ => Self::Other(value),
+        }
+    }
+}
+
 pub(crate) enum QueryErrorCategory {
     /// Should retry, kill the connection
     NetworkIssue,
@@ -357,7 +420,20 @@ impl QueryErrorDetails {
             // Also possibly a bad connection
             QueryErrorDetails::ConnectionError(_) => NetworkIssue,
             QueryErrorDetails::NotFound(_) => ConnectionIsFine,
-            QueryErrorDetails::CosmosSdk { .. } => ConnectionIsFine,
+            QueryErrorDetails::CosmosSdk { error_code, .. } => {
+                match *error_code {
+                    // tx already in mempool usually indicates some kind of a
+                    // node sync issue is occurring, where the node isn't seeing
+                    // new blocks already containing the transaction/sequence
+                    // number.
+                    CosmosSdkError::TxInMempool => NetworkIssue,
+                    // Similar for account sequence errors
+                    CosmosSdkError::IncorrectAccountSequence => NetworkIssue,
+                    // Invalid chain ID, we should try a different node if possible
+                    CosmosSdkError::InvalidChainId => NetworkIssue,
+                    _ => ConnectionIsFine,
+                }
+            }
             QueryErrorDetails::JsonParseError(_) => ConnectionIsFine,
             QueryErrorDetails::FailedToExecute(_) => ConnectionIsFine,
             // Interesting case here... maybe we need to treat it as a network
@@ -399,7 +475,7 @@ impl QueryErrorDetails {
 
         if let Some(error_code) = extract_cosmos_sdk_error_code(err.message()) {
             return QueryErrorDetails::CosmosSdk {
-                error_code,
+                error_code: CosmosSdkError::from(error_code),
                 source: err,
             };
         }

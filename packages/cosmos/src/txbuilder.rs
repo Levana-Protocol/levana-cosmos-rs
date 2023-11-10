@@ -23,7 +23,10 @@ impl Display for TxBuilder {
             writeln!(f, "Memo: {memo}")?;
         }
         for (idx, msg) in self.messages.iter().enumerate() {
-            writeln!(f, "Message {idx}: {}", msg.description)?;
+            write!(f, "Message {idx}: {}", msg.description)?;
+            if idx + 1 < self.messages.len() {
+                writeln!(f)?;
+            }
         }
         Ok(())
     }
