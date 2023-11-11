@@ -901,6 +901,13 @@ impl Cosmos {
             .into_inner();
         BlockInfo::new(action, res.block_id, res.block, None)
     }
+
+    /// Get the most recently seen block height.
+    ///
+    /// If no queries have been made, this will return 0.
+    pub fn get_last_seen_block(&self) -> i64 {
+        self.block_height_tracking.lock().height
+    }
 }
 
 /// Information on a block.
