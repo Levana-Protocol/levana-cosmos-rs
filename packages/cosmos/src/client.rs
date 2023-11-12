@@ -852,8 +852,7 @@ impl Cosmos {
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let low = self.finalized.builder.gas_price_low();
-        let high = self.finalized.builder.gas_price_high();
+        let (low, high) = self.finalized.builder.gas_price();
         let attempts = self.finalized.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {

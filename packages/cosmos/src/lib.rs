@@ -22,6 +22,7 @@ mod contract;
 mod cosmos_builder;
 mod cosmos_network;
 mod ext;
+mod gas_price;
 mod injective;
 mod tokenfactory;
 mod txbuilder;

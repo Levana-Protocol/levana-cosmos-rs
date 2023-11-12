@@ -2,7 +2,7 @@ use std::{fmt::Display, str::FromStr};
 
 use serde::de::Visitor;
 
-use crate::{error::BuilderError, Cosmos, CosmosBuilder, HasAddressHrp};
+use crate::{error::BuilderError, gas_price::GasPriceMethod, Cosmos, CosmosBuilder, HasAddressHrp};
 
 /// A set of known networks.
 ///
@@ -139,14 +139,12 @@ impl CosmosNetwork {
             | CosmosNetwork::StargazeMainnet => (),
             CosmosNetwork::SeiMainnet => {
                 // https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json
-                builder.set_gas_price_low(Some(0.1));
-                builder.set_gas_price_high(Some(0.2));
+                builder.set_gas_price(0.1, 0.2);
                 builder.set_gas_price_retry_attempts(Some(6));
             }
             CosmosNetwork::SeiTestnet => {
                 // https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json
-                builder.set_gas_price_low(Some(0.1));
-                builder.set_gas_price_high(Some(0.2));
+                builder.set_gas_price(0.1, 0.2);
                 builder.set_gas_price_retry_attempts(Some(6));
             }
             CosmosNetwork::JunoLocal | CosmosNetwork::WasmdLocal | CosmosNetwork::OsmosisLocal => {
@@ -155,13 +153,11 @@ impl CosmosNetwork {
             }
             CosmosNetwork::InjectiveTestnet => {
                 // https://github.com/cosmos/chain-registry/blob/master/testnets/injectivetestnet/chain.json
-                builder.set_gas_price_low(Some(500000000.0));
-                builder.set_gas_price_high(Some(900000000.0));
+                builder.set_gas_price(500000000.0, 900000000.0);
             }
             CosmosNetwork::InjectiveMainnet => {
                 // https://github.com/cosmos/chain-registry/blob/master/injective/chain.json
-                builder.set_gas_price_low(Some(500000000.0));
-                builder.set_gas_price_high(Some(900000000.0));
+                builder.set_gas_price(500000000.0, 900000000.0);
             }
         }
     }
@@ -176,7 +172,6 @@ impl CosmosNetwork {
             CosmosNetwork::JunoTestnet
             | CosmosNetwork::JunoMainnet
             | CosmosNetwork::JunoLocal
-            | CosmosNetwork::OsmosisMainnet
             | CosmosNetwork::OsmosisTestnet
             | CosmosNetwork::OsmosisLocal
             | CosmosNetwork::WasmdLocal
@@ -184,6 +179,9 @@ impl CosmosNetwork {
             | CosmosNetwork::StargazeMainnet
             | CosmosNetwork::InjectiveTestnet
             | CosmosNetwork::InjectiveMainnet => Ok(()),
+            CosmosNetwork::OsmosisMainnet => Ok(
+                builder.set_gas_price_method(GasPriceMethod::new_osmosis_mainnet(client).await?)
+            ),
             CosmosNetwork::SeiMainnet => {
                 #[derive(serde::Deserialize)]
                 struct SeiGasConfig {
@@ -201,8 +199,10 @@ impl CosmosNetwork {
                 )
                 .await?;
 
-                builder.set_gas_price_low(Some(gas_config.pacific_1.min_gas_price));
-                builder.set_gas_price_high(Some(gas_config.pacific_1.min_gas_price * 2.0));
+                builder.set_gas_price(
+                    gas_config.pacific_1.min_gas_price,
+                    gas_config.pacific_1.min_gas_price * 2.0,
+                );
                 Ok(())
             }
             CosmosNetwork::SeiTestnet => {
@@ -222,8 +222,10 @@ impl CosmosNetwork {
                 )
                 .await?;
 
-                builder.set_gas_price_low(Some(gas_config.atlantic_2.min_gas_price));
-                builder.set_gas_price_high(Some(gas_config.atlantic_2.min_gas_price * 2.0));
+                builder.set_gas_price(
+                    gas_config.atlantic_2.min_gas_price,
+                    gas_config.atlantic_2.min_gas_price * 2.0,
+                );
                 Ok(())
             }
         }

@@ -1,6 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::AddressHrp;
+use crate::{
+    gas_price::{GasPriceMethod, DEFAULT_GAS_PRICE},
+    AddressHrp,
+};
 
 /// Used to build a [crate::Cosmos].
 #[derive(Clone, Debug)]
@@ -13,8 +16,7 @@ pub struct CosmosBuilder {
 
     // Values with defaults
     gas_estimate_multiplier: Option<f64>,
-    gas_price_low: Option<f64>,
-    gas_price_high: Option<f64>,
+    gas_price_method: Option<GasPriceMethod>,
     gas_price_retry_attempts: Option<u64>,
     transaction_attempts: Option<usize>,
     referer_header: Option<String>,
@@ -44,8 +46,7 @@ impl CosmosBuilder {
             gas_coin: gas_coin.into(),
             hrp,
             gas_estimate_multiplier: None,
-            gas_price_low: None,
-            gas_price_high: None,
+            gas_price_method: None,
             gas_price_retry_attempts: None,
             transaction_attempts: None,
             referer_header: None,
@@ -130,28 +131,19 @@ impl CosmosBuilder {
         self.gas_estimate_multiplier = gas_estimate_multiplier;
     }
 
-    /// Amount of gas coin to send per unit of gas, at the low end.
-    ///
-    /// Default: 0.02
-    pub fn gas_price_low(&self) -> f64 {
-        self.gas_price_low.unwrap_or(0.02)
+    /// Set the lower and upper bounds of gas price.
+    pub fn set_gas_price(&mut self, low: f64, high: f64) {
+        self.gas_price_method = Some(GasPriceMethod::new_static(low, high));
     }
 
-    /// See [Self::gas_price_low]
-    pub fn set_gas_price_low(&mut self, gas_price_low: Option<f64>) {
-        self.gas_price_low = gas_price_low;
+    pub(crate) fn set_gas_price_method(&mut self, method: GasPriceMethod) {
+        self.gas_price_method = Some(method);
     }
 
-    /// Amount of gas coin to send per unit of gas, at the high end.
-    ///
-    /// Default: 0.03
-    pub fn gas_price_high(&self) -> f64 {
-        self.gas_price_high.unwrap_or(0.03)
-    }
-
-    /// See [Self::gas_price_high]
-    pub fn set_gas_price_high(&mut self, gas_price_high: Option<f64>) {
-        self.gas_price_high = gas_price_high;
+    pub(crate) fn gas_price(&self) -> (f64, f64) {
+        self.gas_price_method
+            .as_ref()
+            .map_or(DEFAULT_GAS_PRICE, GasPriceMethod::pair)
     }
 
     /// How many retries at different gas prices should we try before using high
