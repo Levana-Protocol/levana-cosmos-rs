@@ -143,6 +143,11 @@ async fn load_osmosis_gas_price(
         .json()
         .await?;
     let base_fee: f64 = base_fee.parse()?;
+
+    // There seems to be a bug where this endpoint occassionally returns 0. Just
+    // set a minimum.
+    let base_fee = base_fee.max(0.0025);
+
     Ok((base_fee * 2.0, base_fee * 3.0))
 }
 
