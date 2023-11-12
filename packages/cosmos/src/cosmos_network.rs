@@ -179,9 +179,10 @@ impl CosmosNetwork {
             | CosmosNetwork::StargazeMainnet
             | CosmosNetwork::InjectiveTestnet
             | CosmosNetwork::InjectiveMainnet => Ok(()),
-            CosmosNetwork::OsmosisMainnet => Ok(
-                builder.set_gas_price_method(GasPriceMethod::new_osmosis_mainnet(client).await?)
-            ),
+            CosmosNetwork::OsmosisMainnet => {
+                builder.set_gas_price_method(GasPriceMethod::new_osmosis_mainnet(client).await?);
+                Ok(())
+            }
             CosmosNetwork::SeiMainnet => {
                 #[derive(serde::Deserialize)]
                 struct SeiGasConfig {
