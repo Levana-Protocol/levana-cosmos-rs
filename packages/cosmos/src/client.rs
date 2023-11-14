@@ -234,7 +234,9 @@ impl Cosmos {
                     {
                         Ok(x) => break Ok(x),
                         Err((err, can_retry)) => {
-                            cosmos_inner.node.log_query_error(err.clone());
+                            if can_retry {
+                                cosmos_inner.node.log_query_error(err.clone());
+                            }
                             (err, can_retry, cosmos_inner.node.grpc_url.clone())
                         }
                     }
