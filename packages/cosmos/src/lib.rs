@@ -34,6 +34,7 @@ pub mod clap;
 pub mod error;
 
 pub mod messages;
+pub mod osmosis;
 
 /// A result type with our error type provided as the default.
 pub type Result<T, E = Error> = std::result::Result<T, E>;

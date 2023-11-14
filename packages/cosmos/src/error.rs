@@ -231,6 +231,7 @@ pub enum Action {
     GetEarliestBlock,
     WaitForTransaction(String),
     SanityCheck,
+    OsmosisEpochsInfo,
 }
 
 impl Display for Action {
@@ -257,6 +258,7 @@ impl Display for Action {
             Action::GetEarliestBlock => f.write_str("get earliest block"),
             Action::WaitForTransaction(txhash) => write!(f, "wait for transaction {txhash}"),
             Action::SanityCheck => f.write_str("sanity check"),
+            Action::OsmosisEpochsInfo => f.write_str("get Osmosis epochs info"),
         }
     }
 }

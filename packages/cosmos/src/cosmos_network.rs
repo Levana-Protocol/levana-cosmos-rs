@@ -133,10 +133,12 @@ impl CosmosNetwork {
         match self {
             CosmosNetwork::JunoTestnet
             | CosmosNetwork::JunoMainnet
-            | CosmosNetwork::OsmosisMainnet
             | CosmosNetwork::OsmosisTestnet
             | CosmosNetwork::StargazeTestnet
             | CosmosNetwork::StargazeMainnet => (),
+            CosmosNetwork::OsmosisMainnet => {
+                builder.set_osmosis_mainnet_chain_paused();
+            }
             CosmosNetwork::SeiMainnet => {
                 // https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json
                 builder.set_gas_price(0.1, 0.2);

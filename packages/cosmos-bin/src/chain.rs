@@ -43,6 +43,8 @@ pub(crate) enum Subcommand {
     },
     /// Print the latest block info
     Latest {},
+    /// Print Osmosis-specific epoch information.
+    Epoch {},
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -66,6 +68,7 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
             dest,
         } => block_gas_report(cosmos, start_block, end_block, &dest).await,
         Subcommand::Latest {} => latest(cosmos).await,
+        Subcommand::Epoch {} => epoch(cosmos).await,
     }
 }
 
@@ -227,5 +230,13 @@ async fn latest(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
     for (idx, txhash) in txhashes.into_iter().enumerate() {
         println!("Transaction #{}: {txhash}", idx + 1);
     }
+    Ok(())
+}
+
+async fn epoch(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
+    let epoch = cosmos.get_osmosis_epoch_info().await?;
+    println!("{epoch:?}");
+    let epoch = epoch.summarize();
+    println!("{epoch:?}");
     Ok(())
 }
