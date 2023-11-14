@@ -1,3 +1,4 @@
+mod node_chooser;
 mod query;
 
 use std::{
@@ -40,15 +41,18 @@ use tonic::{
 use crate::{
     address::HasAddressHrp,
     error::{
-        Action, BuilderError, ConnectionError, CosmosSdkError, QueryError, QueryErrorCategory,
-        QueryErrorDetails,
+        Action, BuilderError, ConnectionError, CosmosSdkError, NodeHealthReport, QueryError,
+        QueryErrorCategory, QueryErrorDetails,
     },
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
 
-use self::query::GrpcRequest;
+use self::{
+    node_chooser::{Node, NodeChooser, NodeGuard},
+    query::GrpcRequest,
+};
 
 use super::Wallet;
 
@@ -127,72 +131,7 @@ struct BlockHeightTracking {
 #[derive(Clone)]
 struct FinalizedCosmosBuilder {
     builder: Arc<CosmosBuilder>,
-    fallback: Arc<Mutex<FallbackStatus>>,
-}
-
-/// Keeps track of the gRPC fallback status.
-///
-/// Alright, so things are a bit complicated, hopefully this will summarize the
-/// way the whole system works. Our goal is that, when something goes wrong with
-/// our primary gRPC endpoint, we can retry on a new connection targeted at a
-/// different, fallback endpoint. However, we constantly want to try to go back
-/// to the main endpoint, and we never want to use a fallback endpoint if the
-/// primary endpoint is working.
-///
-/// Because of the interaction between failures occurring inside queries and
-/// wanting to use bb8 for connection pooling, we need to be a bit stateful
-/// about tracking fallbacks. The idea is:
-///
-/// * This data structure keeps track of (1) which fallback to use next and (2)
-///   whether our next new connection should try to use a fallback.
-///
-/// * If we get a network error during connection creation or during a query, we
-///   kick in the "use fallback for next connection" logic.
-///
-/// * We only try using a fallback once per `use_fallback` setting, that way we
-///   switch back to trying the main connection quickly.
-///
-/// * Whenever we create a new connection, we check (and clear) the
-///   `use_fallback` flag before trying the main endpoint.
-///
-/// Yes, this is complicated. The connection pooling also means we get some lack
-/// of determinism in how all of this works. However, the theory is that the
-/// downsides are outweighed by the end-user gains of the library simply
-/// continuing to work when there are (hopefully temporary) node outages.
-struct FallbackStatus {
-    /// Next index to use
-    next_index: usize,
-    /// Should our next connection use a fallback URL?
-    use_fallback: bool,
-}
-
-impl FinalizedCosmosBuilder {
-    /// If we should use a fallback next, return it and update internal structures.
-    fn get_fallback_url(&self) -> Option<&Arc<String>> {
-        let fallbacks = self.builder.grpc_fallback_urls();
-        if fallbacks.is_empty() {
-            return None;
-        }
-        let mut guard = self.fallback.lock();
-        if !guard.use_fallback {
-            return None;
-        }
-        let next_index = guard.next_index;
-        assert!(next_index < fallbacks.len());
-        guard.next_index = (guard.next_index + 1) % fallbacks.len();
-
-        // We only try a fallback once before trying the primary again
-        guard.use_fallback = false;
-
-        Some(&fallbacks[next_index])
-    }
-
-    /// Indicate that we should try a fallback for the next connection
-    fn set_use_fallback(&self) {
-        if !self.builder.grpc_fallback_urls().is_empty() {
-            self.fallback.lock().use_fallback = true;
-        }
-    }
+    node_chooser: node_chooser::NodeChooser,
 }
 
 impl std::fmt::Debug for Cosmos {
@@ -212,23 +151,36 @@ impl ManageConnection for FinalizedCosmosBuilder {
     type Error = ConnectionError;
 
     async fn connect(&self) -> Result<Self::Connection, ConnectionError> {
-        match self.get_fallback_url() {
-            None => {
-                match self
-                    .builder
-                    .build_inner(self.builder.grpc_url_arc(), false)
-                    .await
-                {
-                    Ok(cosmos) => Ok(cosmos),
-                    Err(e) => {
-                        // Connection to the primary URL failed, so try a fallback instead.
-                        self.set_use_fallback();
-                        Err(e)
-                    }
-                }
+        let node = self.node_chooser.choose_node();
+
+        // This method can get async dropped if it takes too long to complete,
+        // in which case we'll never end up logging the error and continue to
+        // use the connection. To address that, we use a NodeGuard that, when
+        // dropped, will automatically log a connection error. We use clear
+        // below to handle the case where a cancelation didn't occur.
+        let mut node_guard = NodeGuard::new(node);
+
+        let build = self.builder.build_inner(node);
+        let build = tokio::time::timeout(self.builder.connection_timeout(), build);
+
+        let res = match build.await {
+            Ok(Ok(cosmos)) => Ok(cosmos),
+            Ok(Err(e)) => {
+                node.log_connection_error(e.clone());
+                Err(e)
             }
-            Some(fallback) => self.builder.build_inner(fallback, true).await,
-        }
+            // Timeout case
+            Err(_) => {
+                let err = ConnectionError::TimeoutConnecting {
+                    grpc_url: node.grpc_url.clone(),
+                };
+                node.log_connection_error(err.clone());
+                Err(err)
+            }
+        };
+
+        node_guard.cancel();
+        res
     }
 
     async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), ConnectionError> {
@@ -236,7 +188,7 @@ impl ManageConnection for FinalizedCosmosBuilder {
             Err(e)
         } else if inner.is_fallback_expired() {
             Err(ConnectionError::DroppingFallbackConnection {
-                grpc_url: inner.grpc_url.clone(),
+                grpc_url: inner.node.grpc_url.clone(),
             })
         } else {
             Ok(())
@@ -281,7 +233,10 @@ impl Cosmos {
                         .await
                     {
                         Ok(x) => break Ok(x),
-                        Err((err, can_retry)) => (err, can_retry, cosmos_inner.grpc_url.clone()),
+                        Err((err, can_retry)) => {
+                            cosmos_inner.node.log_query_error(err.clone());
+                            (err, can_retry, cosmos_inner.node.grpc_url.clone())
+                        }
                     }
                 }
             };
@@ -292,6 +247,7 @@ impl Cosmos {
                     height: self.height,
                     query: err,
                     grpc_url,
+                    node_health: self.finalized.node_chooser.health_report(),
                 });
             } else {
                 attempt += 1;
@@ -322,7 +278,7 @@ impl Cosmos {
             Ok(Ok(res)) => {
                 self.check_block_height(
                     res.metadata().get("x-cosmos-block-height"),
-                    &cosmos_inner.grpc_url,
+                    &cosmos_inner.node.grpc_url,
                 )?;
                 Ok(res)
             }
@@ -330,10 +286,8 @@ impl Cosmos {
                 let err = QueryErrorDetails::from_tonic_status(status);
                 let can_retry = match err.error_category() {
                     QueryErrorCategory::NetworkIssue => {
-                        cosmos_inner.set_broken(
-                            |grpc_url| ConnectionError::QueryFailed { grpc_url },
-                            &self.finalized,
-                        );
+                        cosmos_inner
+                            .set_broken(|grpc_url| ConnectionError::QueryFailed { grpc_url });
                         true
                     }
                     QueryErrorCategory::ConnectionIsFine => false,
@@ -355,13 +309,12 @@ impl Cosmos {
                                 // Something went wrong. Don't even bother
                                 // looking at _what_ went wrong, just kill this
                                 // connection and retry.
-                                cosmos_inner.set_broken(
-                                    |grpc_url| ConnectionError::SanityCheckFailed {
+                                cosmos_inner.set_broken(|grpc_url| {
+                                    ConnectionError::SanityCheckFailed {
                                         grpc_url,
                                         source: status,
-                                    },
-                                    &self.finalized,
-                                );
+                                    }
+                                });
                                 true
                             }
                         }
@@ -371,10 +324,7 @@ impl Cosmos {
                 Err((err, can_retry))
             }
             Err(_) => {
-                cosmos_inner.set_broken(
-                    |grpc_url| ConnectionError::TimeoutQuery { grpc_url },
-                    &self.finalized,
-                );
+                cosmos_inner.set_broken(|grpc_url| ConnectionError::TimeoutQuery { grpc_url });
                 Err((QueryErrorDetails::QueryTimeout, true))
             }
         }
@@ -478,16 +428,10 @@ impl Cosmos {
 }
 
 impl CosmosInner {
-    fn set_broken(
-        &mut self,
-        err: impl FnOnce(Arc<String>) -> ConnectionError,
-        finalized: &FinalizedCosmosBuilder,
-    ) {
-        self.is_broken = Err(err(self.grpc_url.clone()));
-        // No point going back to a fallback if it's a fallback that failed.
-        if self.is_fallback.is_none() {
-            finalized.set_use_fallback();
-        }
+    fn set_broken(&mut self, err: impl FnOnce(Arc<String>) -> ConnectionError) {
+        let err = err(self.node.grpc_url.clone());
+        self.is_broken = Err(err.clone());
+        self.node.log_connection_error(err);
     }
 }
 
@@ -531,7 +475,7 @@ pub struct CosmosInner {
         InterceptedService<Channel, CosmosInterceptor>,
     >,
     is_broken: Result<(), ConnectionError>,
-    grpc_url: Arc<String>,
+    node: Node,
     /// If this is a connection to a fallback endpoint, when should it expire?
     ///
     /// We always want to try and force the system to go back to primary nodes.
@@ -579,15 +523,24 @@ impl CosmosBuilder {
         if let Some(count) = builder.connection_count() {
             pool_builder = pool_builder.max_size(count);
         }
-        pool_builder = pool_builder.connection_timeout(builder.connection_timeout());
+
+        // We make the connection timeout a bit longer than the default. The
+        // idea is to allow our own timeout inside the ManageConnection
+        // definition do the timeout so we can log connection errors properly
+        // and promptly.
+        let connection_timeout = builder.connection_timeout();
+        let connection_timeout = connection_timeout
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or(connection_timeout);
+        pool_builder = pool_builder.connection_timeout(connection_timeout);
         if let Some(retry_connection) = builder.retry_connection() {
             pool_builder = pool_builder.retry_connection(retry_connection);
         }
-        let fallback = Arc::new(Mutex::new(FallbackStatus {
-            next_index: 0,
-            use_fallback: false,
-        }));
-        let finalized = FinalizedCosmosBuilder { builder, fallback };
+        let node_chooser = NodeChooser::new(&builder);
+        let finalized = FinalizedCosmosBuilder {
+            builder,
+            node_chooser,
+        };
         let pool = pool_builder
             .build(finalized.clone())
             .await
@@ -608,11 +561,8 @@ impl CosmosBuilder {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(
-        &self,
-        grpc_url: &Arc<String>,
-        is_fallback: bool,
-    ) -> Result<CosmosInner, ConnectionError> {
+    async fn build_inner(&self, node: &Node) -> Result<CosmosInner, ConnectionError> {
+        let grpc_url = &node.grpc_url;
         let grpc_endpoint =
             grpc_url
                 .parse::<Endpoint>()
@@ -661,8 +611,8 @@ impl CosmosBuilder {
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: Ok(()),
-            grpc_url: grpc_url.clone(),
-            is_fallback: if is_fallback {
+            node: node.clone(),
+            is_fallback: if node.is_fallback {
                 let now = Instant::now();
                 Some(match now.checked_add(self.fallback_timeout()) {
                     Some(timeout) => timeout,
@@ -979,6 +929,11 @@ impl Cosmos {
     /// At the moment, this only occurs on Osmosis Mainnet during the epoch.
     pub fn is_chain_paused(&self) -> bool {
         self.chain_paused_status.is_paused()
+    }
+
+    /// Get a node health report
+    pub fn node_health_report(&self) -> NodeHealthReport {
+        self.finalized.node_chooser.health_report()
     }
 }
 
