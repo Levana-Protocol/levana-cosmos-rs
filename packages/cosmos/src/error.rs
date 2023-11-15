@@ -153,7 +153,7 @@ pub struct ContractAdminParseError {
 /// Errors that occur while querying the chain.
 #[derive(thiserror::Error, Debug, Clone)]
 #[error(
-    "On connection to {grpc_url}, while performing:\n{action}\n{query}\nHeight set to: {height:?}"
+    "On connection to {grpc_url}, while performing:\n{action}\n{query}\nHeight set to: {height:?}\n{node_health}"
 )]
 pub struct QueryError {
     pub action: Action,
@@ -161,6 +161,7 @@ pub struct QueryError {
     pub height: Option<u64>,
     pub query: QueryErrorDetails,
     pub grpc_url: Arc<String>,
+    pub node_health: NodeHealthReport,
 }
 
 /// General errors while interacting with the chain
@@ -562,5 +563,53 @@ mod tests {
             None
 
         );
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NodeHealthReport {
+    pub nodes: Vec<SingleNodeHealthReport>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SingleNodeHealthReport {
+    pub grpc_url: Arc<String>,
+    pub is_fallback: bool,
+    pub is_healthy: bool,
+    pub last_error: Option<LastNodeError>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LastNodeError {
+    pub timestamp: DateTime<Utc>,
+    pub age: std::time::Duration,
+    pub error: Arc<String>,
+}
+
+impl Display for NodeHealthReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for node in &self.nodes {
+            writeln!(f, "{node}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for SingleNodeHealthReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Health report for {}. Fallback: {}. Healthy: {}. ",
+            self.grpc_url, self.is_fallback, self.is_healthy
+        )?;
+        match &self.last_error {
+            None => write!(f, "No errors")?,
+            Some(LastNodeError {
+                timestamp,
+                age,
+                error,
+            }) => write!(f, "Last error: {timestamp} ({age:?}): {error}")?,
+        }
+        Ok(())
     }
 }

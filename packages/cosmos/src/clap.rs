@@ -11,6 +11,14 @@ pub struct CosmosOpt {
     /// Optional gRPC endpoint override
     #[clap(long, env = "COSMOS_GRPC", global = true)]
     pub cosmos_grpc: Option<String>,
+    /// Optional gRPC fallback endpoints
+    #[clap(
+        long,
+        env = "COSMOS_GRPC_FALLBACKS",
+        global = true,
+        value_delimiter = ','
+    )]
+    pub cosmos_grpc_fallbacks: Vec<String>,
     /// Optional chain ID override
     #[clap(long, env = "COSMOS_CHAIN_ID", global = true)]
     pub chain_id: Option<String>,
@@ -38,6 +46,7 @@ impl CosmosOpt {
         let CosmosOpt {
             network,
             cosmos_grpc,
+            cosmos_grpc_fallbacks,
             chain_id,
             gas_multiplier,
             referer_header,
@@ -53,6 +62,9 @@ impl CosmosOpt {
         if let Some(grpc) = cosmos_grpc {
             builder.set_grpc_url(grpc);
         }
+        for fallback in cosmos_grpc_fallbacks {
+            builder.add_grpc_fallback_url(fallback);
+        }
         if let Some(chain_id) = chain_id {
             builder.set_chain_id(chain_id);
         }
@@ -65,10 +77,6 @@ impl CosmosOpt {
 
     /// Convenient for calling [CosmosOpt::into_builder] and then [CosmosBuilder::build].
     pub async fn build(self) -> Result<Cosmos, CosmosOptError> {
-        self.into_builder()
-            .await?
-            .build()
-            .await
-            .map_err(|source| CosmosOptError::CosmosBuilderError { source })
+        Ok(self.into_builder().await?.build_lazy().await)
     }
 }
