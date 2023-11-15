@@ -1,13 +1,12 @@
 mod node_chooser;
+mod pool;
 mod query;
 
 use std::{
     str::FromStr,
     sync::{Arc, Weak},
-    time::Duration,
 };
 
-use bb8::{ManageConnection, Pool};
 use chrono::{DateTime, TimeZone, Utc};
 use cosmos_sdk_proto::{
     cosmos::{
@@ -31,7 +30,6 @@ use cosmos_sdk_proto::{
 use parking_lot::Mutex;
 use tokio::time::Instant;
 use tonic::{
-    async_trait,
     codegen::InterceptedService,
     service::Interceptor,
     transport::{Channel, ClientTlsConfig, Endpoint},
@@ -49,10 +47,7 @@ use crate::{
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
 
-use self::{
-    node_chooser::{Node, NodeChooser, NodeGuard},
-    query::GrpcRequest,
-};
+use self::{node_chooser::Node, pool::Pool, query::GrpcRequest};
 
 use super::Wallet;
 
@@ -65,16 +60,14 @@ use super::Wallet;
 /// building a [Cosmos].
 #[derive(Clone)]
 pub struct Cosmos {
-    pool: Pool<FinalizedCosmosBuilder>,
-    finalized: FinalizedCosmosBuilder,
+    pool: Pool,
     height: Option<u64>,
     block_height_tracking: Arc<Mutex<BlockHeightTracking>>,
     pub(crate) chain_paused_status: ChainPausedStatus,
 }
 
 pub(crate) struct WeakCosmos {
-    pool: Pool<FinalizedCosmosBuilder>,
-    finalized: FinalizedCosmosBuilder,
+    pool: Pool,
     height: Option<u64>,
     block_height_tracking: Weak<Mutex<BlockHeightTracking>>,
     chain_paused_status: ChainPausedStatus,
@@ -84,7 +77,6 @@ impl From<&Cosmos> for WeakCosmos {
     fn from(
         Cosmos {
             pool,
-            finalized,
             height,
             block_height_tracking,
             chain_paused_status,
@@ -92,7 +84,6 @@ impl From<&Cosmos> for WeakCosmos {
     ) -> Self {
         WeakCosmos {
             pool: pool.clone(),
-            finalized: finalized.clone(),
             height: *height,
             block_height_tracking: Arc::downgrade(block_height_tracking),
             chain_paused_status: chain_paused_status.clone(),
@@ -104,7 +95,6 @@ impl WeakCosmos {
     pub(crate) fn upgrade(&self) -> Option<Cosmos> {
         let WeakCosmos {
             pool,
-            finalized,
             height,
             block_height_tracking,
             chain_paused_status,
@@ -113,7 +103,6 @@ impl WeakCosmos {
             .upgrade()
             .map(|block_height_tracking| Cosmos {
                 pool: pool.clone(),
-                finalized: finalized.clone(),
                 height: *height,
                 block_height_tracking,
                 chain_paused_status: chain_paused_status.clone(),
@@ -128,85 +117,12 @@ struct BlockHeightTracking {
     height: i64,
 }
 
-#[derive(Clone)]
-struct FinalizedCosmosBuilder {
-    builder: Arc<CosmosBuilder>,
-    node_chooser: node_chooser::NodeChooser,
-}
-
 impl std::fmt::Debug for Cosmos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cosmos")
-            .field("pool", &self.pool)
-            .field("builder", &self.finalized.builder)
+            .field("builder", &self.pool.builder)
             .field("height", &self.height)
             .finish()
-    }
-}
-
-#[async_trait]
-impl ManageConnection for FinalizedCosmosBuilder {
-    type Connection = CosmosInner;
-
-    type Error = ConnectionError;
-
-    async fn connect(&self) -> Result<Self::Connection, ConnectionError> {
-        let node = self.node_chooser.choose_node();
-
-        // This method can get async dropped if it takes too long to complete,
-        // in which case we'll never end up logging the error and continue to
-        // use the connection. To address that, we use a NodeGuard that, when
-        // dropped, will automatically log a connection error. We use clear
-        // below to handle the case where a cancelation didn't occur.
-        let mut node_guard = NodeGuard::new(node);
-
-        let build = self.builder.build_inner(node);
-        let build = tokio::time::timeout(self.builder.connection_timeout(), build);
-
-        let res = match build.await {
-            Ok(Ok(cosmos)) => Ok(cosmos),
-            Ok(Err(e)) => {
-                node.log_connection_error(e.clone());
-                Err(e)
-            }
-            // Timeout case
-            Err(_) => {
-                let err = ConnectionError::TimeoutConnecting {
-                    grpc_url: node.grpc_url.clone(),
-                };
-                node.log_connection_error(err.clone());
-                Err(err)
-            }
-        };
-
-        node_guard.cancel();
-        res
-    }
-
-    async fn is_valid(&self, inner: &mut CosmosInner) -> Result<(), ConnectionError> {
-        if let Err(e) = inner.is_broken.clone() {
-            Err(e)
-        } else if inner.is_fallback_expired() {
-            Err(ConnectionError::DroppingFallbackConnection {
-                grpc_url: inner.node.grpc_url.clone(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn has_broken(&self, inner: &mut CosmosInner) -> bool {
-        inner.is_broken.is_err() || inner.is_fallback_expired()
-    }
-}
-
-impl CosmosInner {
-    fn is_fallback_expired(&self) -> bool {
-        match self.is_fallback {
-            // Not a fallback, don't expire it
-            None => false,
-            Some(expires_at) => expires_at <= Instant::now(),
-        }
     }
 }
 
@@ -220,18 +136,14 @@ impl Cosmos {
         let mut attempt = 0;
         loop {
             let (err, can_retry, grpc_url) = match self.pool.get().await {
-                Err(err) => {
-                    let err = match err {
-                        bb8::RunError::User(err) => QueryErrorDetails::ConnectionError(err),
-                        bb8::RunError::TimedOut => QueryErrorDetails::ConnectionTimeout,
-                    };
-                    (err, true, self.get_cosmos_builder().grpc_url_arc().clone())
-                }
-                Ok(mut cosmos_inner) => {
-                    match self
-                        .perform_query_inner(req.clone(), &mut cosmos_inner)
-                        .await
-                    {
+                Err(err) => (
+                    QueryErrorDetails::ConnectionError(err),
+                    true,
+                    self.get_cosmos_builder().grpc_url_arc().clone(),
+                ),
+                Ok(mut guard) => {
+                    let cosmos_inner = guard.get_inner_mut();
+                    match self.perform_query_inner(req.clone(), cosmos_inner).await {
                         Ok(x) => break Ok(x),
                         Err((err, can_retry)) => {
                             if can_retry {
@@ -242,20 +154,20 @@ impl Cosmos {
                     }
                 }
             };
-            if attempt >= self.finalized.builder.query_retries() || !should_retry || !can_retry {
+            if attempt >= self.pool.builder.query_retries() || !should_retry || !can_retry {
                 break Err(QueryError {
                     action,
-                    builder: self.finalized.builder.clone(),
+                    builder: self.pool.builder.clone(),
                     height: self.height,
                     query: err,
                     grpc_url,
-                    node_health: self.finalized.node_chooser.health_report(),
+                    node_health: self.pool.node_chooser.health_report(),
                 });
             } else {
                 attempt += 1;
                 log::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {err:?}",
-                    self.finalized.builder.query_retries()
+                    self.pool.builder.query_retries()
                 );
             }
         }
@@ -268,7 +180,7 @@ impl Cosmos {
         cosmos_inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Request::Response>, (QueryErrorDetails, bool)> {
         let duration =
-            tokio::time::Duration::from_secs(self.finalized.builder.query_timeout_seconds().into());
+            tokio::time::Duration::from_secs(self.pool.builder.query_timeout_seconds().into());
         let mut req = tonic::Request::new(req.clone());
         if let Some(height) = self.height {
             // https://docs.cosmos.network/v0.47/run-node/interact-node#query-for-historical-state-using-rest
@@ -334,7 +246,7 @@ impl Cosmos {
 
     /// Get the [CosmosBuilder] used to construct this connection.
     pub fn get_cosmos_builder(&self) -> &Arc<CosmosBuilder> {
-        &self.finalized.builder
+        &self.pool.builder
     }
 
     fn check_block_height(
@@ -432,7 +344,7 @@ impl Cosmos {
 impl CosmosInner {
     fn set_broken(&mut self, err: impl FnOnce(Arc<String>) -> ConnectionError) {
         let err = err(self.node.grpc_url.clone());
-        self.is_broken = Err(err.clone());
+        self.is_broken = true;
         self.node.log_connection_error(err);
     }
 }
@@ -476,15 +388,9 @@ pub struct CosmosInner {
     epochs_query_client: crate::osmosis::epochs::query_client::QueryClient<
         InterceptedService<Channel, CosmosInterceptor>,
     >,
-    is_broken: Result<(), ConnectionError>,
+    is_broken: bool,
     node: Node,
-    /// If this is a connection to a fallback endpoint, when should it expire?
-    ///
-    /// We always want to try and force the system to go back to primary nodes.
-    /// To do that, for a fallback node, we set an expiration timeout when the
-    /// connection is created and consider the connection dead after that
-    /// timeout.
-    is_fallback: Option<Instant>,
+    expires: Option<Instant>,
 }
 
 impl CosmosBuilder {
@@ -519,37 +425,8 @@ impl CosmosBuilder {
     pub async fn build_lazy(self) -> Cosmos {
         let builder = Arc::new(self);
         let chain_paused_status = builder.chain_paused_method.into();
-        let mut pool_builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
-            builder.idle_timeout_seconds().into(),
-        )));
-        if let Some(count) = builder.connection_count() {
-            pool_builder = pool_builder.max_size(count);
-        }
-
-        // We make the connection timeout a bit longer than the default. The
-        // idea is to allow our own timeout inside the ManageConnection
-        // definition do the timeout so we can log connection errors properly
-        // and promptly.
-        let connection_timeout = builder.connection_timeout();
-        let connection_timeout = connection_timeout
-            .checked_add(Duration::from_secs(2))
-            .unwrap_or(connection_timeout);
-        pool_builder = pool_builder.connection_timeout(connection_timeout);
-        if let Some(retry_connection) = builder.retry_connection() {
-            pool_builder = pool_builder.retry_connection(retry_connection);
-        }
-        let node_chooser = NodeChooser::new(&builder);
-        let finalized = FinalizedCosmosBuilder {
-            builder,
-            node_chooser,
-        };
-        let pool = pool_builder
-            .build(finalized.clone())
-            .await
-            .expect("Unexpected pool build error");
         let cosmos = Cosmos {
-            pool,
-            finalized,
+            pool: Pool::new(builder).await,
             height: None,
             block_height_tracking: Arc::new(Mutex::new(BlockHeightTracking {
                 when: Instant::now(),
@@ -563,7 +440,11 @@ impl CosmosBuilder {
 }
 
 impl CosmosBuilder {
-    async fn build_inner(&self, node: &Node) -> Result<CosmosInner, ConnectionError> {
+    async fn build_inner(
+        &self,
+        node: &Node,
+        builder: &CosmosBuilder,
+    ) -> Result<CosmosInner, ConnectionError> {
         let grpc_url = &node.grpc_url;
         let grpc_endpoint =
             grpc_url
@@ -595,6 +476,12 @@ impl CosmosBuilder {
 
         let referer_header = self.referer_header().map(|x| x.to_owned());
 
+        let expires = if node.is_fallback {
+            Some(Instant::now() + builder.fallback_timeout())
+        } else {
+            None
+        };
+
         Ok(CosmosInner {
             auth_query_client:
                 cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
@@ -612,20 +499,9 @@ impl CosmosBuilder {
             tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
-            is_broken: Ok(()),
+            is_broken: false,
             node: node.clone(),
-            is_fallback: if node.is_fallback {
-                let now = Instant::now();
-                Some(match now.checked_add(self.fallback_timeout()) {
-                    Some(timeout) => timeout,
-                    None => {
-                        log::warn!("Couldn't add fallback_timeout to current time");
-                        now
-                    }
-                })
-            } else {
-                None
-            },
+            expires
         })
     }
 }
@@ -793,7 +669,7 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse), crate::Error> {
         const DELAY_SECONDS: u64 = 2;
         let txhash = txhash.into();
-        for attempt in 1..=self.finalized.builder.transaction_attempts() {
+        for attempt in 1..=self.pool.builder.transaction_attempts() {
             let txres = self
                 .perform_query(
                     GetTxRequest {
@@ -821,7 +697,7 @@ impl Cosmos {
                 }) => {
                     log::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
-                        self.finalized.builder.transaction_attempts()
+                        self.pool.builder.transaction_attempts()
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(DELAY_SECONDS)).await;
                 }
@@ -870,8 +746,8 @@ impl Cosmos {
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let (low, high) = self.finalized.builder.gas_price();
-        let attempts = self.finalized.builder.gas_price_retry_attempts();
+        let (low, high) = self.pool.builder.gas_price();
+        let attempts = self.pool.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
             high
@@ -935,7 +811,7 @@ impl Cosmos {
 
     /// Get a node health report
     pub fn node_health_report(&self) -> NodeHealthReport {
-        self.finalized.node_chooser.health_report()
+        self.pool.node_chooser.health_report()
     }
 }
 
@@ -1047,7 +923,7 @@ impl TxBuilder {
             simres.body,
             // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
             // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-            (simres.gas_used as f64 * cosmos.finalized.builder.gas_estimate_multiplier()) as u64,
+            (simres.gas_used as f64 * cosmos.pool.builder.gas_estimate_multiplier()) as u64,
         )
         .await
     }
@@ -1226,7 +1102,7 @@ impl TxBuilder {
                 signer_infos: vec![self.make_signer_info(sequence, Some(wallet))],
                 fee: Some(Fee {
                     amount: vec![Coin {
-                        denom: cosmos.finalized.builder.gas_coin().to_owned(),
+                        denom: cosmos.pool.builder.gas_coin().to_owned(),
                         amount,
                     }],
                     gas_limit: gas_to_request,
@@ -1238,7 +1114,7 @@ impl TxBuilder {
             let sign_doc = SignDoc {
                 body_bytes: body_ref.encode_to_vec(),
                 auth_info_bytes: auth_info.encode_to_vec(),
-                chain_id: cosmos.finalized.builder.chain_id().to_owned(),
+                chain_id: cosmos.pool.builder.chain_id().to_owned(),
                 account_number: base_account.account_number,
             };
             let sign_doc_bytes = sign_doc.encode_to_vec();
@@ -1366,7 +1242,6 @@ mod tests {
     async fn lazy_load() {
         let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
         builder.set_query_retries(Some(0));
-        builder.set_retry_connection(Some(false));
         // something that clearly won't work
         builder.set_grpc_url("https://0.0.0.0:0".to_owned());
 

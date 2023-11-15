@@ -137,8 +137,6 @@ pub enum ConnectionError {
         grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
     },
-    #[error("Dropping a fallback connection to {grpc_url}")]
-    DroppingFallbackConnection { grpc_url: Arc<String> },
 }
 
 /// Error while parsing a [crate::ContractAdmin].
@@ -291,8 +289,6 @@ impl Display for StringOrBytes {
 pub enum QueryErrorDetails {
     #[error("Unknown gRPC status returned: {0:?}")]
     Unknown(tonic::Status),
-    #[error("Timed out getting new connection")]
-    ConnectionTimeout,
     #[error("Query timed out")]
     QueryTimeout,
     #[error(transparent)]
@@ -420,8 +416,6 @@ impl QueryErrorDetails {
         match self {
             // Not sure, so give it a retry
             QueryErrorDetails::Unknown(_) => Unsure,
-            // Yup, may as well try to connect again.
-            QueryErrorDetails::ConnectionTimeout => NetworkIssue,
             // Same here, maybe it was a bad connection.
             QueryErrorDetails::QueryTimeout => NetworkIssue,
             // Also possibly a bad connection

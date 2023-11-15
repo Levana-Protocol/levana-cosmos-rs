@@ -20,9 +20,8 @@ pub struct CosmosBuilder {
     gas_price_retry_attempts: Option<u64>,
     transaction_attempts: Option<usize>,
     referer_header: Option<String>,
-    connection_count: Option<u32>,
+    connection_count: Option<usize>,
     connection_timeout: Option<Duration>,
-    retry_connection: Option<bool>,
     idle_timeout_seconds: Option<u32>,
     query_timeout_seconds: Option<u32>,
     query_retries: Option<u32>,
@@ -53,7 +52,6 @@ impl CosmosBuilder {
             referer_header: None,
             connection_count: None,
             connection_timeout: None,
-            retry_connection: None,
             idle_timeout_seconds: None,
             query_timeout_seconds: None,
             query_retries: None,
@@ -186,21 +184,21 @@ impl CosmosBuilder {
         self.referer_header = referer_header;
     }
 
-    /// Set the number of bb8 connections
-    pub fn connection_count(&self) -> Option<u32> {
-        self.connection_count
+    /// The maximum number of connections allowed
+    ///
+    /// Defaults to 10
+    pub fn connection_count(&self) -> usize {
+        self.connection_count.unwrap_or(10)
     }
 
     /// See [Self::connection_count]
-    pub fn set_connection_count(&mut self, connection_count: Option<u32>) {
+    pub fn set_connection_count(&mut self, connection_count: Option<usize>) {
         self.connection_count = connection_count;
     }
 
     /// Sets the duration to wait for a connection.
     ///
     /// Defaults to 5 seconds
-    ///
-    /// See [bb8::Builder::connection_timeout]
     pub fn connection_timeout(&self) -> Duration {
         self.connection_timeout
             .unwrap_or_else(|| Duration::from_secs(5))
@@ -209,16 +207,6 @@ impl CosmosBuilder {
     /// See [Self::connection_timeout]
     pub fn set_connection_timeout(&mut self, connection_timeout: Option<Duration>) {
         self.connection_timeout = connection_timeout;
-    }
-
-    /// See [bb8::Builder::retry_connection]
-    pub fn retry_connection(&self) -> Option<bool> {
-        self.retry_connection
-    }
-
-    /// See [Self::retry_connection]
-    pub fn set_retry_connection(&mut self, retry_connection: Option<bool>) {
-        self.retry_connection = retry_connection;
     }
 
     /// Sets the number of seconds before an idle connection is reaped
