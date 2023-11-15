@@ -122,33 +122,3 @@ impl Node {
         }
     }
 }
-
-/// See ManageConnection impl
-pub(super) struct NodeGuard<'a> {
-    node: &'a Node,
-    is_canceled: bool,
-}
-
-impl<'a> NodeGuard<'a> {
-    pub(super) fn new(node: &'a Node) -> Self {
-        NodeGuard {
-            node,
-            is_canceled: false,
-        }
-    }
-
-    pub(super) fn cancel(&mut self) {
-        self.is_canceled = true;
-    }
-}
-
-impl Drop for NodeGuard<'_> {
-    fn drop(&mut self) {
-        if !self.is_canceled {
-            self.node
-                .log_connection_error(ConnectionError::TimeoutConnecting {
-                    grpc_url: self.node.grpc_url.clone(),
-                })
-        }
-    }
-}
