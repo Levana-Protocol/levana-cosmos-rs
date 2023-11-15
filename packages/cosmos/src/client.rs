@@ -639,7 +639,7 @@ impl Cosmos {
     ) -> Result<(TxBody, TxResponse), crate::Error> {
         let txhash = txhash.into();
         let action = Action::GetTransactionBody(txhash.clone());
-        let txres = self
+        let res = self
             .perform_query(
                 GetTxRequest {
                     hash: txhash.clone(),
@@ -647,9 +647,37 @@ impl Cosmos {
                 action.clone(),
                 true,
             )
-            .await?
-            .into_inner();
-        Self::txres_to_pair(txres, action)
+            .await;
+        match res {
+            Ok(txres) => Self::txres_to_pair(txres.into_inner(), action),
+            Err(e) => {
+                if let QueryErrorDetails::NotFound(_) = &e.query {
+                    for node in self.pool.node_chooser.all_nodes() {
+                        let mut cosmos_inner = match self
+                            .pool
+                            .builder
+                            .build_inner(node, &self.pool.builder)
+                            .await
+                        {
+                            Ok(cosmos_inner) => cosmos_inner,
+                            Err(_) => continue,
+                        };
+                        if let Ok(txres) = self
+                            .perform_query_inner(
+                                GetTxRequest {
+                                    hash: txhash.clone(),
+                                },
+                                &mut cosmos_inner,
+                            )
+                            .await
+                        {
+                            return Self::txres_to_pair(txres.into_inner(), action);
+                        }
+                    }
+                }
+                Err(e.into())
+            }
+        }
     }
 
     /// Wait for a transaction to land on-chain using a busy loop.

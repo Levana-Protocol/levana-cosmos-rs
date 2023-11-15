@@ -63,6 +63,10 @@ impl NodeChooser {
                 .collect(),
         }
     }
+
+    pub(super) fn all_nodes(&self) -> impl Iterator<Item = &Node> {
+        std::iter::once(&self.primary).chain(self.fallbacks.iter())
+    }
 }
 
 #[derive(Clone)]
