@@ -27,7 +27,7 @@ async fn download_proto(paths: &Paths) -> Result<()> {
             dest.to_string_lossy()
         );
 
-        let response = reqwest::get(&url).await?;
+        let response = reqwest::get(&url).await?.error_for_status()?;
         let bytes = response.bytes().await?;
         let mut file = std::fs::File::create(&dest)?;
         file.write_all(&bytes)?;
@@ -45,7 +45,9 @@ fn compile_proto(paths: &Paths) -> Result<()> {
         .map(|p| format!("{}/{}", paths.proto, p.dest()))
         .collect::<Vec<_>>();
 
-    prost_build::compile_protos(&proto_files, &[&paths.proto])?;
+    tonic_build::configure()
+        .build_server(false)
+        .compile(&proto_files, &[&paths.proto])?;
 
     Ok(())
 }
@@ -73,6 +75,7 @@ impl Paths {
 const COSMOS_SDK_VERSION: &str = "v0.47.1";
 const COSMOS_PROTO_VERSION: &str = "v1.0.0-beta.3";
 const OSMOSIS_VERSION: &str = "v15.0.0"; // testnet is behind master
+const OSMOSIS_VERSION_EPOCHS: &str = "5494ad8992810c7385ec8a63e5e9476adf332d4c"; // different file paths on various tags
 const REGEN_VERSION: &str = "v1.3.3-alpha.regen.1";
 const GOOGLE_VERSION: &str = "master";
 
@@ -106,6 +109,10 @@ impl Proto {
                     ProtoTokenFactory::Params => format!("https://raw.githubusercontent.com/osmosis-labs/osmosis/{OSMOSIS_VERSION}/proto/osmosis/tokenfactory/v1beta1/params.proto"),
                     ProtoTokenFactory::Query => format!("https://raw.githubusercontent.com/osmosis-labs/osmosis/{OSMOSIS_VERSION}/proto/osmosis/tokenfactory/v1beta1/query.proto"),
                     ProtoTokenFactory::Tx => format!("https://raw.githubusercontent.com/osmosis-labs/osmosis/{OSMOSIS_VERSION}/proto/osmosis/tokenfactory/v1beta1/tx.proto"),
+                }
+                ProtoOsmosis::Epochs(p) => match p {
+                    ProtoEpochs::Genesis => format!("https://raw.githubusercontent.com/osmosis-labs/osmosis/{OSMOSIS_VERSION_EPOCHS}/proto/osmosis/epochs/v1beta1/genesis.proto"),
+                    ProtoEpochs::Query => format!("https://raw.githubusercontent.com/osmosis-labs/osmosis/{OSMOSIS_VERSION_EPOCHS}/proto/osmosis/epochs/v1beta1/query.proto"),
                 }
             }
         }
@@ -141,6 +148,10 @@ impl Proto {
                     ProtoTokenFactory::Query => format!("osmosis/tokenfactory/v1beta1/query.proto"),
                     ProtoTokenFactory::Tx => format!("osmosis/tokenfactory/v1beta1/tx.proto"),
                 },
+                ProtoOsmosis::Epochs(p) => match p {
+                    ProtoEpochs::Genesis => format!("osmosis/epochs/v1beta1/genesis.proto"),
+                    ProtoEpochs::Query => format!("osmosis/epochs/v1beta1/query.proto"),
+                },
             },
         }
     }
@@ -163,6 +174,8 @@ impl Proto {
             Proto::Osmosis(ProtoOsmosis::TokenFactory(ProtoTokenFactory::Params)),
             Proto::Osmosis(ProtoOsmosis::TokenFactory(ProtoTokenFactory::Query)),
             Proto::Osmosis(ProtoOsmosis::TokenFactory(ProtoTokenFactory::Tx)),
+            Proto::Osmosis(ProtoOsmosis::Epochs(ProtoEpochs::Genesis)),
+            Proto::Osmosis(ProtoOsmosis::Epochs(ProtoEpochs::Query)),
         ]
     }
 }
@@ -190,6 +203,7 @@ enum ProtoGoogle {
 
 enum ProtoOsmosis {
     TokenFactory(ProtoTokenFactory),
+    Epochs(ProtoEpochs),
 }
 
 enum ProtoTokenFactory {
@@ -198,4 +212,9 @@ enum ProtoTokenFactory {
     Params,
     Query,
     Tx,
+}
+
+enum ProtoEpochs {
+    Genesis,
+    Query,
 }

@@ -24,6 +24,8 @@ use cosmos_sdk_proto::{
 };
 use tonic::async_trait;
 
+use crate::osmosis::epochs::{QueryEpochsInfoRequest, QueryEpochsInfoResponse};
+
 use super::CosmosInner;
 
 #[async_trait]
@@ -198,5 +200,16 @@ impl GrpcRequest for QueryGranteeGrantsRequest {
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
         inner.authz_query_client.grantee_grants(req).await
+    }
+}
+
+#[async_trait]
+impl GrpcRequest for QueryEpochsInfoRequest {
+    type Response = QueryEpochsInfoResponse;
+    async fn perform(
+        req: tonic::Request<Self>,
+        inner: &mut CosmosInner,
+    ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
+        inner.epochs_query_client.epoch_infos(req).await
     }
 }

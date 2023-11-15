@@ -29,6 +29,7 @@ pub struct CosmosBuilder {
     block_lag_allowed: Option<u32>,
     latest_block_age_allowed: Option<Duration>,
     fallback_timeout: Option<Duration>,
+    pub(crate) chain_paused_method: ChainPausedMethod,
 }
 
 impl CosmosBuilder {
@@ -59,6 +60,7 @@ impl CosmosBuilder {
             block_lag_allowed: None,
             latest_block_age_allowed: None,
             fallback_timeout: None,
+            chain_paused_method: ChainPausedMethod::None,
         }
     }
 
@@ -302,4 +304,14 @@ impl CosmosBuilder {
     pub fn set_fallback_timeout(&mut self, fallback_timeout: Option<Duration>) {
         self.fallback_timeout = fallback_timeout;
     }
+
+    pub(crate) fn set_osmosis_mainnet_chain_paused(&mut self) {
+        self.chain_paused_method = ChainPausedMethod::OsmosisMainnet;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ChainPausedMethod {
+    None,
+    OsmosisMainnet,
 }

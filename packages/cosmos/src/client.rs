@@ -1,6 +1,10 @@
 mod query;
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    str::FromStr,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use bb8::{ManageConnection, Pool};
 use chrono::{DateTime, TimeZone, Utc};
@@ -39,6 +43,7 @@ use crate::{
         Action, BuilderError, ConnectionError, CosmosSdkError, QueryError, QueryErrorCategory,
         QueryErrorDetails,
     },
+    osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, HasAddress, TxBuilder,
 };
@@ -60,6 +65,56 @@ pub struct Cosmos {
     finalized: FinalizedCosmosBuilder,
     height: Option<u64>,
     block_height_tracking: Arc<Mutex<BlockHeightTracking>>,
+    pub(crate) chain_paused_status: ChainPausedStatus,
+}
+
+pub(crate) struct WeakCosmos {
+    pool: Pool<FinalizedCosmosBuilder>,
+    finalized: FinalizedCosmosBuilder,
+    height: Option<u64>,
+    block_height_tracking: Weak<Mutex<BlockHeightTracking>>,
+    chain_paused_status: ChainPausedStatus,
+}
+
+impl From<&Cosmos> for WeakCosmos {
+    fn from(
+        Cosmos {
+            pool,
+            finalized,
+            height,
+            block_height_tracking,
+            chain_paused_status,
+        }: &Cosmos,
+    ) -> Self {
+        WeakCosmos {
+            pool: pool.clone(),
+            finalized: finalized.clone(),
+            height: *height,
+            block_height_tracking: Arc::downgrade(block_height_tracking),
+            chain_paused_status: chain_paused_status.clone(),
+        }
+    }
+}
+
+impl WeakCosmos {
+    pub(crate) fn upgrade(&self) -> Option<Cosmos> {
+        let WeakCosmos {
+            pool,
+            finalized,
+            height,
+            block_height_tracking,
+            chain_paused_status,
+        } = self;
+        block_height_tracking
+            .upgrade()
+            .map(|block_height_tracking| Cosmos {
+                pool: pool.clone(),
+                finalized: finalized.clone(),
+                height: *height,
+                block_height_tracking,
+                chain_paused_status: chain_paused_status.clone(),
+            })
+    }
 }
 
 struct BlockHeightTracking {
@@ -339,6 +394,10 @@ impl Cosmos {
             // Don't do a height check, we're specifically querying historical data.
             return Ok(());
         }
+        // If the chain is paused, don't do a block height check either
+        if self.chain_paused_status.is_paused() {
+            return Ok(());
+        }
 
         let new_height = match new_height {
             Some(header_value) => header_value,
@@ -465,10 +524,12 @@ pub struct CosmosInner {
         cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
             InterceptedService<Channel, CosmosInterceptor>,
         >,
-    pub(crate) authz_query_client:
-        cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
+    authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
+    >,
+    epochs_query_client: crate::osmosis::epochs::query_client::QueryClient<
+        InterceptedService<Channel, CosmosInterceptor>,
+    >,
     is_broken: Result<(), ConnectionError>,
     grpc_url: Arc<String>,
     /// If this is a connection to a fallback endpoint, when should it expire?
@@ -511,6 +572,7 @@ impl CosmosBuilder {
     /// Create a new [Cosmos] but do not perform any sanity checks.
     pub async fn build_lazy(self) -> Cosmos {
         let builder = Arc::new(self);
+        let chain_paused_status = builder.chain_paused_method.into();
         let mut pool_builder = Pool::builder().idle_timeout(Some(Duration::from_secs(
             builder.idle_timeout_seconds().into(),
         )));
@@ -530,7 +592,7 @@ impl CosmosBuilder {
             .build(finalized.clone())
             .await
             .expect("Unexpected pool build error");
-        Cosmos {
+        let cosmos = Cosmos {
             pool,
             finalized,
             height: None,
@@ -538,7 +600,10 @@ impl CosmosBuilder {
                 when: Instant::now(),
                 height: 0,
             })),
-        }
+            chain_paused_status,
+        };
+        cosmos.launch_chain_paused_tracker();
+        cosmos
     }
 }
 
@@ -593,7 +658,8 @@ impl CosmosBuilder {
             ),
             wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
             tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
-            authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
+            authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
+            epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: Ok(()),
             grpc_url: grpc_url.clone(),
             is_fallback: if is_fallback {
@@ -906,6 +972,13 @@ impl Cosmos {
     /// If no queries have been made, this will return 0.
     pub fn get_last_seen_block(&self) -> i64 {
         self.block_height_tracking.lock().height
+    }
+
+    /// Do we think that the chain is currently paused?
+    ///
+    /// At the moment, this only occurs on Osmosis Mainnet during the epoch.
+    pub fn is_chain_paused(&self) -> bool {
+        self.chain_paused_status.is_paused()
     }
 }
 
