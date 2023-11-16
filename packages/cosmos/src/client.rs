@@ -633,6 +633,9 @@ impl Cosmos {
     }
 
     /// Get a transaction, failing immediately if not present
+    ///
+    /// This will follow normal fallback rules for other queries. You may want
+    /// to try out [Self::get_transaction_with_fallbacks].
     pub async fn get_transaction_body(
         &self,
         txhash: impl Into<String>,
@@ -650,6 +653,59 @@ impl Cosmos {
             .await?
             .into_inner();
         Self::txres_to_pair(txres, action)
+    }
+
+    /// Get a transaction with more aggressive fallback usage.
+    ///
+    /// This is intended to help indexers. A common failure mode in Cosmos is a
+    /// single missing transaction on some nodes. This method will first try to
+    /// get the transaction following normal fallback rules, and if that fails,
+    /// will iterate through all fallbacks.
+    pub async fn get_transaction_with_fallbacks(
+        &self,
+        txhash: impl Into<String>,
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
+        let txhash = txhash.into();
+        let action = Action::GetTransactionBody(txhash.clone());
+        let res = self
+            .perform_query(
+                GetTxRequest {
+                    hash: txhash.clone(),
+                },
+                action.clone(),
+                true,
+            )
+            .await;
+        match res {
+            Ok(txres) => Self::txres_to_pair(txres.into_inner(), action),
+            Err(e) => {
+                if let QueryErrorDetails::NotFound(_) = &e.query {
+                    for node in self.pool.node_chooser.all_nodes() {
+                        let mut cosmos_inner = match self
+                            .pool
+                            .builder
+                            .build_inner(node, &self.pool.builder)
+                            .await
+                        {
+                            Ok(cosmos_inner) => cosmos_inner,
+                            Err(_) => continue,
+                        };
+                        if let Ok(txres) = self
+                            .perform_query_inner(
+                                GetTxRequest {
+                                    hash: txhash.clone(),
+                                },
+                                &mut cosmos_inner,
+                            )
+                            .await
+                        {
+                            return Self::txres_to_pair(txres.into_inner(), action);
+                        }
+                    }
+                }
+                Err(e.into())
+            }
+        }
     }
 
     /// Wait for a transaction to land on-chain using a busy loop.
