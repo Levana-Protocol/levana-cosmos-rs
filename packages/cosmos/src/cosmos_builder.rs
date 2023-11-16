@@ -198,10 +198,16 @@ impl CosmosBuilder {
 
     /// Sets the duration to wait for a connection.
     ///
-    /// Defaults to 5 seconds
+    /// Defaults to 5 seconds if there are no fallbacks, 1.2 seconds if there
+    /// are.
     pub fn connection_timeout(&self) -> Duration {
-        self.connection_timeout
-            .unwrap_or_else(|| Duration::from_secs(5))
+        self.connection_timeout.unwrap_or_else(|| {
+            if self.grpc_fallback_urls.is_empty() {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(1200)
+            }
+        })
     }
 
     /// See [Self::connection_timeout]
