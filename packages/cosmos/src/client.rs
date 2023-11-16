@@ -633,7 +633,35 @@ impl Cosmos {
     }
 
     /// Get a transaction, failing immediately if not present
+    ///
+    /// This will follow normal fallback rules for other queries. You may want
+    /// to try out [Self::get_transaction_with_fallbacks].
     pub async fn get_transaction_body(
+        &self,
+        txhash: impl Into<String>,
+    ) -> Result<(TxBody, TxResponse), crate::Error> {
+        let txhash = txhash.into();
+        let action = Action::GetTransactionBody(txhash.clone());
+        let txres = self
+            .perform_query(
+                GetTxRequest {
+                    hash: txhash.clone(),
+                },
+                action.clone(),
+                true,
+            )
+            .await?
+            .into_inner();
+        Self::txres_to_pair(txres, action)
+    }
+
+    /// Get a transaction with more aggressive fallback usage.
+    ///
+    /// This is intended to help indexers. A common failure mode in Cosmos is a
+    /// single missing transaction on some nodes. This method will first try to
+    /// get the transaction following normal fallback rules, and if that fails,
+    /// will iterate through all fallbacks.
+    pub async fn get_transaction_with_fallbacks(
         &self,
         txhash: impl Into<String>,
     ) -> Result<(TxBody, TxResponse), crate::Error> {
