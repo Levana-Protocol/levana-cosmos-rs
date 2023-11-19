@@ -138,6 +138,10 @@ impl CosmosNetwork {
             | CosmosNetwork::StargazeMainnet => (),
             CosmosNetwork::OsmosisMainnet => {
                 builder.set_osmosis_mainnet_chain_paused();
+                // We need a very wide band on Osmosis gas prices due to bugs in
+                // the EIP fee market mechanism. Do lots of smaller attempts to
+                // avoid overpaying by too much.
+                builder.set_gas_price_retry_attempts(Some(12));
             }
             CosmosNetwork::SeiMainnet => {
                 // https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json

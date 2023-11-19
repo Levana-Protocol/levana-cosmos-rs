@@ -148,7 +148,9 @@ async fn load_osmosis_gas_price(
     // set a minimum.
     let base_fee = base_fee.max(0.0025);
 
-    Ok((base_fee * 2.0, base_fee * 3.0))
+    // Wide range to try and deal with potential bugs in the EIP gas price
+    // mechanism.
+    Ok((base_fee * 2.5, base_fee * 12.0))
 }
 
 #[derive(thiserror::Error, Debug)]
