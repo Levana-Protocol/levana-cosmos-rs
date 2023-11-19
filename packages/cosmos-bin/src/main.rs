@@ -27,6 +27,8 @@ use cosmos::{
     SeedPhrase, TxBuilder, Wallet,
 };
 use parsed_coin::ParsedCoin;
+use tracing::Level;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 /// Command line tool for common Levana NFT activities
 #[derive(clap::Parser)]
@@ -47,13 +49,20 @@ struct Opt {
 }
 
 impl Opt {
-    fn init_logger(&self) {
-        let env = env_logger::Env::default().default_filter_or(if self.verbose {
-            format!("{}=debug,cosmos=debug,info", env!("CARGO_CRATE_NAME"))
-        } else {
-            "info".to_owned()
-        });
-        env_logger::Builder::from_env(env).init();
+    fn init_logger(&self) -> Result<()> {
+        let mut filter = EnvFilter::from_default_env().add_directive(Level::INFO.into());
+
+        if self.verbose {
+            filter = filter.add_directive("cosmos=debug".parse()?);
+            filter = filter.add_directive(format!("{}=debug", env!("CARGO_CRATE_NAME")).parse()?);
+        };
+
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::Layer::default().and_then(filter));
+
+        subscriber.init();
+        tracing::info!("Initialized Logging");
+        Ok(())
     }
 }
 
@@ -76,7 +85,9 @@ impl TxOpt {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cmd = Cmd::parse();
-    cmd.opt.init_logger();
+    cmd.opt.init_logger()?;
+
+    tracing::debug!("Verbose logging enabled");
 
     cmd.subcommand.go(cmd.opt).await
 }
@@ -401,7 +412,7 @@ impl Subcommand {
 
                 println!("Transaction hash: {}", tx.txhash);
                 println!("Raw log: {}", tx.raw_log);
-                log::debug!("{tx:?}");
+                tracing::debug!("{tx:?}");
             }
             Subcommand::GenWallet { address_type } => gen_wallet(address_type)?,
             Subcommand::PrintAddress { hrp, phrase } => {

@@ -151,7 +151,7 @@ async fn new_flex(
             ContractAdmin::Sender,
         )
         .await?;
-    log::info!("Created new CW4-group contract: {cw4}");
+    tracing::info!("Created new CW4-group contract: {cw4}");
 
     // Now create the CW3 using this CW4 as its backing group
     let cw3 = cw3
@@ -171,10 +171,10 @@ async fn new_flex(
             ContractAdmin::Sender,
         )
         .await?;
-    log::info!("Created new CW3-flex contract: {cw3}");
+    tracing::info!("Created new CW3-flex contract: {cw3}");
 
     // Fix permissions
-    log::info!("Fixing permissions on the contracts to make the CW3 the admin");
+    tracing::info!("Fixing permissions on the contracts to make the CW3 the admin");
     let mut builder = TxBuilder::default();
     builder.add_update_contract_admin(&cw3, &wallet, &cw3);
     builder.add_update_contract_admin(&cw4, &wallet, &cw3);
@@ -187,7 +187,7 @@ async fn new_flex(
         },
     )?;
     let res = builder.sign_and_broadcast(&cosmos, &wallet).await?;
-    log::info!("Admin permissions updated in {}", res.txhash);
+    tracing::info!("Admin permissions updated in {}", res.txhash);
 
     Ok(())
 }
@@ -275,7 +275,7 @@ async fn propose(
             },
         )
         .await?;
-    log::info!("Added in {}", res.txhash);
+    tracing::info!("Added in {}", res.txhash);
     Ok(())
 }
 

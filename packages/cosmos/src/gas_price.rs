@@ -83,7 +83,7 @@ impl GasPriceMethod {
         let (low, high) = match load_osmosis_gas_price(client).await {
             Ok(pair) => pair,
             Err(e) => {
-                log::error!(
+                tracing::error!(
                     "Unable to load variable Osmosis mainnet gas price, using defaults: {e}"
                 );
                 DEFAULT_GAS_PRICE
@@ -115,7 +115,7 @@ fn osmosis_too_old(last_triggered: Instant, now: Instant) -> bool {
     match now.checked_duration_since(last_triggered) {
         Some(age) => age.as_secs() > OSMOSIS_TOO_OLD_SECONDS,
         None => {
-            log::warn!("now.checked_duration_since(last_triggered) returned None");
+            tracing::warn!("now.checked_duration_since(last_triggered) returned None");
             false
         }
     }

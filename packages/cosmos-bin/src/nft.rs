@@ -33,7 +33,7 @@ pub(super) async fn go(sub: Subcommand, opt: Opt, cosmos: Cosmos) -> anyhow::Res
                     })
                     .await?;
                 if tokens.is_empty() {
-                    log::info!("No more tokens remaining");
+                    tracing::info!("No more tokens remaining");
                     break;
                 }
                 let count = tokens.len();
@@ -51,7 +51,7 @@ pub(super) async fn go(sub: Subcommand, opt: Opt, cosmos: Cosmos) -> anyhow::Res
                     )?;
                 }
                 let res = builder.sign_and_broadcast(&cosmos, &wallet).await?;
-                log::info!(
+                tracing::info!(
                     "Transferred {count} {} in {}",
                     if count == 1 { "NFT" } else { "NFTs" },
                     res.txhash

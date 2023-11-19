@@ -19,24 +19,24 @@ pub(crate) async fn go(cosmos: Cosmos, raw_wallet: SeedPhrase, cmd: Command) -> 
     match cmd {
         Command::Create { subdenom } => {
             let (resp, denom) = tokenfactory.create(&wallet, subdenom).await?;
-            log::info!("CREATED {denom}, tx hash: {}", resp.txhash);
+            tracing::info!("CREATED {denom}, tx hash: {}", resp.txhash);
         }
 
         Command::Mint { denom, amount } => {
             let resp = tokenfactory.mint(&wallet, denom.clone(), amount).await?;
-            log::info!("MINTED {amount} {denom}, tx hash: {}", resp.txhash);
+            tracing::info!("MINTED {amount} {denom}, tx hash: {}", resp.txhash);
         }
 
         Command::Burn { denom, amount } => {
             let resp = tokenfactory.burn(&wallet, denom.clone(), amount).await?;
-            log::info!("BURNED {amount} {denom}, tx hash: {}", resp.txhash);
+            tracing::info!("BURNED {amount} {denom}, tx hash: {}", resp.txhash);
         }
 
         Command::ChangeAdmin { denom, addr } => {
             let resp = tokenfactory
                 .change_admin(&wallet, denom.clone(), addr.clone())
                 .await?;
-            log::info!(
+            tracing::info!(
                 "CHANGED ADMIN FOR {denom} to {addr}, tx hash: {}",
                 resp.txhash
             );

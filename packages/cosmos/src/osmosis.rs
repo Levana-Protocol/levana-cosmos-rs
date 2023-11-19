@@ -187,7 +187,7 @@ impl WeakCosmos {
                     tokio::time::sleep(to_sleep).await;
                 }
                 Err(err) => {
-                    log::warn!("Error while updating Osmosis epoch information: {err:?}");
+                    tracing::warn!("Error while updating Osmosis epoch information: {err:?}");
                     tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
                 }
             }

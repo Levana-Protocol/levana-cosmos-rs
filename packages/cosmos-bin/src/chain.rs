@@ -96,8 +96,8 @@ async fn first_block_after(
     );
     let mut low = earliest.height;
     let mut high = latest.height;
-    log::debug!("Earliest height {low} at {}", earliest.timestamp);
-    log::debug!("Latest height {high} at {}", latest.timestamp);
+    tracing::debug!("Earliest height {low} at {}", earliest.timestamp);
+    tracing::debug!("Latest height {high} at {}", latest.timestamp);
     loop {
         if low == high || low + 1 == high {
             println!("{high}");
@@ -106,7 +106,7 @@ async fn first_block_after(
         assert!(low < high);
         let mid = (high + low) / 2;
         let info = cosmos.get_block_info(mid).await?;
-        log::debug!(
+        tracing::debug!(
             "Block #{} occurred at timestamp {}",
             info.height,
             info.timestamp
@@ -121,15 +121,15 @@ async fn first_block_after(
 
 async fn account_info(cosmos: Cosmos, address: Address) -> Result<()> {
     let base_account = cosmos.get_base_account(address).await?;
-    log::info!("Account number: {}", base_account.account_number);
-    log::info!("Sequence number: {}", base_account.sequence);
+    tracing::info!("Account number: {}", base_account.account_number);
+    tracing::info!("Sequence number: {}", base_account.sequence);
     Ok(())
 }
 
 async fn code_id_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> {
     let (_, txres) = cosmos.get_transaction_body(txhash).await?;
     let code_id = txres.parse_first_stored_code_id()?;
-    log::info!("Code ID: {code_id}");
+    tracing::info!("Code ID: {code_id}");
     Ok(())
 }
 
@@ -143,7 +143,7 @@ async fn contract_address_from_tx(cosmos: Cosmos, txhash: String) -> Result<()> 
     );
     addrs
         .into_iter()
-        .for_each(|contract| log::info!("Contract address: {contract}"));
+        .for_each(|contract| tracing::info!("Contract address: {contract}"));
     Ok(())
 }
 
@@ -152,24 +152,24 @@ async fn archive_check(cosmos: Cosmos, start_block: i64, end_block: Option<i64>)
         Some(end_block) => end_block,
         None => {
             let end_block = cosmos.get_latest_block_info().await?.height;
-            log::info!("Checking until block height {end_block}");
+            tracing::info!("Checking until block height {end_block}");
             end_block
         }
     };
     anyhow::ensure!(end_block >= start_block);
     for block_height in start_block..=end_block {
-        log::info!("Checking block {block_height}");
+        tracing::info!("Checking block {block_height}");
         match cosmos.get_block_info(block_height).await {
             Ok(block) => {
                 for txhash in block.txhashes {
                     if let Err(e) = cosmos.get_transaction_body(&txhash).await {
-                        log::error!("Error while getting transaction {txhash}: {e:?}");
+                        tracing::error!("Error while getting transaction {txhash}: {e:?}");
                         println!("Missing transaction: {txhash} in block: {block_height}");
                     }
                 }
             }
             Err(e) => {
-                log::error!("Error while processing block {block_height}: {e:?}");
+                tracing::error!("Error while processing block {block_height}: {e:?}");
                 println!("Missing block: {block_height}");
             }
         };

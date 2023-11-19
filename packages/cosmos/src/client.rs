@@ -165,7 +165,7 @@ impl Cosmos {
                 });
             } else {
                 attempt += 1;
-                log::debug!(
+                tracing::debug!(
                     "Error performing a query, retrying. Attempt {attempt} of {}. {err:?}",
                     self.pool.builder.query_retries()
                 );
@@ -266,7 +266,7 @@ impl Cosmos {
         let new_height = match new_height {
             Some(header_value) => header_value,
             None => {
-                log::warn!(
+                tracing::warn!(
                     "No x-cosmos-block-height response header found on request to {grpc_url}"
                 );
                 return Ok(());
@@ -275,14 +275,14 @@ impl Cosmos {
         let new_height = match new_height.to_str() {
             Ok(new_height) => new_height,
             Err(err) => {
-                log::warn!("x-cosmos-block-height response header from {grpc_url} does not contain textual data: {err}");
+                tracing::warn!("x-cosmos-block-height response header from {grpc_url} does not contain textual data: {err}");
                 return Ok(());
             }
         };
         let new_height: i64 = match new_height.parse() {
             Ok(new_height) => new_height,
             Err(err) => {
-                log::warn!("x-cosmos-block-height response header from {grpc_url} is {new_height}, could not parse as i64: {err}");
+                tracing::warn!("x-cosmos-block-height response header from {grpc_url} is {new_height}, could not parse as i64: {err}");
                 return Ok(());
             }
         };
@@ -320,7 +320,7 @@ impl Cosmos {
         let age = match now.checked_duration_since(prev) {
             Some(age) => age,
             None => {
-                log::warn!("Error subtracting two Instants: {now:?} - {prev:?}");
+                tracing::warn!("Error subtracting two Instants: {now:?} - {prev:?}");
                 return Ok(());
             }
         };
@@ -751,7 +751,7 @@ impl Cosmos {
                     query: QueryErrorDetails::NotFound(_),
                     ..
                 }) => {
-                    log::debug!(
+                    tracing::debug!(
                         "Transaction {txhash} not ready, attempt #{attempt}/{}",
                         self.pool.builder.transaction_attempts()
                     );
@@ -950,7 +950,7 @@ impl TxBuilder {
                 Ok(account) => account.sequence,
                 Err(err) => {
                     if err.to_string().contains("not found") {
-                        log::warn!(
+                        tracing::warn!(
                             "Simulating with a non-existent wallet. Setting sequence number to 0"
                         );
                         0
@@ -1207,7 +1207,7 @@ impl TxBuilder {
                 });
             };
 
-            log::debug!("Initial BroadcastTxResponse: {res:?}");
+            tracing::debug!("Initial BroadcastTxResponse: {res:?}");
 
             let (_, res) = cosmos
                 .wait_for_transaction_with_action(res.txhash, Some(Action::Broadcast(self.clone())))
@@ -1220,7 +1220,7 @@ impl TxBuilder {
                 });
             };
 
-            log::debug!("TxResponse: {res:?}");
+            tracing::debug!("TxResponse: {res:?}");
 
             Ok(res)
         };
@@ -1236,7 +1236,7 @@ impl TxBuilder {
                     raw_log,
                     action: _,
                 }) => {
-                    log::debug!(
+                    tracing::debug!(
                         "Insufficient gas in attempt #{}, retrying. Raw log: {raw_log}",
                         attempt_number + 1
                     );

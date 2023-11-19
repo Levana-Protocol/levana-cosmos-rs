@@ -93,7 +93,7 @@ pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
             duration,
         } => {
             let expiration = Utc::now() + duration.into_chrono_duration()?;
-            log::debug!("Setting expiration to {expiration}");
+            tracing::debug!("Setting expiration to {expiration}");
             cw3_grant(granter, grantee, expiration, grant_type)?;
         }
         Subcommand::GranterGrants { granter } => granter_grants(cosmos, granter).await?,
@@ -162,7 +162,7 @@ async fn grant(
         expiration: Some(expiration),
     })?;
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
-    log::info!("Granted in {}", res.txhash);
+    tracing::info!("Granted in {}", res.txhash);
     Ok(())
 }
 
@@ -204,7 +204,7 @@ fn into_base64(msg: &[u8]) -> String {
 
 async fn granter_grants(cosmos: Cosmos, granter: Address) -> Result<()> {
     for x in cosmos.query_granter_grants(granter).await? {
-        log::info!("{x:?}");
+        tracing::info!("{x:?}");
     }
     Ok(())
 }
@@ -212,8 +212,8 @@ async fn granter_grants(cosmos: Cosmos, granter: Address) -> Result<()> {
 async fn store_code(cosmos: Cosmos, tx_opt: TxOpt, path: &Path, granter: Address) -> Result<()> {
     let wallet = tx_opt.get_wallet(cosmos.get_address_hrp())?;
     let (res, code_id) = cosmos.store_code_path_authz(&wallet, path, granter).await?;
-    log::info!("Executed in {}", res.txhash);
-    log::info!("Code ID: {}", code_id);
+    tracing::info!("Executed in {}", res.txhash);
+    tracing::info!("Code ID: {}", code_id);
     Ok(())
 }
 
@@ -249,6 +249,6 @@ async fn execute_contract(
     };
     txbuilder.add_message(msg);
     let res = txbuilder.sign_and_broadcast(&cosmos, &wallet).await?;
-    log::info!("Executed in {}", res.txhash);
+    tracing::info!("Executed in {}", res.txhash);
     Ok(())
 }
