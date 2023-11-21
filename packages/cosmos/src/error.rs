@@ -200,7 +200,7 @@ pub enum Error {
     TransactionFailed {
         code: CosmosSdkError,
         raw_log: String,
-        action: Action,
+        action: Arc<Action>,
         grpc_url: Arc<String>,
         stage: TransactionStage,
     },

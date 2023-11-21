@@ -1218,7 +1218,7 @@ impl TxBuilder {
                 return Err(crate::Error::TransactionFailed {
                     code: res.code.into(),
                     raw_log: res.raw_log,
-                    action: Action::Broadcast(self.clone()),
+                    action: Action::Broadcast(self.clone()).into(),
                     grpc_url,
                     stage: crate::error::TransactionStage::Broadcast,
                 });
@@ -1233,7 +1233,7 @@ impl TxBuilder {
                 return Err(crate::Error::TransactionFailed {
                     code: res.code.into(),
                     raw_log: res.raw_log,
-                    action: Action::Broadcast(self.clone()),
+                    action: Action::Broadcast(self.clone()).into(),
                     grpc_url,
                     stage: crate::error::TransactionStage::Wait,
                 });
