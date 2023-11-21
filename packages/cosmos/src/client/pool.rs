@@ -136,16 +136,10 @@ struct IdleCleanup {
 
 impl IdleCleanup {
     fn trigger(&self) {
-        match self.send.try_send(()) {
-            Ok(()) => (),
-            Err(e) => match e {
-                // It's OK if we're full...
-                tokio::sync::mpsc::error::TrySendError::Full(_) => (),
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                    unreachable!("IdleCleanup::trigger: channel is closed")
-                }
-            },
-        }
+        // Ignore errors. If it's because the channel is full: no big deal,
+        // that's by design. If it's closed: this can happen during cleanup of
+        // an application.
+        self.send.try_send(()).ok();
     }
 
     async fn new(builder: &CosmosBuilder, idle: Arc<Mutex<Vec<IdleConn>>>) -> Self {
