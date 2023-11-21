@@ -196,12 +196,29 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("Transaction failed with {code} and log: {raw_log}. Action: {action}.")]
+    #[error("Transaction failed ({grpc_url}) during {stage} with {code} and log: {raw_log}. Action: {action}.")]
     TransactionFailed {
         code: CosmosSdkError,
         raw_log: String,
         action: Action,
+        grpc_url: Arc<String>,
+        stage: TransactionStage,
     },
+}
+
+#[derive(Debug)]
+pub enum TransactionStage {
+    Broadcast,
+    Wait,
+}
+
+impl Display for TransactionStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            TransactionStage::Broadcast => "broadcast",
+            TransactionStage::Wait => "wait",
+        })
+    }
 }
 
 /// The action being performed when an error occurred.

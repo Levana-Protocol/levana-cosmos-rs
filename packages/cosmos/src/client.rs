@@ -126,13 +126,23 @@ impl std::fmt::Debug for Cosmos {
     }
 }
 
+pub(crate) struct PerformQueryWrapper<Res> {
+    pub(crate) grpc_url: Arc<String>,
+    pub(crate) tonic: tonic::Response<Res>,
+}
+impl<Res> PerformQueryWrapper<Res> {
+    pub(crate) fn into_inner(self) -> Res {
+        self.tonic.into_inner()
+    }
+}
+
 impl Cosmos {
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
         action: Action,
         should_retry: bool,
-    ) -> Result<tonic::Response<Request::Response>, QueryError> {
+    ) -> Result<PerformQueryWrapper<Request::Response>, QueryError> {
         let mut attempt = 0;
         loop {
             let (err, can_retry, grpc_url) = match self.pool.get().await {
@@ -144,7 +154,12 @@ impl Cosmos {
                 Ok(mut guard) => {
                     let cosmos_inner = guard.get_inner_mut();
                     match self.perform_query_inner(req.clone(), cosmos_inner).await {
-                        Ok(x) => break Ok(x),
+                        Ok(x) => {
+                            break Ok(PerformQueryWrapper {
+                                grpc_url: cosmos_inner.node.grpc_url.clone(),
+                                tonic: x,
+                            })
+                        }
                         Err((err, can_retry)) => {
                             if can_retry {
                                 cosmos_inner.node.log_query_error(err.clone());
@@ -1182,7 +1197,7 @@ impl TxBuilder {
                 signatures: vec![signature.serialize_compact().to_vec()],
             };
 
-            let res = cosmos
+            let PerformQueryWrapper { grpc_url, tonic } = cosmos
                 .perform_query(
                     BroadcastTxRequest {
                         tx_bytes: tx.encode_to_vec(),
@@ -1191,19 +1206,21 @@ impl TxBuilder {
                     Action::Broadcast(self.clone()),
                     true,
                 )
-                .await?
-                .into_inner()
-                .tx_response
-                .ok_or_else(|| crate::Error::InvalidChainResponse {
+                .await?;
+            let res = tonic.into_inner().tx_response.ok_or_else(|| {
+                crate::Error::InvalidChainResponse {
                     message: "Missing inner tx_response".to_owned(),
                     action: Action::Broadcast(self.clone()),
-                })?;
+                }
+            })?;
 
             if !self.skip_code_check && res.code != 0 {
                 return Err(crate::Error::TransactionFailed {
                     code: res.code.into(),
                     raw_log: res.raw_log,
                     action: Action::Broadcast(self.clone()),
+                    grpc_url,
+                    stage: crate::error::TransactionStage::Broadcast,
                 });
             };
 
@@ -1217,6 +1234,8 @@ impl TxBuilder {
                     code: res.code.into(),
                     raw_log: res.raw_log,
                     action: Action::Broadcast(self.clone()),
+                    grpc_url,
+                    stage: crate::error::TransactionStage::Wait,
                 });
             };
 
@@ -1235,6 +1254,8 @@ impl TxBuilder {
                     code: CosmosSdkError::InsufficientFee,
                     raw_log,
                     action: _,
+                    grpc_url: _,
+                    stage: _,
                 }) => {
                     tracing::debug!(
                         "Insufficient gas in attempt #{}, retrying. Raw log: {raw_log}",
