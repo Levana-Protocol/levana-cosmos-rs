@@ -1,3 +1,5 @@
+//! Gas price query for osmosis mainnet from lcd endpoint /osmosis/txfees/v1beta1/cur_eip_base_fee
+
 use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
 use parking_lot::RwLock;
@@ -128,9 +130,19 @@ struct OsmosisGasPrice {
     last_triggered: Instant,
 }
 
-async fn load_osmosis_gas_price(
+pub(crate) async fn load_osmosis_gas_price(
     client: &reqwest::Client,
 ) -> Result<(f64, f64), LoadOsmosisGasPriceError> {
+    let base_fee = load_osmosis_gas_base_fee(client).await?;
+    // Wide range to try and deal with potential bugs in the EIP gas price
+    // mechanism.
+    Ok((base_fee * 2.5, base_fee * 12.0))
+}
+
+/// Loads current eip base fee from a v1beta1 lcd endpoint
+pub async fn load_osmosis_gas_base_fee(
+    client: &reqwest::Client,
+) -> Result<f64, LoadOsmosisGasPriceError> {
     #[derive(serde::Deserialize)]
     struct BaseFee {
         base_fee: String,
@@ -148,15 +160,16 @@ async fn load_osmosis_gas_price(
     // set a minimum.
     let base_fee = base_fee.max(0.0025);
 
-    // Wide range to try and deal with potential bugs in the EIP gas price
-    // mechanism.
-    Ok((base_fee * 2.5, base_fee * 12.0))
+    Ok(base_fee)
 }
 
 #[derive(thiserror::Error, Debug)]
-enum LoadOsmosisGasPriceError {
+/// Verbose error for the gas price base fee request
+pub enum LoadOsmosisGasPriceError {
     #[error(transparent)]
+    /// Reqwest error
     Reqwest(#[from] reqwest::Error),
     #[error(transparent)]
+    /// Parse error
     Parse(#[from] ParseFloatError),
 }
