@@ -30,7 +30,7 @@ use parsed_coin::ParsedCoin;
 use tracing::Level;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-/// Command line tool for common Levana NFT activities
+/// Command line tool for interacting with Cosmos chains
 #[derive(clap::Parser)]
 struct Cmd {
     #[clap(flatten)]
@@ -527,7 +527,7 @@ impl Subcommand {
                 clap_complete::generate(
                     shell,
                     &mut Subcommand::command(),
-                    "levana",
+                    "cosmos",
                     &mut std::io::stdout(),
                 );
             }
