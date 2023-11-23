@@ -57,8 +57,11 @@ impl Opt {
             filter = filter.add_directive(format!("{}=debug", env!("CARGO_CRATE_NAME")).parse()?);
         };
 
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::Layer::default().and_then(filter));
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::Layer::default()
+                .with_writer(std::io::stderr)
+                .and_then(filter),
+        );
 
         subscriber.init();
         tracing::info!("Initialized Logging");
