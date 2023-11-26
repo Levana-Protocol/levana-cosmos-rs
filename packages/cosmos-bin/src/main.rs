@@ -64,7 +64,6 @@ impl Opt {
         );
 
         subscriber.init();
-        tracing::info!("Initialized Logging");
         Ok(())
     }
 }
