@@ -144,7 +144,7 @@ impl From<MsgInstantiateContract> for TxMessage {
             "/cosmwasm.wasm.v1.MsgInstantiateContract",
             msg.encode_to_vec(),
             format!(
-                "{} instntiating code ID {} with label {} and message: {}",
+                "{} instantiating code ID {} with label {} and message: {}",
                 msg.sender,
                 msg.code_id,
                 msg.label,
