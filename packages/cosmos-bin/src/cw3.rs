@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
-use cosmos::{Address, ContractAdmin, Cosmos, HasAddress, HasAddressHrp, TxBuilder};
+use cosmos::{
+    proto::cosmos::bank::v1beta1::MsgSend, Address, ContractAdmin, Cosmos, HasAddress,
+    HasAddressHrp, TxBuilder,
+};
 use cosmwasm_std::{to_binary, CosmosMsg, Decimal, Empty, WasmMsg};
 use cw3::{ProposalListResponse, ProposalResponse};
 use cw4::Member;
 use cw_utils::Threshold;
 
-use crate::{my_duration::MyDuration, TxOpt};
+use crate::{my_duration::MyDuration, parsed_coin::ParsedCoin, TxOpt};
 
 #[derive(Clone, Copy, Debug)]
 enum ContractType {
@@ -77,6 +80,11 @@ enum Subcommand {
         #[clap(flatten)]
         inner: MigrateContractOpt,
     },
+    /// Generate a message for a CW3 to send coins
+    SendCoinsMessage {
+        #[clap(flatten)]
+        inner: SendCoinsOpt,
+    },
 }
 
 pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
@@ -89,6 +97,7 @@ pub(crate) async fn go(cosmos: Cosmos, Opt { sub }: Opt) -> Result<()> {
         Subcommand::Execute { inner } => execute(cosmos, inner).await,
         Subcommand::WasmExecuteMessage { inner } => wasm_execute_message(inner),
         Subcommand::MigrateContractMessage { inner } => migrate_contract_message(inner),
+        Subcommand::SendCoinsMessage { inner } => send_coins_message(&cosmos, inner).await,
     }
 }
 
@@ -442,5 +451,47 @@ fn migrate_contract_message(
         msg: to_binary(&message)?,
     });
     println!("{}", serde_json::to_string(&msg)?);
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+struct SendCoinsOpt {
+    /// Destination address
+    #[clap(long)]
+    recipient: Address,
+    /// Coins to send
+    coins: Vec<ParsedCoin>,
+    /// Address to send from, for simulating the transaction
+    #[clap(long)]
+    cw3: Address,
+}
+
+async fn send_coins_message(
+    cosmos: &Cosmos,
+    SendCoinsOpt {
+        recipient,
+        coins,
+        cw3,
+    }: SendCoinsOpt,
+) -> Result<()> {
+    let msg = CosmosMsg::<Empty>::Bank(cosmwasm_std::BankMsg::Send {
+        to_address: recipient.get_address_string(),
+        amount: coins.iter().cloned().map(|x| x.into()).collect(),
+    });
+    println!("{}", serde_json::to_string(&msg)?);
+
+    let mut tx = TxBuilder::default();
+    tx.add_message(MsgSend {
+        from_address: cw3.get_address_string(),
+        to_address: recipient.get_address_string(),
+        amount: coins.into_iter().map(|x| x.into()).collect(),
+    });
+    match tx.simulate(&cosmos, &[cw3.get_address()]).await {
+        Ok(res) => {
+            tracing::info!("Simulation was successful");
+            tracing::debug!("{:?}", res);
+        }
+        Err(e) => tracing::error!("Unable to simulate transaction: {e:?}"),
+    }
     Ok(())
 }

@@ -20,6 +20,15 @@ impl From<ParsedCoin> for Coin {
     }
 }
 
+impl From<ParsedCoin> for cosmwasm_std::Coin {
+    fn from(ParsedCoin { denom, amount }: ParsedCoin) -> Self {
+        Self {
+            denom,
+            amount: amount.into(),
+        }
+    }
+}
+
 // Regex to capture the amount and denom of a coin.
 // ^ - start of string
 // (\d+) - first capture group, the amount: one or more digits
