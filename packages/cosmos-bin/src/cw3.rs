@@ -486,7 +486,7 @@ async fn send_coins_message(
         to_address: recipient.get_address_string(),
         amount: coins.into_iter().map(|x| x.into()).collect(),
     });
-    match tx.simulate(&cosmos, &[cw3.get_address()]).await {
+    match tx.simulate(cosmos, &[cw3.get_address()]).await {
         Ok(res) => {
             tracing::info!("Simulation was successful");
             tracing::debug!("{:?}", res);
