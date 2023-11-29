@@ -188,7 +188,7 @@ fn cw3_grant(
     }
 
     let stargate = Msg::Stargate {
-        type_url: any.type_url,
+        type_url: "/cosmos.authz.v1beta1.MsgGrant".to_owned(),
         value: into_base64(&any.value),
     };
 
