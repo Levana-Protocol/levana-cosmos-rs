@@ -73,6 +73,11 @@ pub(crate) struct WeakCosmos {
     chain_paused_status: ChainPausedStatus,
 }
 
+pub struct CosmosTxResponse {
+    pub response: TxResponse,
+    pub tx: Tx,
+}
+
 impl From<&Cosmos> for WeakCosmos {
     fn from(
         Cosmos {
@@ -999,6 +1004,24 @@ impl TxBuilder {
         .await
     }
 
+    /// Same as sign_and_broadcast but returns [CosmosTxResponse]
+    pub async fn sign_and_broadcast_cosmos_tx(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+    ) -> Result<CosmosTxResponse, crate::Error> {
+        let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
+        self.inner_sign_and_broadcast_cosmos(
+            cosmos,
+            wallet,
+            simres.body,
+            // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+            // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
+            (simres.gas_used as f64 * cosmos.pool.builder.gas_estimate_multiplier()) as u64,
+        )
+        .await
+    }
+
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
     /// unlike sign_and_broadcast(), the gas amount is explicit here and therefore no simulation is run
     pub async fn sign_and_broadcast_with_gas(
@@ -1011,6 +1034,25 @@ impl TxBuilder {
             .await
     }
 
+    /// Same as [sign_and_broadcast_with_gas] but returns [CosmosTxResponse]
+    pub async fn sign_and_broadcast_with_cosmos_gas(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+        gas_to_request: u64,
+    ) -> Result<CosmosTxResponse, crate::Error> {
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
+        self.sign_and_broadcast_with_inner(
+            cosmos,
+            wallet,
+            &base_account,
+            base_account.sequence,
+            self.make_tx_body(),
+            gas_to_request,
+        )
+        .await
+    }
+
     async fn inner_sign_and_broadcast(
         &self,
         cosmos: &Cosmos,
@@ -1021,6 +1063,26 @@ impl TxBuilder {
         let base_account = cosmos.get_base_account(wallet.get_address()).await?;
 
         self.sign_and_broadcast_with(
+            cosmos,
+            wallet,
+            &base_account,
+            base_account.sequence,
+            body.clone(),
+            gas_to_request,
+        )
+        .await
+    }
+
+    async fn inner_sign_and_broadcast_cosmos(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+        body: TxBody,
+        gas_to_request: u64,
+    ) -> Result<CosmosTxResponse, crate::Error> {
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
+
+        self.sign_and_broadcast_with_cosmos_tx(
             cosmos,
             wallet,
             &base_account,
@@ -1158,6 +1220,47 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse, crate::Error> {
+        self.sign_and_broadcast_with_inner(
+            cosmos,
+            wallet,
+            base_account,
+            sequence,
+            body,
+            gas_to_request,
+        )
+        .await
+        .map(|item| item.response)
+    }
+
+    async fn sign_and_broadcast_with_cosmos_tx(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+        base_account: &BaseAccount,
+        sequence: u64,
+        body: TxBody,
+        gas_to_request: u64,
+    ) -> Result<CosmosTxResponse, crate::Error> {
+        self.sign_and_broadcast_with_inner(
+            cosmos,
+            wallet,
+            base_account,
+            sequence,
+            body,
+            gas_to_request,
+        )
+        .await
+    }
+
+    async fn sign_and_broadcast_with_inner(
+        &self,
+        cosmos: &Cosmos,
+        wallet: &Wallet,
+        base_account: &BaseAccount,
+        sequence: u64,
+        body: TxBody,
+        gas_to_request: u64,
+    ) -> Result<CosmosTxResponse, crate::Error> {
         // enum AttemptError {
         //     Inner(Infallible),
         //     InsufficientGas(Infallible),
@@ -1241,7 +1344,7 @@ impl TxBuilder {
 
             tracing::debug!("TxResponse: {res:?}");
 
-            Ok(res)
+            Ok(CosmosTxResponse { response: res, tx })
         };
 
         let attempts = cosmos.get_cosmos_builder().gas_price_retry_attempts();
