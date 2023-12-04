@@ -27,7 +27,7 @@ jobs:
             .
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.0.0
+          toolchain: 1.70.0
           components: clippy, rustfmt
       - name: Compile workspace
         run: just cargo-compile
