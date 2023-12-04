@@ -73,8 +73,13 @@ pub(crate) struct WeakCosmos {
     chain_paused_status: ChainPausedStatus,
 }
 
+/// Type encapsulating both the [TxResponse] as well the actual [Tx]
+/// which will be helpful in the inspection of fees etc.
 pub struct CosmosTxResponse {
+    /// Transaction response
     pub response: TxResponse,
+    /// Transaction representing it's body, signature and other
+    /// information.
     pub tx: Tx,
 }
 
