@@ -7,3 +7,4 @@
 
 # don't check in the prost-build temp dir
 packages/prost-build/temp
+.envrc
