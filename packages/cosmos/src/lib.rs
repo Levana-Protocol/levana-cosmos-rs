@@ -1,7 +1,7 @@
 #![deny(missing_docs)]
 //! Library for communicating with Cosmos blockchains over gRPC
 pub use address::{Address, AddressHrp, HasAddress, HasAddressHrp, PublicKeyMethod, RawAddress};
-pub use client::{BlockInfo, Cosmos, HasCosmos, CosmosTxResponse};
+pub use client::{BlockInfo, Cosmos, CosmosTxResponse, HasCosmos};
 pub use codeid::CodeId;
 pub use contract::{Contract, ContractAdmin, HasContract};
 pub use cosmos_builder::CosmosBuilder;
