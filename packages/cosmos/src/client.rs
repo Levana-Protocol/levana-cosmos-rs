@@ -3,6 +3,7 @@ mod pool;
 mod query;
 
 use std::{
+    collections::HashMap,
     str::FromStr,
     sync::{Arc, Weak},
 };
@@ -28,7 +29,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use parking_lot::Mutex;
-use tokio::time::Instant;
+use tokio::{sync::RwLock, time::Instant};
 use tonic::{
     codegen::InterceptedService,
     service::Interceptor,
@@ -44,7 +45,7 @@ use crate::{
     },
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
-    Address, CosmosBuilder, HasAddress, TxBuilder,
+    Address, CosmosBuilder, Error, HasAddress, TxBuilder,
 };
 
 use self::{node_chooser::Node, pool::Pool, query::GrpcRequest};
@@ -147,6 +148,64 @@ impl<Res> PerformQueryWrapper<Res> {
 }
 
 impl Cosmos {
+    pub(crate) async fn get_and_update_simulation_sequence(
+        &self,
+        address: Address,
+    ) -> Result<BaseAccount, Error> {
+        let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let mut sequences = cosmos.simulate_sequences.write().await;
+        let sequence_info = sequences
+            .entry(address)
+            .or_insert_with(|| SequenceInformation {
+                sequence: 0,
+                timestamp: Instant::now(),
+            });
+        let mut base_account = self.get_base_account(address).await?;
+        let diff = Instant::now().duration_since(sequence_info.timestamp);
+        if diff.as_secs() <= 30 {
+            let sequence = std::cmp::max(sequence_info.sequence, base_account.sequence);
+            if sequence != sequence_info.sequence {
+                *sequence_info = SequenceInformation {
+                    sequence,
+                    timestamp: Instant::now(),
+                };
+            }
+            base_account.sequence = sequence;
+            return Ok(base_account);
+        }
+        Ok(base_account)
+    }
+
+    pub(crate) async fn get_and_update_broadcast_sequence(
+        &self,
+        address: Address,
+    ) -> Result<BaseAccount, Error> {
+        let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let mut sequences = cosmos.broadcast_sequences.write().await;
+        let sequence_info = sequences
+            .entry(address)
+            .or_insert_with(|| SequenceInformation {
+                sequence: 0,
+                timestamp: Instant::now(),
+            });
+        let mut base_account = self.get_base_account(address).await?;
+        let diff = Instant::now().duration_since(sequence_info.timestamp);
+        if diff.as_secs() <= 30 {
+            let sequence = std::cmp::max(sequence_info.sequence, base_account.sequence);
+            if sequence != sequence_info.sequence {
+                *sequence_info = SequenceInformation {
+                    sequence,
+                    timestamp: Instant::now(),
+                };
+            }
+            base_account.sequence = sequence;
+            return Ok(base_account);
+        }
+        Ok(base_account)
+    }
+
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
@@ -389,6 +448,12 @@ impl Interceptor for CosmosInterceptor {
     }
 }
 
+#[derive(Debug)]
+struct SequenceInformation {
+    sequence: u64,
+    timestamp: Instant,
+}
+
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
     auth_query_client: cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
@@ -416,6 +481,8 @@ pub struct CosmosInner {
     is_broken: bool,
     node: Node,
     expires: Option<Instant>,
+    simulate_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
+    broadcast_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
 }
 
 impl CosmosBuilder {
@@ -526,7 +593,9 @@ impl CosmosBuilder {
             epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: false,
             node: node.clone(),
-            expires
+            expires,
+	    simulate_sequences: Arc::new(RwLock::new(HashMap::new())) ,
+	    broadcast_sequences: Arc::new(RwLock::new(HashMap::new()))
         })
     }
 }
@@ -971,7 +1040,10 @@ impl TxBuilder {
     ) -> Result<FullSimulateResponse, crate::Error> {
         let mut sequences = vec![];
         for wallet in wallets {
-            sequences.push(match cosmos.get_base_account(wallet.get_address()).await {
+            let base_account = cosmos
+                .get_and_update_simulation_sequence(wallet.get_address())
+                .await;
+            let sequence = match base_account {
                 Ok(account) => account.sequence,
                 Err(err) => {
                     if err.to_string().contains("not found") {
@@ -983,7 +1055,8 @@ impl TxBuilder {
                         return Err(err);
                     }
                 }
-            });
+            };
+            sequences.push(sequence);
         }
 
         self.simulate_inner(cosmos, &sequences).await
@@ -1046,7 +1119,9 @@ impl TxBuilder {
         wallet: &Wallet,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with_inner(
             cosmos,
             wallet,
@@ -1065,8 +1140,9 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
-
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with(
             cosmos,
             wallet,
@@ -1085,8 +1161,9 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
-
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with_cosmos_tx(
             cosmos,
             wallet,
