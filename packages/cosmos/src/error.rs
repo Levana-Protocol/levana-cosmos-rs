@@ -446,7 +446,7 @@ impl QueryErrorDetails {
                     // number.
                     CosmosSdkError::TxInMempool => NetworkIssue,
                     // Similar for account sequence errors
-                    CosmosSdkError::IncorrectAccountSequence => NetworkIssue,
+                    CosmosSdkError::IncorrectAccountSequence => ConnectionIsFine,
                     // Invalid chain ID, we should try a different node if possible
                     CosmosSdkError::InvalidChainId => NetworkIssue,
                     _ => ConnectionIsFine,
