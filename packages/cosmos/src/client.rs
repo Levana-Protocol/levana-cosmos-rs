@@ -178,13 +178,13 @@ impl Cosmos {
     }
 
     async fn update_broadcast_sequence(&self, address: Address) -> Result<(), Error> {
-	let mut guard = self.pool.get().await?;
+        let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
         let mut sequences = cosmos.broadcast_sequences.write().await;
         sequences
             .entry(address)
             .and_modify(|item| item.sequence += 1);
-	Ok(())
+        Ok(())
     }
 
     async fn get_and_update_broadcast_sequence(
@@ -1435,7 +1435,9 @@ impl TxBuilder {
             };
 
             tracing::debug!("TxResponse: {res:?}");
-	    cosmos.update_broadcast_sequence(wallet.get_address()).await?;
+            cosmos
+                .update_broadcast_sequence(wallet.get_address())
+                .await?;
 
             Ok(CosmosTxResponse { response: res, tx })
         };
