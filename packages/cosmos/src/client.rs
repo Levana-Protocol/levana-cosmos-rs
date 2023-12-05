@@ -148,7 +148,7 @@ impl<Res> PerformQueryWrapper<Res> {
 }
 
 impl Cosmos {
-    pub(crate) async fn get_and_update_simulation_sequence(
+    async fn get_and_update_simulation_sequence(
         &self,
         address: Address,
     ) -> Result<BaseAccount, Error> {
@@ -177,7 +177,17 @@ impl Cosmos {
         Ok(base_account)
     }
 
-    pub(crate) async fn get_and_update_broadcast_sequence(
+    async fn update_broadcast_sequence(&self, address: Address) -> Result<(), Error> {
+	let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let mut sequences = cosmos.broadcast_sequences.write().await;
+        sequences
+            .entry(address)
+            .and_modify(|item| item.sequence += 1);
+	Ok(())
+    }
+
+    async fn get_and_update_broadcast_sequence(
         &self,
         address: Address,
     ) -> Result<BaseAccount, Error> {
@@ -1425,6 +1435,7 @@ impl TxBuilder {
             };
 
             tracing::debug!("TxResponse: {res:?}");
+	    cosmos.update_broadcast_sequence(wallet.get_address()).await?;
 
             Ok(CosmosTxResponse { response: res, tx })
         };
