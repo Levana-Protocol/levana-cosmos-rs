@@ -204,6 +204,8 @@ pub enum Error {
         grpc_url: Arc<String>,
         stage: TransactionStage,
     },
+    #[error(transparent)]
+    Connection(#[from] ConnectionError),
 }
 
 #[derive(Debug)]
