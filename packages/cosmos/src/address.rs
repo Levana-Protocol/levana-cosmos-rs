@@ -152,6 +152,11 @@ impl Address {
     pub fn raw(self) -> RawAddress {
         self.raw_address
     }
+
+    /// Get the HRP for this address.
+    pub fn hrp(self) -> AddressHrp {
+        self.hrp
+    }
 }
 
 /// The method used for hashing public keys into a byte representation.
