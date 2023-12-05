@@ -154,36 +154,76 @@ impl Cosmos {
     ) -> Result<BaseAccount, Error> {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
-        let mut sequences = cosmos.simulate_sequences.write().await;
-        let sequence_info = sequences
-            .entry(address)
-            .or_insert_with(|| SequenceInformation {
-                sequence: 0,
-                timestamp: Instant::now(),
-            });
+        let sequences = cosmos.simulate_sequences.read().await;
+        let sequence = sequences.get(&address);
         let mut base_account = self.get_base_account(address).await?;
-        let diff = Instant::now().duration_since(sequence_info.timestamp);
-        if diff.as_secs() <= 30 {
-            let sequence = std::cmp::max(sequence_info.sequence, base_account.sequence);
-            if sequence != sequence_info.sequence {
-                *sequence_info = SequenceInformation {
-                    sequence,
-                    timestamp: Instant::now(),
-                };
+        if let Some(SequenceInformation {
+            sequence,
+            timestamp,
+        }) = sequence
+        {
+            let diff = Instant::now().duration_since(*timestamp);
+            if diff.as_secs() <= 30 {
+                let max_sequence = std::cmp::max(sequence, &base_account.sequence);
+                if max_sequence != sequence {
+                    let sequence_info = SequenceInformation {
+                        sequence: *max_sequence,
+                        timestamp: Instant::now(),
+                    };
+                    {
+                        let mut seq_info = cosmos.simulate_sequences.write().await;
+                        let seq_info = seq_info
+                            .entry(address)
+                            .or_insert_with(|| sequence_info.clone());
+                        *seq_info = sequence_info;
+                    }
+                }
+                base_account.sequence = *max_sequence;
+                return Ok(base_account);
             }
-            base_account.sequence = sequence;
-            return Ok(base_account);
         }
+        let mut seq_info = cosmos.simulate_sequences.write().await;
+        let sequence_info = SequenceInformation {
+            sequence: base_account.sequence,
+            timestamp: Instant::now(),
+        };
+        let seq_info = seq_info
+            .entry(address)
+            .or_insert_with(|| sequence_info.clone());
+        *seq_info = sequence_info;
         Ok(base_account)
     }
 
-    async fn update_broadcast_sequence(&self, address: Address) -> Result<(), Error> {
+    async fn update_broadcast_sequence(
+        &self,
+        address: Address,
+        tx: &Tx,
+        hash: &str,
+    ) -> Result<(), Error> {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
-        let mut sequences = cosmos.broadcast_sequences.write().await;
-        sequences
-            .entry(address)
-            .and_modify(|item| item.sequence += 1);
+        let auth_info = &tx.auth_info;
+        if let Some(auth_info) = auth_info {
+            let sequence = &auth_info
+                .signer_infos
+                .iter()
+                .map(|item| item.sequence)
+                .max();
+            match sequence {
+                Some(sequence) => {
+                    let mut sequences = cosmos.broadcast_sequences.write().await;
+                    sequences
+                        .entry(address)
+                        .and_modify(|item| item.sequence = *sequence);
+                }
+                None => {
+                    tracing::warn!("No sequence number found in Tx {hash} from signer_infos");
+                }
+            }
+        } else {
+            tracing::warn!("No sequence number found in Tx {hash} from auth_info");
+        }
+
         Ok(())
     }
 
@@ -193,26 +233,43 @@ impl Cosmos {
     ) -> Result<BaseAccount, Error> {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
-        let mut sequences = cosmos.broadcast_sequences.write().await;
-        let sequence_info = sequences
-            .entry(address)
-            .or_insert_with(|| SequenceInformation {
-                sequence: 0,
-                timestamp: Instant::now(),
-            });
+        let sequences = cosmos.broadcast_sequences.read().await;
+        let sequence = sequences.get(&address);
         let mut base_account = self.get_base_account(address).await?;
-        let diff = Instant::now().duration_since(sequence_info.timestamp);
-        if diff.as_secs() <= 30 {
-            let sequence = std::cmp::max(sequence_info.sequence, base_account.sequence);
-            if sequence != sequence_info.sequence {
-                *sequence_info = SequenceInformation {
-                    sequence,
-                    timestamp: Instant::now(),
-                };
+        if let Some(SequenceInformation {
+            sequence,
+            timestamp,
+        }) = sequence
+        {
+            let diff = Instant::now().duration_since(*timestamp);
+            if diff.as_secs() <= 30 {
+                let max_sequence = std::cmp::max(sequence, &base_account.sequence);
+                if max_sequence != sequence {
+                    let sequence_info = SequenceInformation {
+                        sequence: *max_sequence,
+                        timestamp: Instant::now(),
+                    };
+                    {
+                        let mut seq_info = cosmos.broadcast_sequences.write().await;
+                        let seq_info = seq_info
+                            .entry(address)
+                            .or_insert_with(|| sequence_info.clone());
+                        *seq_info = sequence_info;
+                    }
+                }
+                base_account.sequence = *max_sequence;
+                return Ok(base_account);
             }
-            base_account.sequence = sequence;
-            return Ok(base_account);
         }
+        let mut seq_info = cosmos.broadcast_sequences.write().await;
+        let sequence_info = SequenceInformation {
+            sequence: base_account.sequence,
+            timestamp: Instant::now(),
+        };
+        let seq_info = seq_info
+            .entry(address)
+            .or_insert_with(|| sequence_info.clone());
+        *seq_info = sequence_info;
         Ok(base_account)
     }
 
@@ -458,7 +515,7 @@ impl Interceptor for CosmosInterceptor {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SequenceInformation {
     sequence: u64,
     timestamp: Instant,
@@ -1436,7 +1493,7 @@ impl TxBuilder {
 
             tracing::debug!("TxResponse: {res:?}");
             cosmos
-                .update_broadcast_sequence(wallet.get_address())
+                .update_broadcast_sequence(wallet.get_address(), &tx, &res.txhash)
                 .await?;
 
             Ok(CosmosTxResponse { response: res, tx })
