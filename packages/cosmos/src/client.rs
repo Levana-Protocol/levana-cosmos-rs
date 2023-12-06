@@ -1581,7 +1581,7 @@ impl<T: HasCosmos> HasCosmos for &T {
 impl Cosmos {
     fn get_expected_sequence(&self, message: &str) -> Option<u64> {
         let cosmos_builder = self.get_cosmos_builder();
-        match cosmos_builder.autofix_sequence_mismatch {
+        match cosmos_builder.autofix_simulate_sequence_mismatch {
             Some(true) => get_expected_sequence_inner(message),
             Some(false) => None,
             None => None,

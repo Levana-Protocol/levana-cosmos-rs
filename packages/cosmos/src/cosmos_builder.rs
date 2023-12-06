@@ -29,7 +29,7 @@ pub struct CosmosBuilder {
     latest_block_age_allowed: Option<Duration>,
     fallback_timeout: Option<Duration>,
     pub(crate) chain_paused_method: ChainPausedMethod,
-    pub(crate) autofix_sequence_mismatch: Option<bool>,
+    pub(crate) autofix_simulate_sequence_mismatch: Option<bool>,
 }
 
 impl CosmosBuilder {
@@ -60,7 +60,7 @@ impl CosmosBuilder {
             latest_block_age_allowed: None,
             fallback_timeout: None,
             chain_paused_method: ChainPausedMethod::None,
-            autofix_sequence_mismatch: None,
+            autofix_simulate_sequence_mismatch: None,
         }
     }
 
@@ -309,12 +309,12 @@ impl CosmosBuilder {
     ///
     /// Default: false
     pub fn autofix_sequence_mismatch(&self) -> bool {
-        self.autofix_sequence_mismatch.unwrap_or(false)
+        self.autofix_simulate_sequence_mismatch.unwrap_or(false)
     }
 
     /// See [Self::autofix_sequence_mismatch]
     pub fn set_autofix_sequence_mismatch(&mut self, autofix_sequence_mismatch: Option<bool>) {
-        self.autofix_sequence_mismatch = autofix_sequence_mismatch;
+        self.autofix_simulate_sequence_mismatch = autofix_sequence_mismatch;
     }
 }
 
