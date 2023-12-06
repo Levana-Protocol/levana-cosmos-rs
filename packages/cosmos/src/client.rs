@@ -298,7 +298,9 @@ impl Cosmos {
                         }
                         Err((err, can_retry)) => {
                             if can_retry {
-                                cosmos_inner.node.log_query_error(err.clone());
+                                cosmos_inner
+                                    .node
+                                    .log_query_error(err.clone(), action.clone());
                             }
                             (err, can_retry, cosmos_inner.node.grpc_url.clone())
                         }
