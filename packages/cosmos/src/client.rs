@@ -154,20 +154,23 @@ impl Cosmos {
     ) -> Result<BaseAccount, Error> {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
-        let sequences = cosmos.simulate_sequences.read().await;
-        let sequence = sequences.get(&address);
+        let sequence = {
+            let guard = cosmos.simulate_sequences.read().await;
+            let result = guard.get(&address);
+            result.cloned()
+        };
         let mut base_account = self.get_base_account(address).await?;
         if let Some(SequenceInformation {
             sequence,
             timestamp,
         }) = sequence
         {
-            let diff = Instant::now().duration_since(*timestamp);
+            let diff = Instant::now().duration_since(timestamp);
             if diff.as_secs() <= 30 {
-                let max_sequence = std::cmp::max(sequence, &base_account.sequence);
+                let max_sequence = std::cmp::max(sequence, base_account.sequence);
                 if max_sequence != sequence {
                     let sequence_info = SequenceInformation {
-                        sequence: *max_sequence,
+                        sequence: max_sequence,
                         timestamp: Instant::now(),
                     };
                     {
@@ -178,7 +181,7 @@ impl Cosmos {
                         *seq_info = sequence_info;
                     }
                 }
-                base_account.sequence = *max_sequence;
+                base_account.sequence = max_sequence;
                 return Ok(base_account);
             }
         }
@@ -204,6 +207,9 @@ impl Cosmos {
         let cosmos = guard.get_inner_mut();
         let auth_info = &tx.auth_info;
         if let Some(auth_info) = auth_info {
+            // This only works since we allow a single signer per
+            // transaction. This needs to be updated to check with
+            // public key when multiple signers exist.
             let sequence = &auth_info
                 .signer_infos
                 .iter()
@@ -233,20 +239,23 @@ impl Cosmos {
     ) -> Result<BaseAccount, Error> {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
-        let sequences = cosmos.broadcast_sequences.read().await;
-        let sequence = sequences.get(&address);
+        let sequence = {
+            let guard = cosmos.broadcast_sequences.read().await;
+            let result = guard.get(&address);
+            result.cloned()
+        };
         let mut base_account = self.get_base_account(address).await?;
         if let Some(SequenceInformation {
             sequence,
             timestamp,
         }) = sequence
         {
-            let diff = Instant::now().duration_since(*timestamp);
+            let diff = Instant::now().duration_since(timestamp);
             if diff.as_secs() <= 30 {
-                let max_sequence = std::cmp::max(sequence, &base_account.sequence);
+                let max_sequence = std::cmp::max(sequence, base_account.sequence);
                 if max_sequence != sequence {
                     let sequence_info = SequenceInformation {
-                        sequence: *max_sequence,
+                        sequence: max_sequence,
                         timestamp: Instant::now(),
                     };
                     {
@@ -257,7 +266,7 @@ impl Cosmos {
                         *seq_info = sequence_info;
                     }
                 }
-                base_account.sequence = *max_sequence;
+                base_account.sequence = max_sequence;
                 return Ok(base_account);
             }
         }
