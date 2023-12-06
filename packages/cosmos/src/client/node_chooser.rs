@@ -6,7 +6,8 @@ use rand::seq::SliceRandom;
 
 use crate::{
     error::{
-        ConnectionError, LastNodeError, NodeHealthReport, QueryErrorDetails, SingleNodeHealthReport,
+        Action, ConnectionError, LastNodeError, NodeHealthReport, QueryErrorDetails,
+        SingleNodeHealthReport,
     },
     CosmosBuilder,
 };
@@ -81,6 +82,7 @@ struct LastError {
     error: Arc<String>,
     instant: Instant,
     timestamp: DateTime<Utc>,
+    action: Option<Action>,
 }
 
 const NODE_ERROR_TIMEOUT: u64 = 30;
@@ -91,14 +93,16 @@ impl Node {
             error: error.to_string().into(),
             instant: Instant::now(),
             timestamp: Utc::now(),
+            action: None,
         });
     }
 
-    pub(super) fn log_query_error(&self, error: QueryErrorDetails) {
+    pub(super) fn log_query_error(&self, error: QueryErrorDetails, action: Action) {
         *self.last_error.write() = Some(LastError {
             error: error.to_string().into(),
             instant: Instant::now(),
             timestamp: Utc::now(),
+            action: Some(action),
         });
     }
 
@@ -114,15 +118,21 @@ impl Node {
             grpc_url: self.grpc_url.clone(),
             is_fallback: self.is_fallback,
             is_healthy: self.is_healthy(),
-            last_error: self
-                .last_error
-                .read()
-                .as_ref()
-                .map(|last_error| LastNodeError {
+            last_error: self.last_error.read().as_ref().map(|last_error| {
+                let error = match &last_error.action {
+                    Some(action) => Arc::new(format!(
+                        "{} during action {}",
+                        last_error.error.clone(),
+                        action
+                    )),
+                    None => last_error.error.clone(),
+                };
+                LastNodeError {
                     timestamp: last_error.timestamp,
                     age: last_error.instant.elapsed(),
-                    error: last_error.error.clone(),
-                }),
+                    error,
+                }
+            }),
         }
     }
 }
