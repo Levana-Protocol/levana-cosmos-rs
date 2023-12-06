@@ -211,10 +211,10 @@ pub enum Error {
 impl Error {
     pub(crate) fn get_sequence_mismatch_status(&self) -> Option<tonic::Status> {
         match self {
-            Error::Query(QueryError { query, .. }) => match query {
-                QueryErrorDetails::AccountSequenceMismatch(status) => Some(status.clone()),
-                _ => None,
-            },
+            Error::Query(QueryError {
+                query: QueryErrorDetails::AccountSequenceMismatch(status),
+                ..
+            }) => Some(status.clone()),
             _ => None,
         }
     }
