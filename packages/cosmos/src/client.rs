@@ -1137,7 +1137,22 @@ impl TxBuilder {
             sequences.push(sequence);
         }
 
-        self.simulate_inner(cosmos, &sequences).await
+        let result = self.simulate_inner(cosmos, &sequences).await;
+        if let Err(err) = &result {
+            if wallets.len() == 1 {
+                let err = err.get_sequence_mismatch_status();
+                if let Some(status) = err {
+                    let sequence = cosmos.get_expected_sequence(status.message());
+                    match sequence {
+                        Some(new_sequence_no) => {
+                            return self.simulate_inner(cosmos, &[new_sequence_no]).await
+                        }
+                        None => return result,
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
@@ -1560,6 +1575,35 @@ impl<T: HasCosmos> HasCosmos for &T {
     }
 }
 
+/// Returned the expected account sequence mismatch based on an error message, if present.
+///
+/// Always returns [None] if autofix_sequence_mismatch is disabled (the default).
+impl Cosmos {
+    fn get_expected_sequence(&self, message: &str) -> Option<u64> {
+        let cosmos_builder = self.get_cosmos_builder();
+        match cosmos_builder.autofix_simulate_sequence_mismatch {
+            Some(true) => get_expected_sequence_inner(message),
+            Some(false) => None,
+            None => None,
+        }
+    }
+}
+
+fn get_expected_sequence_inner(message: &str) -> Option<u64> {
+    for line in message.lines() {
+        if let Some(x) = get_expected_sequence_single(line) {
+            return Some(x);
+        }
+    }
+    None
+}
+
+fn get_expected_sequence_single(message: &str) -> Option<u64> {
+    let s = message.strip_prefix("account sequence mismatch, expected ")?;
+    let comma = s.find(',')?;
+    s[..comma].parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::CosmosNetwork;
@@ -1600,6 +1644,56 @@ mod tests {
         builder.set_grpc_url("http://0.0.0.0:0");
         let cosmos = builder.build_lazy().await;
         cosmos.get_latest_block_info().await.unwrap();
+    }
+
+    #[test]
+    fn get_expected_sequence_good() {
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 5, got 0"),
+            Some(5)
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 2, got 7"),
+            Some(2)
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 20000001, got 7"),
+            Some(20000001)
+        );
+    }
+
+    #[test]
+    fn get_expected_sequence_extra_prelude() {
+        assert_eq!(
+            get_expected_sequence_inner(
+                "blah blah blah\n\naccount sequence mismatch, expected 5, got 0"
+            ),
+            Some(5)
+        );
+        assert_eq!(
+            get_expected_sequence_inner(
+                "foajodifjaolkdfjas aiodjfaof\n\n\naccount sequence mismatch, expected 2, got 7"
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            get_expected_sequence_inner(
+                "iiiiiiiiiiiiii\n\naccount sequence mismatch, expected 20000001, got 7"
+            ),
+            Some(20000001)
+        );
+    }
+
+    #[test]
+    fn get_expected_sequence_bad() {
+        assert_eq!(
+            get_expected_sequence_inner("Totally different error message"),
+            None
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected XXXXX, got 7"),
+            None
+        );
     }
 }
 

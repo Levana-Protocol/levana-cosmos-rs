@@ -29,6 +29,7 @@ pub struct CosmosBuilder {
     latest_block_age_allowed: Option<Duration>,
     fallback_timeout: Option<Duration>,
     pub(crate) chain_paused_method: ChainPausedMethod,
+    pub(crate) autofix_simulate_sequence_mismatch: Option<bool>,
 }
 
 impl CosmosBuilder {
@@ -59,6 +60,7 @@ impl CosmosBuilder {
             latest_block_age_allowed: None,
             fallback_timeout: None,
             chain_paused_method: ChainPausedMethod::None,
+            autofix_simulate_sequence_mismatch: None,
         }
     }
 
@@ -301,6 +303,18 @@ impl CosmosBuilder {
 
     pub(crate) fn set_osmosis_mainnet_chain_paused(&mut self) {
         self.chain_paused_method = ChainPausedMethod::OsmosisMainnet;
+    }
+
+    /// Should we automatically retry transactions with corrected sequence numbers?
+    ///
+    /// Default: false
+    pub fn autofix_sequence_mismatch(&self) -> bool {
+        self.autofix_simulate_sequence_mismatch.unwrap_or(false)
+    }
+
+    /// See [Self::autofix_sequence_mismatch]
+    pub fn set_autofix_sequence_mismatch(&mut self, autofix_sequence_mismatch: Option<bool>) {
+        self.autofix_simulate_sequence_mismatch = autofix_sequence_mismatch;
     }
 }
 
