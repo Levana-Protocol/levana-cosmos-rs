@@ -1145,7 +1145,11 @@ impl TxBuilder {
                     let sequence = cosmos.get_expected_sequence(status.message());
                     match sequence {
                         Some(new_sequence_no) => {
-                            return self.simulate_inner(cosmos, &[new_sequence_no]).await
+                            let result = self.simulate_inner(cosmos, &[new_sequence_no]).await;
+                            if result.is_ok() {
+                                tracing::info!("Retry of broadcast simulation failure succeeded with new sequence number of {new_sequence_no}");
+                            }
+                            return result;
                         }
                         None => return result,
                     }
