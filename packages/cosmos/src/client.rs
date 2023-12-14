@@ -3,6 +3,7 @@ mod pool;
 mod query;
 
 use std::{
+    collections::HashMap,
     str::FromStr,
     sync::{Arc, Weak},
 };
@@ -28,7 +29,7 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use parking_lot::Mutex;
-use tokio::time::Instant;
+use tokio::{sync::RwLock, time::Instant};
 use tonic::{
     codegen::InterceptedService,
     service::Interceptor,
@@ -44,7 +45,7 @@ use crate::{
     },
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
-    Address, CosmosBuilder, HasAddress, TxBuilder,
+    Address, CosmosBuilder, Error, HasAddress, TxBuilder,
 };
 
 use self::{node_chooser::Node, pool::Pool, query::GrpcRequest};
@@ -147,6 +148,140 @@ impl<Res> PerformQueryWrapper<Res> {
 }
 
 impl Cosmos {
+    async fn get_and_update_simulation_sequence(
+        &self,
+        address: Address,
+    ) -> Result<BaseAccount, Error> {
+        let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let sequence = {
+            let guard = cosmos.simulate_sequences.read().await;
+            let result = guard.get(&address);
+            result.cloned()
+        };
+        let mut base_account = self.get_base_account(address).await?;
+        if let Some(SequenceInformation {
+            sequence,
+            timestamp,
+        }) = sequence
+        {
+            let diff = Instant::now().duration_since(timestamp);
+            if diff.as_secs() <= 30 {
+                let max_sequence = std::cmp::max(sequence, base_account.sequence);
+                if max_sequence != sequence {
+                    let sequence_info = SequenceInformation {
+                        sequence: max_sequence,
+                        timestamp: Instant::now(),
+                    };
+                    {
+                        let mut seq_info = cosmos.simulate_sequences.write().await;
+                        let seq_info = seq_info
+                            .entry(address)
+                            .or_insert_with(|| sequence_info.clone());
+                        *seq_info = sequence_info;
+                    }
+                }
+                base_account.sequence = max_sequence;
+                return Ok(base_account);
+            }
+        }
+        let mut seq_info = cosmos.simulate_sequences.write().await;
+        let sequence_info = SequenceInformation {
+            sequence: base_account.sequence,
+            timestamp: Instant::now(),
+        };
+        let seq_info = seq_info
+            .entry(address)
+            .or_insert_with(|| sequence_info.clone());
+        *seq_info = sequence_info;
+        Ok(base_account)
+    }
+
+    async fn update_broadcast_sequence(
+        &self,
+        address: Address,
+        tx: &Tx,
+        hash: &str,
+    ) -> Result<(), Error> {
+        let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let auth_info = &tx.auth_info;
+        if let Some(auth_info) = auth_info {
+            // This only works since we allow a single signer per
+            // transaction. This needs to be updated to check with
+            // public key when multiple signers exist.
+            let sequence = &auth_info
+                .signer_infos
+                .iter()
+                .map(|item| item.sequence)
+                .max();
+            match sequence {
+                Some(sequence) => {
+                    let mut sequences = cosmos.broadcast_sequences.write().await;
+                    sequences
+                        .entry(address)
+                        .and_modify(|item| item.sequence = *sequence);
+                }
+                None => {
+                    tracing::warn!("No sequence number found in Tx {hash} from signer_infos");
+                }
+            }
+        } else {
+            tracing::warn!("No sequence number found in Tx {hash} from auth_info");
+        }
+
+        Ok(())
+    }
+
+    async fn get_and_update_broadcast_sequence(
+        &self,
+        address: Address,
+    ) -> Result<BaseAccount, Error> {
+        let mut guard = self.pool.get().await?;
+        let cosmos = guard.get_inner_mut();
+        let sequence = {
+            let guard = cosmos.broadcast_sequences.read().await;
+            let result = guard.get(&address);
+            result.cloned()
+        };
+        let mut base_account = self.get_base_account(address).await?;
+        if let Some(SequenceInformation {
+            sequence,
+            timestamp,
+        }) = sequence
+        {
+            let diff = Instant::now().duration_since(timestamp);
+            if diff.as_secs() <= 30 {
+                let max_sequence = std::cmp::max(sequence, base_account.sequence);
+                if max_sequence != sequence {
+                    let sequence_info = SequenceInformation {
+                        sequence: max_sequence,
+                        timestamp: Instant::now(),
+                    };
+                    {
+                        let mut seq_info = cosmos.broadcast_sequences.write().await;
+                        let seq_info = seq_info
+                            .entry(address)
+                            .or_insert_with(|| sequence_info.clone());
+                        *seq_info = sequence_info;
+                    }
+                }
+                base_account.sequence = max_sequence;
+                return Ok(base_account);
+            }
+        }
+        let mut seq_info = cosmos.broadcast_sequences.write().await;
+        let sequence_info = SequenceInformation {
+            sequence: base_account.sequence,
+            timestamp: Instant::now(),
+        };
+        let seq_info = seq_info
+            .entry(address)
+            .or_insert_with(|| sequence_info.clone());
+        *seq_info = sequence_info;
+        Ok(base_account)
+    }
+
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
@@ -172,7 +307,9 @@ impl Cosmos {
                         }
                         Err((err, can_retry)) => {
                             if can_retry {
-                                cosmos_inner.node.log_query_error(err.clone());
+                                cosmos_inner
+                                    .node
+                                    .log_query_error(err.clone(), action.clone());
                             }
                             (err, can_retry, cosmos_inner.node.grpc_url.clone())
                         }
@@ -389,6 +526,12 @@ impl Interceptor for CosmosInterceptor {
     }
 }
 
+#[derive(Debug, Clone)]
+struct SequenceInformation {
+    sequence: u64,
+    timestamp: Instant,
+}
+
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
     auth_query_client: cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
@@ -416,6 +559,8 @@ pub struct CosmosInner {
     is_broken: bool,
     node: Node,
     expires: Option<Instant>,
+    simulate_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
+    broadcast_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
 }
 
 impl CosmosBuilder {
@@ -526,7 +671,9 @@ impl CosmosBuilder {
             epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
             is_broken: false,
             node: node.clone(),
-            expires
+            expires,
+	    simulate_sequences: Arc::new(RwLock::new(HashMap::new())) ,
+	    broadcast_sequences: Arc::new(RwLock::new(HashMap::new()))
         })
     }
 }
@@ -971,7 +1118,10 @@ impl TxBuilder {
     ) -> Result<FullSimulateResponse, crate::Error> {
         let mut sequences = vec![];
         for wallet in wallets {
-            sequences.push(match cosmos.get_base_account(wallet.get_address()).await {
+            let base_account = cosmos
+                .get_and_update_simulation_sequence(wallet.get_address())
+                .await;
+            let sequence = match base_account {
                 Ok(account) => account.sequence,
                 Err(err) => {
                     if err.to_string().contains("not found") {
@@ -983,10 +1133,32 @@ impl TxBuilder {
                         return Err(err);
                     }
                 }
-            });
+            };
+            sequences.push(sequence);
         }
 
-        self.simulate_inner(cosmos, &sequences).await
+        let result = self.simulate_inner(cosmos, &sequences).await;
+        if let Err(err) = &result {
+            if wallets.len() == 1 {
+                let err = err.get_sequence_mismatch_status();
+                if let Some(status) = err {
+                    let sequence = cosmos.get_expected_sequence(status.message());
+                    match sequence {
+                        Some(new_sequence_no) => {
+                            let result = self.simulate_inner(cosmos, &[new_sequence_no]).await;
+                            if result.is_ok() {
+                                tracing::info!("Retry of broadcast simulation failure succeeded with new sequence number of {new_sequence_no}");
+                            } else {
+                                tracing::warn!("Retry of broadcast simulation failed for sequence number {new_sequence_no}");
+                            };
+                            return result;
+                        }
+                        None => return result,
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
@@ -1046,7 +1218,9 @@ impl TxBuilder {
         wallet: &Wallet,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with_inner(
             cosmos,
             wallet,
@@ -1065,8 +1239,9 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<TxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
-
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with(
             cosmos,
             wallet,
@@ -1085,8 +1260,9 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
-
+        let base_account = cosmos
+            .get_and_update_broadcast_sequence(wallet.get_address())
+            .await?;
         self.sign_and_broadcast_with_cosmos_tx(
             cosmos,
             wallet,
@@ -1348,6 +1524,9 @@ impl TxBuilder {
             };
 
             tracing::debug!("TxResponse: {res:?}");
+            cosmos
+                .update_broadcast_sequence(wallet.get_address(), &tx, &res.txhash)
+                .await?;
 
             Ok(CosmosTxResponse { response: res, tx })
         };
@@ -1402,6 +1581,35 @@ impl<T: HasCosmos> HasCosmos for &T {
     }
 }
 
+/// Returned the expected account sequence mismatch based on an error message, if present.
+///
+/// Always returns [None] if autofix_sequence_mismatch is disabled (the default).
+impl Cosmos {
+    fn get_expected_sequence(&self, message: &str) -> Option<u64> {
+        let cosmos_builder = self.get_cosmos_builder();
+        match cosmos_builder.autofix_simulate_sequence_mismatch {
+            Some(true) => get_expected_sequence_inner(message),
+            Some(false) => None,
+            None => None,
+        }
+    }
+}
+
+fn get_expected_sequence_inner(message: &str) -> Option<u64> {
+    for line in message.lines() {
+        if let Some(x) = get_expected_sequence_single(line) {
+            return Some(x);
+        }
+    }
+    None
+}
+
+fn get_expected_sequence_single(message: &str) -> Option<u64> {
+    let s = message.strip_prefix("account sequence mismatch, expected ")?;
+    let comma = s.find(',')?;
+    s[..comma].parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::CosmosNetwork;
@@ -1442,6 +1650,56 @@ mod tests {
         builder.set_grpc_url("http://0.0.0.0:0");
         let cosmos = builder.build_lazy().await;
         cosmos.get_latest_block_info().await.unwrap();
+    }
+
+    #[test]
+    fn get_expected_sequence_good() {
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 5, got 0"),
+            Some(5)
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 2, got 7"),
+            Some(2)
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected 20000001, got 7"),
+            Some(20000001)
+        );
+    }
+
+    #[test]
+    fn get_expected_sequence_extra_prelude() {
+        assert_eq!(
+            get_expected_sequence_inner(
+                "blah blah blah\n\naccount sequence mismatch, expected 5, got 0"
+            ),
+            Some(5)
+        );
+        assert_eq!(
+            get_expected_sequence_inner(
+                "foajodifjaolkdfjas aiodjfaof\n\n\naccount sequence mismatch, expected 2, got 7"
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            get_expected_sequence_inner(
+                "iiiiiiiiiiiiii\n\naccount sequence mismatch, expected 20000001, got 7"
+            ),
+            Some(20000001)
+        );
+    }
+
+    #[test]
+    fn get_expected_sequence_bad() {
+        assert_eq!(
+            get_expected_sequence_inner("Totally different error message"),
+            None
+        );
+        assert_eq!(
+            get_expected_sequence_inner("account sequence mismatch, expected XXXXX, got 7"),
+            None
+        );
     }
 }
 
