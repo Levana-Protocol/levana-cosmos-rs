@@ -1149,7 +1149,7 @@ impl TxBuilder {
                             if result.is_ok() {
                                 tracing::info!("Retry of broadcast simulation failure succeeded with new sequence number of {new_sequence_no}");
                             } else {
-                                tracing::warn!("Retry of broadcast simulation faied for sequence number {new_sequence_no}");
+                                tracing::warn!("Retry of broadcast simulation failed for sequence number {new_sequence_no}");
                             };
                             return result;
                         }
