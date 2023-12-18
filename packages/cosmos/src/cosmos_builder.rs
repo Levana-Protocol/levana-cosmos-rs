@@ -305,11 +305,12 @@ impl CosmosBuilder {
         self.chain_paused_method = ChainPausedMethod::OsmosisMainnet;
     }
 
-    /// Should we automatically retry transactions with corrected sequence numbers?
+    /// Should we automatically retry transactions with corrected
+    /// sequence numbers during simulating transaction ?
     ///
-    /// Default: false
+    /// Default: [true]
     pub fn autofix_sequence_mismatch(&self) -> bool {
-        self.autofix_simulate_sequence_mismatch.unwrap_or(false)
+        self.autofix_simulate_sequence_mismatch.unwrap_or(true)
     }
 
     /// See [Self::autofix_sequence_mismatch]
