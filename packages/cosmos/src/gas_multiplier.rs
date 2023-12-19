@@ -20,13 +20,15 @@ impl GasMultiplierConfig {
                 low,
                 high,
                 initial,
-                step,
+                step_up,
+                step_down,
                 too_high_ratio,
             }) => GasMultiplier::Dynamic(Arc::new(Dynamic {
                 current: RwLock::new(*initial),
                 low: *low,
                 high: *high,
-                step: *step,
+                step_up: *step_up,
+                step_down: *step_down,
                 too_high_ratio: *too_high_ratio,
             })),
         }
@@ -46,15 +48,17 @@ impl GasMultiplier {
         }
     }
 
-    pub(crate) fn update(&self, res: &Result<CosmosTxResponse, Error>) {
+    /// Returns true if any change was made, false otherwise.
+    pub(crate) fn update(&self, res: &Result<CosmosTxResponse, Error>) -> bool {
         let Dynamic {
             current,
             low,
             high,
-            step,
+            step_up,
+            step_down,
             too_high_ratio,
         } = match self {
-            GasMultiplier::Static(_) => return,
+            GasMultiplier::Static(_) => return false,
             GasMultiplier::Dynamic(d) => &**d,
         };
         match res {
@@ -63,10 +67,13 @@ impl GasMultiplier {
                 if ratio < *too_high_ratio {
                     let mut guard = current.write();
                     let old = *guard;
-                    let new = (*guard - step).max(*low);
+                    let new = (*guard - step_down).max(*low);
                     *guard = new;
                     std::mem::drop(guard);
                     tracing::info!("Dynamic gas: Too much gas used, reducing multiplier. Used: {} of {}. Used ratio {ratio} < too high ratio {too_high_ratio}. Old: {old}. New: {new}.", res.response.gas_used, res.response.gas_wanted);
+                    old != new
+                } else {
+                    false
                 }
             }
             Err(e) => {
@@ -77,10 +84,13 @@ impl GasMultiplier {
                 {
                     let mut guard = current.write();
                     let old = *guard;
-                    let new = (*guard + step).min(*high);
+                    let new = (*guard + step_up).min(*high);
                     *guard = new;
                     std::mem::drop(guard);
                     tracing::info!("Dynamic gas: Got an out of gas response, increasing multiplier. Old: {old}. New: {new}.");
+                    old != new
+                } else {
+                    false
                 }
             }
         }
@@ -91,7 +101,8 @@ pub(crate) struct Dynamic {
     current: RwLock<f64>,
     low: f64,
     high: f64,
-    step: f64,
+    step_up: f64,
+    step_down: f64,
     too_high_ratio: f64,
 }
 
@@ -112,8 +123,10 @@ pub struct DynamicGasMultiplier {
     pub high: f64,
     /// The initial gas multiplier value. Default: `1.3`.
     pub initial: f64,
-    /// How much to increase or decrease the multiplier. Default: 0.01.
-    pub step: f64,
+    /// How much to increase the multiplier when we hit out of gas. Default: 0.2.
+    pub step_up: f64,
+    /// How much to decrease the multiplier when we overpay. Default: 0.01.
+    pub step_down: f64,
     /// The usage ratio on a successful transaction which is considered "too high". Default: 0.7.
     ///
     /// Each time a transaction completes successfully using simulated gas, we check the requested versus actual gas on the transaction. If the ratio is below this value, we decrease the gas multiplier.
@@ -126,7 +139,8 @@ impl Default for DynamicGasMultiplier {
             low: 1.2,
             high: 10.0,
             initial: 1.3,
-            step: 0.01,
+            step_up: 0.2,
+            step_down: 0.01,
             too_high_ratio: 0.7,
         }
     }

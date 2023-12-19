@@ -31,6 +31,7 @@ pub struct CosmosBuilder {
     fallback_timeout: Option<Duration>,
     pub(crate) chain_paused_method: ChainPausedMethod,
     pub(crate) autofix_simulate_sequence_mismatch: Option<bool>,
+    dynamic_gas_retries: Option<u32>,
 }
 
 impl CosmosBuilder {
@@ -62,6 +63,7 @@ impl CosmosBuilder {
             fallback_timeout: None,
             chain_paused_method: ChainPausedMethod::None,
             autofix_simulate_sequence_mismatch: None,
+            dynamic_gas_retries: None,
         }
     }
 
@@ -142,6 +144,24 @@ impl CosmosBuilder {
     /// Set a dynamic gas multiplier.
     pub fn set_dynamic_gas_estimate_multiplier(&mut self, config: DynamicGasMultiplier) {
         self.gas_estimate_multiplier = GasMultiplierConfig::Dynamic(config);
+    }
+
+    /// How many times to retry a transaction with corrected gas multipliers.
+    ///
+    /// If you're using a dynamic gas estimate multiplier, this will indicate
+    /// how many times we should retry a transaction after an "out of gas" before
+    /// giving up. Intermediate errors will be logged with `tracing`. If you're not
+    /// using dynamic gas, this option has no effect. If the gas multiplier reaches the
+    /// maximum, not retry will occur.
+    ///
+    /// Default: 4
+    pub fn get_dynamic_gas_retries(&self) -> u32 {
+        self.dynamic_gas_retries.unwrap_or(4)
+    }
+
+    /// See [Self::get_dynamic_gas_retries]
+    pub fn set_dynamic_gas_retries(&mut self, dynamic_gas_retries: Option<u32>) {
+        self.dynamic_gas_retries = dynamic_gas_retries;
     }
 
     /// Set the lower and upper bounds of gas price.
