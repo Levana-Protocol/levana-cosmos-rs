@@ -69,7 +69,9 @@ impl CosmosOpt {
             builder.set_chain_id(chain_id);
         }
 
-        builder.set_gas_estimate_multiplier(gas_multiplier);
+        if let Some(gas_multiplier) = gas_multiplier {
+            builder.set_gas_estimate_multiplier(gas_multiplier);
+        }
         builder.set_referer_header(referer_header);
 
         Ok(builder)

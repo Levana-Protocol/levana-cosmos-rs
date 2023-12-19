@@ -43,9 +43,10 @@ use crate::{
         Action, BuilderError, ConnectionError, CosmosSdkError, NodeHealthReport, QueryError,
         QueryErrorCategory, QueryErrorDetails,
     },
+    gas_multiplier::{GasMultiplier, GasMultiplierConfig},
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
-    Address, CosmosBuilder, Error, HasAddress, TxBuilder,
+    Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
 };
 
 use self::{node_chooser::Node, pool::Pool, query::GrpcRequest};
@@ -65,6 +66,7 @@ pub struct Cosmos {
     height: Option<u64>,
     block_height_tracking: Arc<Mutex<BlockHeightTracking>>,
     pub(crate) chain_paused_status: ChainPausedStatus,
+    gas_multiplier: GasMultiplier,
 }
 
 pub(crate) struct WeakCosmos {
@@ -72,6 +74,7 @@ pub(crate) struct WeakCosmos {
     height: Option<u64>,
     block_height_tracking: Weak<Mutex<BlockHeightTracking>>,
     chain_paused_status: ChainPausedStatus,
+    gas_multiplier: GasMultiplier,
 }
 
 /// Type encapsulating both the [TxResponse] as well the actual [Tx]
@@ -91,6 +94,7 @@ impl From<&Cosmos> for WeakCosmos {
             height,
             block_height_tracking,
             chain_paused_status,
+            gas_multiplier,
         }: &Cosmos,
     ) -> Self {
         WeakCosmos {
@@ -98,6 +102,7 @@ impl From<&Cosmos> for WeakCosmos {
             height: *height,
             block_height_tracking: Arc::downgrade(block_height_tracking),
             chain_paused_status: chain_paused_status.clone(),
+            gas_multiplier: gas_multiplier.clone(),
         }
     }
 }
@@ -109,6 +114,7 @@ impl WeakCosmos {
             height,
             block_height_tracking,
             chain_paused_status,
+            gas_multiplier,
         } = self;
         block_height_tracking
             .upgrade()
@@ -117,6 +123,7 @@ impl WeakCosmos {
                 height: *height,
                 block_height_tracking,
                 chain_paused_status: chain_paused_status.clone(),
+                gas_multiplier: gas_multiplier.clone(),
             })
     }
 }
@@ -595,6 +602,7 @@ impl CosmosBuilder {
     pub async fn build_lazy(self) -> Cosmos {
         let builder = Arc::new(self);
         let chain_paused_status = builder.chain_paused_method.into();
+        let gas_multiplier = builder.build_gas_multiplier();
         let cosmos = Cosmos {
             pool: Pool::new(builder).await,
             height: None,
@@ -603,6 +611,7 @@ impl CosmosBuilder {
                 height: 0,
             })),
             chain_paused_status,
+            gas_multiplier,
         };
         cosmos.launch_chain_paused_tracker();
         cosmos
@@ -683,6 +692,19 @@ impl Cosmos {
     pub fn at_height(mut self, height: Option<u64>) -> Self {
         self.height = height;
         self
+    }
+
+    /// Return a modified version of this [Cosmos] with a separate dynamic gas value.
+    ///
+    /// This is useful for being able to share connections across an application, but allow different pieces of the application to calculate the gas multiplier separately. For example, send-coin heavy workloads will likely need a higher multiplier.
+    pub fn with_dynamic_gas(mut self, dynamic: DynamicGasMultiplier) -> Self {
+        self.gas_multiplier = GasMultiplierConfig::Dynamic(dynamic).build();
+        self
+    }
+
+    /// Return the currently used gas multiplier.
+    pub fn get_current_gas_multiplier(&self) -> f64 {
+        self.gas_multiplier.get_current()
     }
 
     /// Get the base account information for the given address.
@@ -1169,16 +1191,9 @@ impl TxBuilder {
         cosmos: &Cosmos,
         wallet: &Wallet,
     ) -> Result<TxResponse, crate::Error> {
-        let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
-        self.inner_sign_and_broadcast(
-            cosmos,
-            wallet,
-            simres.body,
-            // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
-            // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-            (simres.gas_used as f64 * cosmos.pool.builder.gas_estimate_multiplier()) as u64,
-        )
-        .await
+        self.sign_and_broadcast_cosmos_tx(cosmos, wallet)
+            .await
+            .map(|cosmos| cosmos.response)
     }
 
     /// Same as sign_and_broadcast but returns [CosmosTxResponse]
@@ -1188,15 +1203,18 @@ impl TxBuilder {
         wallet: &Wallet,
     ) -> Result<CosmosTxResponse, crate::Error> {
         let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
-        self.inner_sign_and_broadcast_cosmos(
-            cosmos,
-            wallet,
-            simres.body,
-            // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
-            // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-            (simres.gas_used as f64 * cosmos.pool.builder.gas_estimate_multiplier()) as u64,
-        )
-        .await
+        let res = self
+            .inner_sign_and_broadcast_cosmos(
+                cosmos,
+                wallet,
+                simres.body,
+                // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+                // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
+                (simres.gas_used as f64 * cosmos.gas_multiplier.get_current()) as u64,
+            )
+            .await;
+        cosmos.gas_multiplier.update(&res);
+        res
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
@@ -1207,8 +1225,9 @@ impl TxBuilder {
         wallet: &Wallet,
         gas_to_request: u64,
     ) -> Result<TxResponse, crate::Error> {
-        self.inner_sign_and_broadcast(cosmos, wallet, self.make_tx_body(), gas_to_request)
+        self.inner_sign_and_broadcast_cosmos(cosmos, wallet, self.make_tx_body(), gas_to_request)
             .await
+            .map(|cosmos| cosmos.response)
     }
 
     /// Same as [sign_and_broadcast_with_gas] but returns [CosmosTxResponse]
@@ -1227,27 +1246,6 @@ impl TxBuilder {
             &base_account,
             base_account.sequence,
             self.make_tx_body(),
-            gas_to_request,
-        )
-        .await
-    }
-
-    async fn inner_sign_and_broadcast(
-        &self,
-        cosmos: &Cosmos,
-        wallet: &Wallet,
-        body: TxBody,
-        gas_to_request: u64,
-    ) -> Result<TxResponse, crate::Error> {
-        let base_account = cosmos
-            .get_and_update_broadcast_sequence(wallet.get_address())
-            .await?;
-        self.sign_and_broadcast_with(
-            cosmos,
-            wallet,
-            &base_account,
-            base_account.sequence,
-            body.clone(),
             gas_to_request,
         )
         .await
@@ -1390,27 +1388,6 @@ impl TxBuilder {
             simres,
             gas_used,
         })
-    }
-
-    async fn sign_and_broadcast_with(
-        &self,
-        cosmos: &Cosmos,
-        wallet: &Wallet,
-        base_account: &BaseAccount,
-        sequence: u64,
-        body: TxBody,
-        gas_to_request: u64,
-    ) -> Result<TxResponse, crate::Error> {
-        self.sign_and_broadcast_with_inner(
-            cosmos,
-            wallet,
-            base_account,
-            sequence,
-            body,
-            gas_to_request,
-        )
-        .await
-        .map(|item| item.response)
     }
 
     async fn sign_and_broadcast_with_cosmos_tx(
@@ -1622,11 +1599,11 @@ mod tests {
 
         // the same as sign_and_broadcast()
         let multiply_estimated_gas = |cosmos: &CosmosBuilder, gas_used: u64| -> u64 {
-            (gas_used as f64 * cosmos.gas_estimate_multiplier()) as u64
+            (gas_used as f64 * cosmos.build_gas_multiplier().get_current()) as u64
         };
 
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 1604);
-        cosmos.set_gas_estimate_multiplier(Some(4.2));
+        cosmos.set_gas_estimate_multiplier(4.2);
         assert_eq!(multiply_estimated_gas(&cosmos, 1234), 5182);
     }
 

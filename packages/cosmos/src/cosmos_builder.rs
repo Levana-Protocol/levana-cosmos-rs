@@ -1,8 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
+    gas_multiplier::{GasMultiplier, GasMultiplierConfig},
     gas_price::{GasPriceMethod, DEFAULT_GAS_PRICE},
-    AddressHrp,
+    AddressHrp, DynamicGasMultiplier,
 };
 
 /// Used to build a [crate::Cosmos].
@@ -15,7 +16,7 @@ pub struct CosmosBuilder {
     hrp: AddressHrp,
 
     // Values with defaults
-    gas_estimate_multiplier: Option<f64>,
+    gas_estimate_multiplier: GasMultiplierConfig,
     gas_price_method: Option<GasPriceMethod>,
     gas_price_retry_attempts: Option<u64>,
     transaction_attempts: Option<usize>,
@@ -46,7 +47,7 @@ impl CosmosBuilder {
             chain_id: chain_id.into(),
             gas_coin: gas_coin.into(),
             hrp,
-            gas_estimate_multiplier: None,
+            gas_estimate_multiplier: GasMultiplierConfig::Default,
             gas_price_method: None,
             gas_price_retry_attempts: None,
             transaction_attempts: None,
@@ -119,18 +120,28 @@ impl CosmosBuilder {
         self.hrp = hrp;
     }
 
-    /// Add a multiplier to the gas estimate to account for any gas fluctuations
+    /// Revert to the default gas multiplier value (static value of 1.3).
     ///
-    /// Defaults to 1.3 following cosmjs and osmojs.
-    pub fn gas_estimate_multiplier(&self) -> f64 {
-        // same amount that CosmosJS uses: https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550
-        // and OsmoJS too: https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10
-        self.gas_estimate_multiplier.unwrap_or(1.3)
+    /// This value comes from CosmJS and OsmoJS:
+    ///
+    /// * <https://github.com/cosmos/cosmjs/blob/e8e65aa0c145616ccb58625c32bffe08b46ff574/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L550>
+    /// * <https://github.com/osmosis-labs/osmojs/blob/bacb2fc322abc3d438581f5dce049f5ae467059d/packages/osmojs/src/utils/gas/estimation.ts#L10>
+    pub fn set_default_gas_estimate_multiplier(&mut self) {
+        self.gas_estimate_multiplier = GasMultiplierConfig::Default;
     }
 
-    /// See [Self::gas_estimate_multiplier]
-    pub fn set_gas_estimate_multiplier(&mut self, gas_estimate_multiplier: Option<f64>) {
-        self.gas_estimate_multiplier = gas_estimate_multiplier;
+    pub(crate) fn build_gas_multiplier(&self) -> GasMultiplier {
+        self.gas_estimate_multiplier.build()
+    }
+
+    /// Set a static gas multiplier to the given value.
+    pub fn set_gas_estimate_multiplier(&mut self, gas_estimate_multiplier: f64) {
+        self.gas_estimate_multiplier = GasMultiplierConfig::Static(gas_estimate_multiplier);
+    }
+
+    /// Set a dynamic gas multiplier.
+    pub fn set_dynamic_gas_estimate_multiplier(&mut self, config: DynamicGasMultiplier) {
+        self.gas_estimate_multiplier = GasMultiplierConfig::Dynamic(config);
     }
 
     /// Set the lower and upper bounds of gas price.
