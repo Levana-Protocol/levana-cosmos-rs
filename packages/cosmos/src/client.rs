@@ -707,6 +707,14 @@ impl Cosmos {
         self.gas_multiplier.get_current()
     }
 
+    /// Are we using a dynamic gas multiplier?
+    pub fn is_gas_multiplier_dynamic(&self) -> bool {
+        match self.gas_multiplier {
+            GasMultiplier::Static(_) => false,
+            GasMultiplier::Dynamic(_) => true,
+        }
+    }
+
     /// Get the base account information for the given address.
     pub async fn get_base_account(&self, address: Address) -> Result<BaseAccount, crate::Error> {
         let action = Action::GetBaseAccount(address);
@@ -1202,19 +1210,41 @@ impl TxBuilder {
         cosmos: &Cosmos,
         wallet: &Wallet,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
-        let res = self
-            .inner_sign_and_broadcast_cosmos(
-                cosmos,
-                wallet,
-                simres.body,
-                // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
-                // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
-                (simres.gas_used as f64 * cosmos.gas_multiplier.get_current()) as u64,
-            )
-            .await;
-        cosmos.gas_multiplier.update(&res);
-        res
+        let mut attempts = 0;
+        loop {
+            let simres = self.simulate(cosmos, &[wallet.get_address()]).await?;
+            let res = self
+                .inner_sign_and_broadcast_cosmos(
+                    cosmos,
+                    wallet,
+                    simres.body,
+                    // Gas estimation is not perfect, so we need to adjust it by a multiplier to account for drift
+                    // Since we're already estimating and padding, the loss of precision from f64 to u64 is negligible
+                    (simres.gas_used as f64 * cosmos.gas_multiplier.get_current()) as u64,
+                )
+                .await;
+            let did_update = cosmos.gas_multiplier.update(&res);
+            if !did_update {
+                break res;
+            }
+            let e = match res {
+                Ok(x) => break Ok(x),
+                Err(e) => e,
+            };
+
+            // We know we updated, and that we have an error. That error must
+            // be an "out of gas" otherwise we wouldn't have updated the gas multiplier. And we
+            // also know that we're using dynamic gas. Now we need to check if we should retry.
+
+            attempts += 1;
+            let allowed = cosmos.get_cosmos_builder().get_dynamic_gas_retries();
+            if attempts >= cosmos.get_cosmos_builder().get_dynamic_gas_retries() {
+                break Err(e);
+            }
+            tracing::warn!(
+                "Out of gas while executing transaction, retrying ({attempts}/{allowed}): {e}"
+            );
+        }
     }
 
     /// Sign transaction, broadcast, wait for it to complete, confirm that it was successful
