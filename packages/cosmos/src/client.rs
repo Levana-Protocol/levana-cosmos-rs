@@ -702,6 +702,11 @@ impl Cosmos {
         self
     }
 
+    /// Return the currently used gas multiplier.
+    pub fn get_current_gas_multiplier(&self) -> f64 {
+        self.gas_multiplier.get_current()
+    }
+
     /// Get the base account information for the given address.
     pub async fn get_base_account(&self, address: Address) -> Result<BaseAccount, crate::Error> {
         let action = Action::GetBaseAccount(address);
