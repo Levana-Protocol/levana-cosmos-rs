@@ -22,14 +22,16 @@ impl GasMultiplierConfig {
                 initial,
                 step_up,
                 step_down,
-                too_high_ratio,
+                overpay_ratio: too_high_ratio,
+                underpay_ratio: too_low_ratio,
             }) => GasMultiplier::Dynamic(Arc::new(Dynamic {
                 current: RwLock::new(*initial),
                 low: *low,
                 high: *high,
                 step_up: *step_up,
                 step_down: *step_down,
-                too_high_ratio: *too_high_ratio,
+                overpay_ratio: *too_high_ratio,
+                underpay_ratio: *too_low_ratio,
             })),
         }
     }
@@ -56,24 +58,38 @@ impl GasMultiplier {
             high,
             step_up,
             step_down,
-            too_high_ratio,
+            overpay_ratio,
+            underpay_ratio,
         } = match self {
             GasMultiplier::Static(_) => return false,
             GasMultiplier::Dynamic(d) => &**d,
         };
-        match res {
+
+        enum IncreaseReason {
+            Failed,
+            RatioTooHigh { actual: f64, used: i64, wanted: i64 },
+        }
+        enum Action {
+            Increase(IncreaseReason),
+            Decrease { actual: f64, used: i64, wanted: i64 },
+        }
+        let action = match res {
             Ok(res) => {
                 let ratio = res.response.gas_used as f64 / res.response.gas_wanted as f64;
-                if ratio < *too_high_ratio {
-                    let mut guard = current.write();
-                    let old = *guard;
-                    let new = (*guard - step_down).max(*low);
-                    *guard = new;
-                    std::mem::drop(guard);
-                    tracing::info!("Dynamic gas: Too much gas used, reducing multiplier. Used: {} of {}. Used ratio {ratio} < too high ratio {too_high_ratio}. Old: {old}. New: {new}.", res.response.gas_used, res.response.gas_wanted);
-                    old != new
+                if ratio < *overpay_ratio {
+                    Some(Action::Decrease {
+                        actual: ratio,
+                        used: res.response.gas_used,
+                        wanted: res.response.gas_wanted,
+                    })
+                } else if ratio > *underpay_ratio {
+                    Some(Action::Increase(IncreaseReason::RatioTooHigh {
+                        actual: ratio,
+                        used: res.response.gas_used,
+                        wanted: res.response.gas_wanted,
+                    }))
                 } else {
-                    false
+                    None
                 }
             }
             Err(e) => {
@@ -82,17 +98,42 @@ impl GasMultiplier {
                     ..
                 } = e
                 {
+                    Some(Action::Increase(IncreaseReason::Failed))
+                } else {
+                    None
+                }
+            }
+        };
+
+        match action {
+            None => false,
+            Some(action) => match action {
+                Action::Increase(reason) => {
                     let mut guard = current.write();
                     let old = *guard;
                     let new = (*guard + step_up).min(*high);
                     *guard = new;
                     std::mem::drop(guard);
-                    tracing::info!("Dynamic gas: Got an out of gas response, increasing multiplier. Old: {old}. New: {new}.");
+                    match reason {
+                        IncreaseReason::Failed => tracing::info!("Dynamic gas: Got an out of gas response, increasing multiplier. Old: {old}. New: {new}."),
+                        IncreaseReason::RatioTooHigh { actual, used, wanted } => tracing::info!("Dynamic gas: underpaid gas, increasing multiplier. Used: {used} of {wanted}. Used ratio {actual} > underpay ratio {underpay_ratio}. Old: {old}. New: {new}."),
+                    }
                     old != new
-                } else {
-                    false
                 }
-            }
+                Action::Decrease {
+                    actual,
+                    used,
+                    wanted,
+                } => {
+                    let mut guard = current.write();
+                    let old = *guard;
+                    let new = (*guard - step_down).max(*low);
+                    *guard = new;
+                    std::mem::drop(guard);
+                    tracing::info!("Dynamic gas: overpaid gas, reducing multiplier. Used: {used} of {wanted}. Used ratio {actual} < overpay ratio {overpay_ratio}. Old: {old}. New: {new}.");
+                    old != new
+                }
+            },
         }
     }
 }
@@ -103,7 +144,8 @@ pub(crate) struct Dynamic {
     high: f64,
     step_up: f64,
     step_down: f64,
-    too_high_ratio: f64,
+    overpay_ratio: f64,
+    underpay_ratio: f64,
 }
 
 /// Config parameters for dynamically modified gas multiplier.
@@ -127,10 +169,14 @@ pub struct DynamicGasMultiplier {
     pub step_up: f64,
     /// How much to decrease the multiplier when we overpay. Default: 0.01.
     pub step_down: f64,
-    /// The usage ratio on a successful transaction which is considered "too high". Default: 0.7.
+    /// The usage ratio on a successful transaction which is considered "overpaying". Default: 0.7.
     ///
     /// Each time a transaction completes successfully using simulated gas, we check the requested versus actual gas on the transaction. If the ratio is below this value, we decrease the gas multiplier.
-    pub too_high_ratio: f64,
+    pub overpay_ratio: f64,
+    /// The usage ratio on a successful transaction which is considered "underpaying". Default: 0.85.
+    ///
+    /// Each time a transaction completes successfully using simulated gas, we check the requested versus actual gas on the transaction. If the ratio is above this value, we increase the gas multiplier. The purpose of this is to preemptively avoid running out of gas.
+    pub underpay_ratio: f64,
 }
 
 impl Default for DynamicGasMultiplier {
@@ -141,7 +187,8 @@ impl Default for DynamicGasMultiplier {
             initial: 1.3,
             step_up: 0.2,
             step_down: 0.01,
-            too_high_ratio: 0.7,
+            overpay_ratio: 0.7,
+            underpay_ratio: 0.85,
         }
     }
 }
