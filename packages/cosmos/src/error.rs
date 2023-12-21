@@ -479,7 +479,7 @@ impl QueryErrorDetails {
             QueryErrorDetails::BlocksLagDetected { .. } => NetworkIssue,
             QueryErrorDetails::NoNewBlockFound { .. } => NetworkIssue,
             // Same logic as CosmosSdk IncorrectAccountSequence above
-            QueryErrorDetails::AccountSequenceMismatch { .. } => NetworkIssue,
+            QueryErrorDetails::AccountSequenceMismatch { .. } => ConnectionIsFine,
         }
     }
 
