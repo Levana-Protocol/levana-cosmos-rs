@@ -43,7 +43,7 @@ impl TxResponseExt for TxResponse {
                     for attr in &event.attributes {
                         if attr.key == "_contract_address" || attr.key == "contract_address" {
                             let address = strip_quotes(&attr.value);
-                            let address: Address = attr.value.parse().map_err(|source| {
+                            let address: Address = address.parse().map_err(|source| {
                                 ChainParseError::InvalidInstantiatedContract {
                                     address: address.to_owned(),
                                     txhash: self.txhash.clone(),
