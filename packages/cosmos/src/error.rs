@@ -602,6 +602,7 @@ pub struct SingleNodeHealthReport {
     pub is_fallback: bool,
     pub is_healthy: bool,
     pub last_error: Option<LastNodeError>,
+    pub error_count: usize,
 }
 
 #[derive(Clone, Debug)]

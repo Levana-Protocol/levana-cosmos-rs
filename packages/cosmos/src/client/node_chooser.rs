@@ -114,7 +114,7 @@ impl Node {
             instant: Instant::now(),
             timestamp: Utc::now(),
             action: None,
-            error_count: 0,
+            error_count: 1,
         });
     }
 
@@ -150,11 +150,14 @@ impl Node {
     }
 
     fn health_report(&self, allowed_error_count: usize) -> SingleNodeHealthReport {
+        let guard = self.last_error.read();
+        let last_error = guard.as_ref();
         SingleNodeHealthReport {
             grpc_url: self.grpc_url.clone(),
             is_fallback: self.is_fallback,
             is_healthy: self.is_healthy(allowed_error_count),
-            last_error: self.last_error.read().as_ref().map(|last_error| {
+            error_count: last_error.map_or(0, |last_error| last_error.error_count),
+            last_error: last_error.map(|last_error| {
                 let error = match &last_error.action {
                     Some(action) => Arc::new(format!(
                         "{} during action {}",

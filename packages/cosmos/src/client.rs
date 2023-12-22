@@ -1661,6 +1661,7 @@ mod tests {
     #[tokio::test]
     async fn fallback() {
         let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
+        builder.set_allowed_error_count(Some(0));
         builder.add_grpc_fallback_url(builder.grpc_url().to_owned());
         builder.set_grpc_url("http://0.0.0.0:0");
         let cosmos = builder.build_lazy().await;
