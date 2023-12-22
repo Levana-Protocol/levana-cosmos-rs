@@ -16,6 +16,8 @@ use crate::{
 pub(super) struct NodeChooser {
     primary: Node,
     fallbacks: Arc<Vec<Node>>,
+    /// How many errors in a row are allowed before we call a node unhealthy?
+    allowed_error_count: usize,
 }
 
 impl NodeChooser {
@@ -36,17 +38,18 @@ impl NodeChooser {
                 })
                 .collect::<Vec<_>>()
                 .into(),
+            allowed_error_count: builder.get_allowed_error_count(),
         }
     }
 
     pub(super) fn choose_node(&self) -> &Node {
-        if self.primary.is_healthy() {
+        if self.primary.is_healthy(self.allowed_error_count) {
             &self.primary
         } else {
             let fallbacks = self
                 .fallbacks
                 .iter()
-                .filter(|node| node.is_healthy())
+                .filter(|node| node.is_healthy(self.allowed_error_count))
                 .collect::<Vec<_>>();
             let mut rng = rand::thread_rng();
             fallbacks
@@ -59,8 +62,12 @@ impl NodeChooser {
 
     pub(super) fn health_report(&self) -> NodeHealthReport {
         NodeHealthReport {
-            nodes: std::iter::once(self.primary.health_report())
-                .chain(self.fallbacks.iter().map(|node| node.health_report()))
+            nodes: std::iter::once(self.primary.health_report(self.allowed_error_count))
+                .chain(
+                    self.fallbacks
+                        .iter()
+                        .map(|node| node.health_report(self.allowed_error_count)),
+                )
                 .collect(),
         }
     }
@@ -83,9 +90,22 @@ struct LastError {
     instant: Instant,
     timestamp: DateTime<Utc>,
     action: Option<Action>,
+    /// How many network errors in a row have occurred?
+    ///
+    /// Gets reset each time there's a successful query, or a query that fails with a non-network reason.
+    error_count: usize,
 }
 
 const NODE_ERROR_TIMEOUT: u64 = 30;
+
+pub(crate) enum QueryResult {
+    Success,
+    NetworkError {
+        err: QueryErrorDetails,
+        action: Action,
+    },
+    OtherError,
+}
 
 impl Node {
     pub(super) fn log_connection_error(&self, error: ConnectionError) {
@@ -94,30 +114,46 @@ impl Node {
             instant: Instant::now(),
             timestamp: Utc::now(),
             action: None,
+            error_count: 0,
         });
     }
 
-    pub(super) fn log_query_error(&self, error: QueryErrorDetails, action: Action) {
-        *self.last_error.write() = Some(LastError {
-            error: error.to_string().into(),
-            instant: Instant::now(),
-            timestamp: Utc::now(),
-            action: Some(action),
-        });
-    }
-
-    fn is_healthy(&self) -> bool {
-        match &*self.last_error.read() {
-            None => true,
-            Some(last_error) => last_error.instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT,
+    pub(super) fn log_query_result(&self, res: QueryResult) {
+        let mut guard = self.last_error.write();
+        match res {
+            QueryResult::Success | QueryResult::OtherError => {
+                if let Some(error) = guard.as_mut() {
+                    error.error_count = 0;
+                }
+            }
+            QueryResult::NetworkError { err, action } => {
+                let old_error_count = guard.as_ref().map_or(0, |x| x.error_count);
+                *guard = Some(LastError {
+                    error: err.to_string().into(),
+                    instant: Instant::now(),
+                    timestamp: Utc::now(),
+                    action: Some(action),
+                    error_count: old_error_count + 1,
+                });
+            }
         }
     }
 
-    fn health_report(&self) -> SingleNodeHealthReport {
+    fn is_healthy(&self, allowed_error_count: usize) -> bool {
+        match &*self.last_error.read() {
+            None => true,
+            Some(last_error) => {
+                last_error.instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT
+                    || last_error.error_count <= allowed_error_count
+            }
+        }
+    }
+
+    fn health_report(&self, allowed_error_count: usize) -> SingleNodeHealthReport {
         SingleNodeHealthReport {
             grpc_url: self.grpc_url.clone(),
             is_fallback: self.is_fallback,
-            is_healthy: self.is_healthy(),
+            is_healthy: self.is_healthy(allowed_error_count),
             last_error: self.last_error.read().as_ref().map(|last_error| {
                 let error = match &last_error.action {
                     Some(action) => Arc::new(format!(

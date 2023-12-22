@@ -49,7 +49,11 @@ use crate::{
     Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
 };
 
-use self::{node_chooser::Node, pool::Pool, query::GrpcRequest};
+use self::{
+    node_chooser::{Node, QueryResult},
+    pool::Pool,
+    query::GrpcRequest,
+};
 
 use super::Wallet;
 
@@ -307,17 +311,21 @@ impl Cosmos {
                     let cosmos_inner = guard.get_inner_mut();
                     match self.perform_query_inner(req.clone(), cosmos_inner).await {
                         Ok(x) => {
+                            cosmos_inner.node.log_query_result(QueryResult::Success);
                             break Ok(PerformQueryWrapper {
                                 grpc_url: cosmos_inner.node.grpc_url.clone(),
                                 tonic: x,
-                            })
+                            });
                         }
                         Err((err, can_retry)) => {
-                            if can_retry {
-                                cosmos_inner
-                                    .node
-                                    .log_query_error(err.clone(), action.clone());
-                            }
+                            cosmos_inner.node.log_query_result(if can_retry {
+                                QueryResult::NetworkError {
+                                    err: err.clone(),
+                                    action: action.clone(),
+                                }
+                            } else {
+                                QueryResult::OtherError
+                            });
                             (err, can_retry, cosmos_inner.node.grpc_url.clone())
                         }
                     }

@@ -32,6 +32,7 @@ pub struct CosmosBuilder {
     pub(crate) chain_paused_method: ChainPausedMethod,
     pub(crate) autofix_simulate_sequence_mismatch: Option<bool>,
     dynamic_gas_retries: Option<u32>,
+    allowed_error_count: Option<usize>,
 }
 
 impl CosmosBuilder {
@@ -64,6 +65,7 @@ impl CosmosBuilder {
             chain_paused_method: ChainPausedMethod::None,
             autofix_simulate_sequence_mismatch: None,
             dynamic_gas_retries: None,
+            allowed_error_count: None,
         }
     }
 
@@ -347,6 +349,18 @@ impl CosmosBuilder {
     /// See [Self::autofix_sequence_mismatch]
     pub fn set_autofix_sequence_mismatch(&mut self, autofix_sequence_mismatch: Option<bool>) {
         self.autofix_simulate_sequence_mismatch = autofix_sequence_mismatch;
+    }
+
+    /// How many network errors in a row are allowed before we consider a node unhealthy?
+    ///
+    /// Default: 3
+    pub fn get_allowed_error_count(&self) -> usize {
+        self.allowed_error_count.unwrap_or(3)
+    }
+
+    /// See [Self::get_allowed_error_count]
+    pub fn set_allowed_error_count(&mut self, allowed: Option<usize>) {
+        self.allowed_error_count = allowed;
     }
 }
 
