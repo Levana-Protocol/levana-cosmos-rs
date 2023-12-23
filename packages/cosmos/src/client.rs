@@ -526,7 +526,8 @@ impl CosmosInner {
     }
 }
 
-pub struct CosmosInterceptor(Option<String>);
+#[derive(Clone)]
+pub struct CosmosInterceptor(Option<Arc<String>>);
 
 impl Interceptor for CosmosInterceptor {
     fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
@@ -549,28 +550,7 @@ struct SequenceInformation {
 
 /// Internal data structure containing gRPC clients.
 pub struct CosmosInner {
-    auth_query_client: cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
-    bank_query_client: cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
-    tx_service_client: cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
-    wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
-    tendermint_client:
-        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
-            InterceptedService<Channel, CosmosInterceptor>,
-        >,
-    authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
-    epochs_query_client: crate::osmosis::epochs::query_client::QueryClient<
-        InterceptedService<Channel, CosmosInterceptor>,
-    >,
+    channel: InterceptedService<Channel, CosmosInterceptor>,
     is_broken: bool,
     node: Node,
     expires: Option<Instant>,
@@ -669,28 +649,16 @@ impl CosmosBuilder {
             None
         };
 
+        let interceptor = CosmosInterceptor(referer_header.map(Arc::new));
+        let channel = InterceptedService::new(grpc_channel, interceptor);
+
         Ok(CosmosInner {
-            auth_query_client:
-                cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::with_interceptor(
-                    grpc_channel.clone(), CosmosInterceptor(referer_header.clone())
-            ),
-            bank_query_client:
-                cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::with_interceptor(
-                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-            ),
-            tx_service_client:
-                cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::with_interceptor(
-                    grpc_channel.clone(),CosmosInterceptor(referer_header.clone())
-            ),
-            wasm_query_client: cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
-            tendermint_client: cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
-            authz_query_client: cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::with_interceptor(grpc_channel.clone(), CosmosInterceptor(referer_header.clone())),
-            epochs_query_client: crate::osmosis::epochs::query_client::QueryClient::with_interceptor(grpc_channel, CosmosInterceptor(referer_header)),
+            channel,
             is_broken: false,
             node: node.clone(),
             expires,
-	    simulate_sequences: Arc::new(RwLock::new(HashMap::new())) ,
-	    broadcast_sequences: Arc::new(RwLock::new(HashMap::new()))
+            simulate_sequences: Arc::new(RwLock::new(HashMap::new())),
+            broadcast_sequences: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 }
