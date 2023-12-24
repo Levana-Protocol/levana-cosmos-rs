@@ -63,6 +63,16 @@ pub enum WalletError {
 /// Errors that can occur while building a connection.
 #[derive(thiserror::Error, Debug)]
 pub enum BuilderError {
+    #[error("Invalid gRPC URL: {grpc_url}: {source:?}")]
+    InvalidGrpcUrl {
+        grpc_url: Arc<String>,
+        source: Arc<tonic::transport::Error>,
+    },
+    #[error("Unable to configure TLS for {grpc_url}: {source:?}")]
+    TlsConfig {
+        grpc_url: Arc<String>,
+        source: Arc<tonic::transport::Error>,
+    },
     #[error("Error downloading chain information from {url}: {source:?}")]
     DownloadChainInfo { url: String, source: reqwest::Error },
     #[error("Unknown Cosmos network value {network:?}")]
@@ -111,16 +121,6 @@ pub enum ChainParseError {
 /// This could be the initial connection or sending a new query.
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ConnectionError {
-    #[error("Invalid gRPC URL: {grpc_url}: {source:?}")]
-    InvalidGrpcUrl {
-        grpc_url: Arc<String>,
-        source: Arc<tonic::transport::Error>,
-    },
-    #[error("Unable to configure TLS when connecting to {grpc_url}: {source:?}")]
-    TlsConfig {
-        grpc_url: Arc<String>,
-        source: Arc<tonic::transport::Error>,
-    },
     #[error("Sanity check on connection to {grpc_url} failed with gRPC status {source}")]
     SanityCheckFailed {
         grpc_url: Arc<String>,
@@ -132,11 +132,6 @@ pub enum ConnectionError {
     TimeoutQuery { grpc_url: Arc<String> },
     #[error("Timeout hit when connecting to gRPC endpoint {grpc_url}")]
     TimeoutConnecting { grpc_url: Arc<String> },
-    #[error("Cannot establish connection to {grpc_url}: {source:?}")]
-    CannotEstablishConnection {
-        grpc_url: Arc<String>,
-        source: Arc<tonic::transport::Error>,
-    },
 }
 
 /// Error while parsing a [crate::ContractAdmin].
