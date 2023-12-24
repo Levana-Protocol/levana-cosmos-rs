@@ -1,9 +1,9 @@
+mod node;
 mod node_chooser;
 mod pool;
 mod query;
 
 use std::{
-    collections::HashMap,
     str::FromStr,
     sync::{Arc, Weak},
 };
@@ -29,13 +29,8 @@ use cosmos_sdk_proto::{
     traits::Message,
 };
 use parking_lot::Mutex;
-use tokio::{sync::RwLock, time::Instant};
-use tonic::{
-    codegen::InterceptedService,
-    service::Interceptor,
-    transport::{Channel, ClientTlsConfig, Endpoint},
-    Status,
-};
+use tokio::time::Instant;
+use tonic::{service::Interceptor, Status};
 
 use crate::{
     address::HasAddressHrp,
@@ -49,11 +44,7 @@ use crate::{
     Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
 };
 
-use self::{
-    node_chooser::{Node, QueryResult},
-    pool::Pool,
-    query::GrpcRequest,
-};
+use self::{node::Node, node_chooser::QueryResult, pool::Pool, query::GrpcRequest};
 
 use super::Wallet;
 
@@ -166,7 +157,7 @@ impl Cosmos {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
         let sequence = {
-            let guard = cosmos.simulate_sequences.read().await;
+            let guard = cosmos.simulate_sequences().read();
             let result = guard.get(&address);
             result.cloned()
         };
@@ -185,7 +176,7 @@ impl Cosmos {
                         timestamp: Instant::now(),
                     };
                     {
-                        let mut seq_info = cosmos.simulate_sequences.write().await;
+                        let mut seq_info = cosmos.simulate_sequences().write();
                         let seq_info = seq_info
                             .entry(address)
                             .or_insert_with(|| sequence_info.clone());
@@ -196,7 +187,7 @@ impl Cosmos {
                 return Ok(base_account);
             }
         }
-        let mut seq_info = cosmos.simulate_sequences.write().await;
+        let mut seq_info = cosmos.simulate_sequences().write();
         let sequence_info = SequenceInformation {
             sequence: base_account.sequence,
             timestamp: Instant::now(),
@@ -228,7 +219,7 @@ impl Cosmos {
                 .max();
             match sequence {
                 Some(sequence) => {
-                    let mut sequences = cosmos.broadcast_sequences.write().await;
+                    let mut sequences = cosmos.broadcast_sequences().write();
                     sequences
                         .entry(address)
                         .and_modify(|item| item.sequence = *sequence);
@@ -251,7 +242,7 @@ impl Cosmos {
         let mut guard = self.pool.get().await?;
         let cosmos = guard.get_inner_mut();
         let sequence = {
-            let guard = cosmos.broadcast_sequences.read().await;
+            let guard = cosmos.broadcast_sequences().read();
             let result = guard.get(&address);
             result.cloned()
         };
@@ -270,7 +261,7 @@ impl Cosmos {
                         timestamp: Instant::now(),
                     };
                     {
-                        let mut seq_info = cosmos.broadcast_sequences.write().await;
+                        let mut seq_info = cosmos.broadcast_sequences().write();
                         let seq_info = seq_info
                             .entry(address)
                             .or_insert_with(|| sequence_info.clone());
@@ -281,7 +272,7 @@ impl Cosmos {
                 return Ok(base_account);
             }
         }
-        let mut seq_info = cosmos.broadcast_sequences.write().await;
+        let mut seq_info = cosmos.broadcast_sequences().write();
         let sequence_info = SequenceInformation {
             sequence: base_account.sequence,
             timestamp: Instant::now(),
@@ -311,14 +302,14 @@ impl Cosmos {
                     let cosmos_inner = guard.get_inner_mut();
                     match self.perform_query_inner(req.clone(), cosmos_inner).await {
                         Ok(x) => {
-                            cosmos_inner.node.log_query_result(QueryResult::Success);
+                            cosmos_inner.log_query_result(QueryResult::Success);
                             break Ok(PerformQueryWrapper {
-                                grpc_url: cosmos_inner.node.grpc_url.clone(),
+                                grpc_url: cosmos_inner.grpc_url().clone(),
                                 tonic: x,
                             });
                         }
                         Err((err, can_retry)) => {
-                            cosmos_inner.node.log_query_result(if can_retry {
+                            cosmos_inner.log_query_result(if can_retry {
                                 QueryResult::NetworkError {
                                     err: err.clone(),
                                     action: action.clone(),
@@ -326,7 +317,7 @@ impl Cosmos {
                             } else {
                                 QueryResult::OtherError
                             });
-                            (err, can_retry, cosmos_inner.node.grpc_url.clone())
+                            (err, can_retry, cosmos_inner.grpc_url().clone())
                         }
                     }
                 }
@@ -354,7 +345,7 @@ impl Cosmos {
     async fn perform_query_inner<Request: GrpcRequest>(
         &self,
         req: Request,
-        cosmos_inner: &mut CosmosInner,
+        cosmos_inner: &mut Node,
     ) -> Result<tonic::Response<Request::Response>, (QueryErrorDetails, bool)> {
         let duration =
             tokio::time::Duration::from_secs(self.pool.builder.query_timeout_seconds().into());
@@ -369,7 +360,7 @@ impl Cosmos {
             Ok(Ok(res)) => {
                 self.check_block_height(
                     res.metadata().get("x-cosmos-block-height"),
-                    &cosmos_inner.node.grpc_url,
+                    cosmos_inner.grpc_url(),
                 )?;
                 Ok(res)
             }
@@ -518,14 +509,6 @@ impl Cosmos {
     }
 }
 
-impl CosmosInner {
-    fn set_broken(&mut self, err: impl FnOnce(Arc<String>) -> ConnectionError) {
-        let err = err(self.node.grpc_url.clone());
-        self.is_broken = true;
-        self.node.log_connection_error(err);
-    }
-}
-
 #[derive(Clone)]
 pub struct CosmosInterceptor(Option<Arc<String>>);
 
@@ -543,25 +526,15 @@ impl Interceptor for CosmosInterceptor {
 }
 
 #[derive(Debug, Clone)]
-struct SequenceInformation {
+pub(crate) struct SequenceInformation {
     sequence: u64,
     timestamp: Instant,
-}
-
-/// Internal data structure containing gRPC clients.
-pub struct CosmosInner {
-    channel: InterceptedService<Channel, CosmosInterceptor>,
-    is_broken: bool,
-    node: Node,
-    expires: Option<Instant>,
-    simulate_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
-    broadcast_sequences: Arc<RwLock<HashMap<Address, SequenceInformation>>>,
 }
 
 impl CosmosBuilder {
     /// Create a new [Cosmos] and perform a sanity check to make sure the connection works.
     pub async fn build(self) -> Result<Cosmos, BuilderError> {
-        let cosmos = self.build_lazy().await;
+        let cosmos = self.build_lazy()?;
 
         let resp = cosmos
             .perform_query(GetLatestBlockRequest {}, Action::SanityCheck, false)
@@ -587,12 +560,14 @@ impl CosmosBuilder {
     }
 
     /// Create a new [Cosmos] but do not perform any sanity checks.
-    pub async fn build_lazy(self) -> Cosmos {
+    ///
+    /// Can fail if parsing the gRPC URLs fails.
+    pub fn build_lazy(self) -> Result<Cosmos, BuilderError> {
         let builder = Arc::new(self);
         let chain_paused_status = builder.chain_paused_method.into();
         let gas_multiplier = builder.build_gas_multiplier();
         let cosmos = Cosmos {
-            pool: Pool::new(builder).await,
+            pool: Pool::new(builder)?,
             height: None,
             block_height_tracking: Arc::new(Mutex::new(BlockHeightTracking {
                 when: Instant::now(),
@@ -602,64 +577,7 @@ impl CosmosBuilder {
             gas_multiplier,
         };
         cosmos.launch_chain_paused_tracker();
-        cosmos
-    }
-}
-
-impl CosmosBuilder {
-    async fn build_inner(
-        &self,
-        node: &Node,
-        builder: &CosmosBuilder,
-    ) -> Result<CosmosInner, ConnectionError> {
-        let grpc_url = &node.grpc_url;
-        let grpc_endpoint =
-            grpc_url
-                .parse::<Endpoint>()
-                .map_err(|source| ConnectionError::InvalidGrpcUrl {
-                    grpc_url: grpc_url.clone(),
-                    source: source.into(),
-                })?;
-        let grpc_endpoint = if grpc_url.starts_with("https://") {
-            grpc_endpoint
-                .tls_config(ClientTlsConfig::new())
-                .map_err(|source| ConnectionError::TlsConfig {
-                    grpc_url: grpc_url.clone(),
-                    source: source.into(),
-                })?
-        } else {
-            grpc_endpoint
-        };
-        let grpc_channel =
-            tokio::time::timeout(tokio::time::Duration::from_secs(5), grpc_endpoint.connect())
-                .await
-                .map_err(|_| ConnectionError::TimeoutConnecting {
-                    grpc_url: grpc_url.clone(),
-                })?
-                .map_err(|source| ConnectionError::CannotEstablishConnection {
-                    grpc_url: grpc_url.clone(),
-                    source: source.into(),
-                })?;
-
-        let referer_header = self.referer_header().map(|x| x.to_owned());
-
-        let expires = if node.is_fallback {
-            Some(Instant::now() + builder.fallback_timeout())
-        } else {
-            None
-        };
-
-        let interceptor = CosmosInterceptor(referer_header.map(Arc::new));
-        let channel = InterceptedService::new(grpc_channel, interceptor);
-
-        Ok(CosmosInner {
-            channel,
-            is_broken: false,
-            node: node.clone(),
-            expires,
-            simulate_sequences: Arc::new(RwLock::new(HashMap::new())),
-            broadcast_sequences: Arc::new(RwLock::new(HashMap::new())),
-        })
+        Ok(cosmos)
     }
 }
 
@@ -859,25 +777,18 @@ impl Cosmos {
             Err(e) => {
                 if let QueryErrorDetails::NotFound(_) = &e.query {
                     for node in self.pool.node_chooser.all_nodes() {
-                        let mut cosmos_inner = match self
-                            .pool
-                            .builder
-                            .build_inner(node, &self.pool.builder)
-                            .await
-                        {
-                            Ok(cosmos_inner) => cosmos_inner,
-                            Err(_) => continue,
-                        };
-                        if let Ok(txres) = self
-                            .perform_query_inner(
-                                GetTxRequest {
-                                    hash: txhash.clone(),
-                                },
-                                &mut cosmos_inner,
-                            )
-                            .await
-                        {
-                            return Self::txres_to_pair(txres.into_inner(), action);
+                        if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
+                            if let Ok(txres) = self
+                                .perform_query_inner(
+                                    GetTxRequest {
+                                        hash: txhash.clone(),
+                                    },
+                                    node_guard.get_inner_mut(),
+                                )
+                                .await
+                            {
+                                return Self::txres_to_pair(txres.into_inner(), action);
+                            }
                         }
                     }
                 }
@@ -1622,7 +1533,7 @@ mod tests {
         builder.set_grpc_url("https://0.0.0.0:0".to_owned());
 
         builder.clone().build().await.unwrap_err();
-        let cosmos = builder.build_lazy().await;
+        let cosmos = builder.build_lazy().unwrap();
         cosmos.get_latest_block_info().await.unwrap_err();
     }
 
@@ -1632,7 +1543,16 @@ mod tests {
         builder.set_allowed_error_count(Some(0));
         builder.add_grpc_fallback_url(builder.grpc_url().to_owned());
         builder.set_grpc_url("http://0.0.0.0:0");
-        let cosmos = builder.build_lazy().await;
+        let cosmos = builder.build_lazy().unwrap();
+        cosmos.get_latest_block_info().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignore_broken_fallback() {
+        let mut builder = CosmosNetwork::OsmosisTestnet.builder().await.unwrap();
+        builder.set_allowed_error_count(Some(0));
+        builder.add_grpc_fallback_url("http://0.0.0.0:0");
+        let cosmos = builder.build_lazy().unwrap();
         cosmos.get_latest_block_info().await.unwrap();
     }
 

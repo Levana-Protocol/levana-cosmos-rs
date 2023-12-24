@@ -21,7 +21,7 @@ pub struct CosmosBuilder {
     gas_price_retry_attempts: Option<u64>,
     transaction_attempts: Option<usize>,
     referer_header: Option<String>,
-    connection_count: Option<usize>,
+    request_count: Option<usize>,
     connection_timeout: Option<Duration>,
     idle_timeout_seconds: Option<u32>,
     query_timeout_seconds: Option<u32>,
@@ -54,7 +54,7 @@ impl CosmosBuilder {
             gas_price_retry_attempts: None,
             transaction_attempts: None,
             referer_header: None,
-            connection_count: None,
+            request_count: None,
             connection_timeout: None,
             idle_timeout_seconds: None,
             query_timeout_seconds: None,
@@ -219,16 +219,18 @@ impl CosmosBuilder {
         self.referer_header = referer_header;
     }
 
-    /// The maximum number of connections allowed
+    /// The maximum number of concurrent requests
     ///
-    /// Defaults to 10
-    pub fn connection_count(&self) -> usize {
-        self.connection_count.unwrap_or(10)
+    /// This is a global limit for the generated [Cosmos], and will apply across all endpoints.
+    ///
+    /// Defaults to 128
+    pub fn request_count(&self) -> usize {
+        self.request_count.unwrap_or(128)
     }
 
-    /// See [Self::connection_count]
-    pub fn set_connection_count(&mut self, connection_count: Option<usize>) {
-        self.connection_count = connection_count;
+    /// See [Self::request_count]
+    pub fn set_request_count(&mut self, request_count: Option<usize>) {
+        self.request_count = request_count;
     }
 
     /// Sets the duration to wait for a connection.
