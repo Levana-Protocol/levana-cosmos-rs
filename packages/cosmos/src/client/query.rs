@@ -22,11 +22,11 @@ use cosmos_sdk_proto::{
         QuerySmartContractStateRequest, QuerySmartContractStateResponse,
     },
 };
-use tonic::async_trait;
+use tonic::{async_trait, codegen::InterceptedService, transport::Channel};
 
 use crate::osmosis::epochs::{QueryEpochsInfoRequest, QueryEpochsInfoResponse};
 
-use super::CosmosInner;
+use super::{CosmosInner, CosmosInterceptor};
 
 #[async_trait]
 pub(crate) trait GrpcRequest: Clone + Sized {
@@ -45,7 +45,7 @@ impl GrpcRequest for QueryAccountRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.auth_query_client.account(req).await
+        inner.auth_query_client().account(req).await
     }
 }
 
@@ -56,7 +56,7 @@ impl GrpcRequest for QueryAllBalancesRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.bank_query_client.all_balances(req).await
+        inner.bank_query_client().all_balances(req).await
     }
 }
 
@@ -67,7 +67,7 @@ impl GrpcRequest for QuerySmartContractStateRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.smart_contract_state(req).await
+        inner.wasm_query_client().smart_contract_state(req).await
     }
 }
 
@@ -78,7 +78,7 @@ impl GrpcRequest for QueryRawContractStateRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.raw_contract_state(req).await
+        inner.wasm_query_client().raw_contract_state(req).await
     }
 }
 
@@ -89,7 +89,7 @@ impl GrpcRequest for QueryCodeRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.code(req).await
+        inner.wasm_query_client().code(req).await
     }
 }
 
@@ -100,7 +100,7 @@ impl GrpcRequest for GetTxRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.get_tx(req).await
+        inner.tx_service_client().get_tx(req).await
     }
 }
 
@@ -111,7 +111,7 @@ impl GrpcRequest for GetTxsEventRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.get_txs_event(req).await
+        inner.tx_service_client().get_txs_event(req).await
     }
 }
 
@@ -122,7 +122,7 @@ impl GrpcRequest for QueryContractInfoRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.contract_info(req).await
+        inner.wasm_query_client().contract_info(req).await
     }
 }
 
@@ -133,7 +133,7 @@ impl GrpcRequest for QueryContractHistoryRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.wasm_query_client.contract_history(req).await
+        inner.wasm_query_client().contract_history(req).await
     }
 }
 
@@ -144,7 +144,7 @@ impl GrpcRequest for GetBlockByHeightRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tendermint_client.get_block_by_height(req).await
+        inner.tendermint_client().get_block_by_height(req).await
     }
 }
 
@@ -155,7 +155,7 @@ impl GrpcRequest for GetLatestBlockRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tendermint_client.get_latest_block(req).await
+        inner.tendermint_client().get_latest_block(req).await
     }
 }
 
@@ -166,7 +166,7 @@ impl GrpcRequest for SimulateRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.simulate(req).await
+        inner.tx_service_client().simulate(req).await
     }
 }
 
@@ -177,7 +177,7 @@ impl GrpcRequest for BroadcastTxRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.tx_service_client.broadcast_tx(req).await
+        inner.tx_service_client().broadcast_tx(req).await
     }
 }
 
@@ -188,7 +188,7 @@ impl GrpcRequest for QueryGranterGrantsRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.authz_query_client.granter_grants(req).await
+        inner.authz_query_client().granter_grants(req).await
     }
 }
 
@@ -199,7 +199,7 @@ impl GrpcRequest for QueryGranteeGrantsRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.authz_query_client.grantee_grants(req).await
+        inner.authz_query_client().grantee_grants(req).await
     }
 }
 
@@ -210,6 +210,64 @@ impl GrpcRequest for QueryEpochsInfoRequest {
         req: tonic::Request<Self>,
         inner: &mut CosmosInner,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
-        inner.epochs_query_client.epoch_infos(req).await
+        inner.epochs_query_client().epoch_infos(req).await
+    }
+}
+
+type CosmosChannel = InterceptedService<Channel, CosmosInterceptor>;
+
+impl CosmosInner {
+    fn auth_query_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient<CosmosChannel> {
+        cosmos_sdk_proto::cosmos::auth::v1beta1::query_client::QueryClient::new(
+            self.channel.clone(),
+        )
+    }
+
+    fn bank_query_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient<CosmosChannel> {
+        cosmos_sdk_proto::cosmos::bank::v1beta1::query_client::QueryClient::new(
+            self.channel.clone(),
+        )
+    }
+
+    fn wasm_query_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient<CosmosChannel> {
+        cosmos_sdk_proto::cosmwasm::wasm::v1::query_client::QueryClient::new(self.channel.clone())
+    }
+
+    fn tx_service_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient<CosmosChannel> {
+        cosmos_sdk_proto::cosmos::tx::v1beta1::service_client::ServiceClient::new(
+            self.channel.clone(),
+        )
+    }
+
+    fn tendermint_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient<
+        CosmosChannel,
+    > {
+        cosmos_sdk_proto::cosmos::base::tendermint::v1beta1::service_client::ServiceClient::new(
+            self.channel.clone(),
+        )
+    }
+
+    fn authz_query_client(
+        &self,
+    ) -> cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient<CosmosChannel> {
+        cosmos_sdk_proto::cosmos::authz::v1beta1::query_client::QueryClient::new(
+            self.channel.clone(),
+        )
+    }
+
+    fn epochs_query_client(
+        &self,
+    ) -> crate::osmosis::epochs::query_client::QueryClient<CosmosChannel> {
+        crate::osmosis::epochs::query_client::QueryClient::new(self.channel.clone())
     }
 }
