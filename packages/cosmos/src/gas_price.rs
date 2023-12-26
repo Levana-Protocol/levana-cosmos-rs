@@ -136,7 +136,7 @@ pub(crate) async fn load_osmosis_gas_price(
     let base_fee = load_osmosis_gas_base_fee(client).await?;
     // Wide range to try and deal with potential bugs in the EIP gas price
     // mechanism.
-    Ok((base_fee * 2.5, base_fee * 12.0))
+    Ok((base_fee * 2.5, base_fee * 25.0))
 }
 
 /// Loads current eip base fee from a v1beta1 lcd endpoint
