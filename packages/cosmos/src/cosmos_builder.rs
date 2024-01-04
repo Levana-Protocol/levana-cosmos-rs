@@ -6,6 +6,13 @@ use crate::{
     AddressHrp, DynamicGasMultiplier,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OsmosisGasParams {
+    pub(crate) low_multiplier: f64,
+    pub(crate) high_multiplier: f64,
+    pub(crate) max_price: f64,
+}
+
 /// Used to build a [crate::Cosmos].
 #[derive(Clone, Debug)]
 pub struct CosmosBuilder {
@@ -33,6 +40,7 @@ pub struct CosmosBuilder {
     pub(crate) autofix_simulate_sequence_mismatch: Option<bool>,
     dynamic_gas_retries: Option<u32>,
     allowed_error_count: Option<usize>,
+    osmosis_gas_params: Option<OsmosisGasParams>,
 }
 
 impl CosmosBuilder {
@@ -66,6 +74,7 @@ impl CosmosBuilder {
             autofix_simulate_sequence_mismatch: None,
             dynamic_gas_retries: None,
             allowed_error_count: None,
+            osmosis_gas_params: None,
         }
     }
 
@@ -363,6 +372,32 @@ impl CosmosBuilder {
     /// See [Self::get_allowed_error_count]
     pub fn set_allowed_error_count(&mut self, allowed: Option<usize>) {
         self.allowed_error_count = allowed;
+    }
+
+    /// Set parameters for Osmosis's EIP fee market gas.
+    ///
+    /// Low and high multiplier indicate how much to multiply the base fee by to get low and high prices, respectively. The max price is a cap on what those results will be.
+    ///
+    /// Defaults: 1.2, 10.0, and 0.01
+    pub fn set_osmosis_gas_params(
+        &mut self,
+        low_multiplier: f64,
+        high_multiplier: f64,
+        max_price: f64,
+    ) {
+        self.osmosis_gas_params = Some(OsmosisGasParams {
+            low_multiplier,
+            high_multiplier,
+            max_price,
+        });
+    }
+
+    pub(crate) fn get_osmosis_gas_params(&self) -> OsmosisGasParams {
+        self.osmosis_gas_params.unwrap_or(OsmosisGasParams {
+            low_multiplier: 1.2,
+            high_multiplier: 10.0,
+            max_price: 0.01,
+        })
     }
 }
 
