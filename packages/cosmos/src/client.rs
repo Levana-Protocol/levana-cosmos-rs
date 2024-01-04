@@ -915,6 +915,45 @@ impl Cosmos {
         BlockInfo::new(action, res.block_id, res.block, Some(height))
     }
 
+    /// Same as [Self::get_transaction_with_fallbacks] but for [Self::get_block_info]
+    pub async fn get_block_info_with_fallbacks(
+        &self,
+        height: i64,
+    ) -> Result<BlockInfo, crate::Error> {
+        let action = Action::GetBlock(height);
+        let res = self
+            .perform_query(GetBlockByHeightRequest { height }, action.clone(), true)
+            .await
+            .map(|x| x.into_inner());
+        match res {
+            Ok(res) => BlockInfo::new(action, res.block_id, res.block, Some(height)),
+            Err(e) => {
+                if let QueryErrorDetails::NotFound(_) = &e.query {
+                    for node in self.pool.node_chooser.all_nodes() {
+                        if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
+                            if let Ok(res) = self
+                                .perform_query_inner(
+                                    GetBlockByHeightRequest { height },
+                                    node_guard.get_inner_mut(),
+                                )
+                                .await
+                            {
+                                let res = res.into_inner();
+                                return BlockInfo::new(
+                                    action,
+                                    res.block_id,
+                                    res.block,
+                                    Some(height),
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e.into())
+            }
+        }
+    }
+
     /// Get information on the earliest block available from this node
     pub async fn get_earliest_block_info(&self) -> Result<BlockInfo, crate::Error> {
         match self.get_block_info(1).await {
