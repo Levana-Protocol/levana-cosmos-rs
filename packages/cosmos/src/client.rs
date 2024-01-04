@@ -39,6 +39,7 @@ use crate::{
         QueryErrorCategory, QueryErrorDetails,
     },
     gas_multiplier::{GasMultiplier, GasMultiplierConfig},
+    gas_price::CurrentGasPrice,
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
@@ -891,7 +892,7 @@ impl Cosmos {
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let (low, high) = self.pool.builder.gas_price();
+        let CurrentGasPrice { low, high, base: _ } = self.pool.builder.current_gas_price();
         let attempts = self.pool.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
@@ -991,6 +992,14 @@ impl Cosmos {
     /// At the moment, this only occurs on Osmosis Mainnet during the epoch.
     pub fn is_chain_paused(&self) -> bool {
         self.chain_paused_status.is_paused()
+    }
+
+    /// Get the base gas price.
+    ///
+    /// On Osmosis mainnet, this will be the base gas fee reported by the chain.
+    /// On all other chains, it will be the low price value.
+    pub fn get_base_gas_price(&self) -> f64 {
+        self.pool.builder.current_gas_price().base
     }
 
     /// Get a node health report

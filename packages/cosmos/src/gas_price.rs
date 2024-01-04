@@ -12,7 +12,11 @@ pub(crate) struct GasPriceMethod {
     inner: GasPriceMethodInner,
 }
 
-pub(crate) const DEFAULT_GAS_PRICE: (f64, f64) = (0.02, 0.03);
+pub(crate) const DEFAULT_GAS_PRICE: CurrentGasPrice = CurrentGasPrice {
+    low: 0.02,
+    high: 0.03,
+    base: 0.02,
+};
 
 #[derive(Clone, Debug)]
 enum GasPriceMethodInner {
@@ -28,10 +32,20 @@ enum GasPriceMethodInner {
     },
 }
 
+pub(crate) struct CurrentGasPrice {
+    pub(crate) low: f64,
+    pub(crate) high: f64,
+    pub(crate) base: f64,
+}
+
 impl GasPriceMethod {
-    pub(crate) fn pair(&self) -> (f64, f64) {
+    pub(crate) fn current(&self) -> CurrentGasPrice {
         match &self.inner {
-            GasPriceMethodInner::Static { low, high } => (*low, *high),
+            GasPriceMethodInner::Static { low, high } => CurrentGasPrice {
+                low: *low,
+                high: *high,
+                base: *low,
+            },
             GasPriceMethodInner::OsmosisMainnet {
                 client,
                 price,
@@ -81,10 +95,11 @@ impl GasPriceMethod {
                         Ok::<_, LoadOsmosisGasPriceError>(())
                     });
                 }
-                (
-                    (reported * low_multiplier).min(*max_price),
-                    (reported * high_multiplier).min(*max_price),
-                )
+                CurrentGasPrice {
+                    base: reported,
+                    low: (reported * low_multiplier).min(*max_price),
+                    high: (reported * high_multiplier).min(*max_price),
+                }
             }
         }
     }
