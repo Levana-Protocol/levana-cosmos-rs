@@ -4,7 +4,7 @@ use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
 use parking_lot::RwLock;
 
-use crate::error::BuilderError;
+use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError};
 
 /// Mechanism used for determining the gas price
 #[derive(Clone, Debug)]
@@ -24,6 +24,7 @@ enum GasPriceMethodInner {
     OsmosisMainnet {
         client: reqwest::Client,
         price: Arc<RwLock<OsmosisGasPrice>>,
+        params: OsmosisGasParams,
     },
 }
 
@@ -31,7 +32,16 @@ impl GasPriceMethod {
     pub(crate) fn pair(&self) -> (f64, f64) {
         match &self.inner {
             GasPriceMethodInner::Static { low, high } => (*low, *high),
-            GasPriceMethodInner::OsmosisMainnet { client, price } => {
+            GasPriceMethodInner::OsmosisMainnet {
+                client,
+                price,
+                params:
+                    OsmosisGasParams {
+                        low_multiplier,
+                        high_multiplier,
+                        max_price,
+                    },
+            } => {
                 // To avoid a race condition, we lock, check the last triggered
                 // time, and then immediately update last_triggered if we're
                 // going to reload. This prevents multiple tasks from being
@@ -41,7 +51,7 @@ impl GasPriceMethod {
                 //
                 // Do this all in its own block to make sure we don't hold the
                 // write guard for too long.
-                let (low, high, should_trigger) = {
+                let (reported, should_trigger) = {
                     let now = Instant::now();
 
                     // Locking optimization. First take a read lock and, if we
@@ -56,50 +66,53 @@ impl GasPriceMethod {
                         if should_trigger {
                             guard.last_triggered = now;
                         }
-                        (guard.low, guard.high, should_trigger)
+                        (guard.reported, should_trigger)
                     } else {
-                        (orig.low, orig.high, false)
+                        (orig.reported, false)
                     }
                 };
                 if should_trigger {
                     let client = client.clone();
                     let price = price.clone();
                     tokio::task::spawn(async move {
-                        let (low, high) = load_osmosis_gas_price(&client).await?;
+                        let reported = load_osmosis_gas_base_fee(&client).await?;
                         let mut guard = price.write();
-                        guard.low = low;
-                        guard.high = high;
+                        guard.reported = reported;
                         Ok::<_, LoadOsmosisGasPriceError>(())
                     });
                 }
-                (low, high)
+                (
+                    (reported * low_multiplier).min(*max_price),
+                    (reported * high_multiplier).min(*max_price),
+                )
             }
         }
     }
 
     pub(crate) async fn new_osmosis_mainnet(
         client: &reqwest::Client,
+        params: OsmosisGasParams,
     ) -> Result<Self, BuilderError> {
         // Do not kill this process if the query fails. We don't want services
         // to crash just because Osmosis's LCD stops responding.
-        let (low, high) = match load_osmosis_gas_price(client).await {
-            Ok(pair) => pair,
+        let reported = match load_osmosis_gas_base_fee(client).await {
+            Ok(reported) => reported,
             Err(e) => {
                 tracing::error!(
                     "Unable to load variable Osmosis mainnet gas price, using defaults: {e}"
                 );
-                DEFAULT_GAS_PRICE
+                0.0025
             }
         };
         let price = OsmosisGasPrice {
-            low,
-            high,
             last_triggered: Instant::now(),
+            reported,
         };
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
                 client: client.clone(),
                 price: Arc::new(RwLock::new(price)),
+                params,
             },
         })
     }
@@ -125,18 +138,8 @@ fn osmosis_too_old(last_triggered: Instant, now: Instant) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 struct OsmosisGasPrice {
-    low: f64,
-    high: f64,
+    reported: f64,
     last_triggered: Instant,
-}
-
-pub(crate) async fn load_osmosis_gas_price(
-    client: &reqwest::Client,
-) -> Result<(f64, f64), LoadOsmosisGasPriceError> {
-    let base_fee = load_osmosis_gas_base_fee(client).await?;
-    // Wide range to try and deal with potential bugs in the EIP gas price
-    // mechanism.
-    Ok((base_fee * 2.5, base_fee * 25.0))
 }
 
 /// Loads current eip base fee from a v1beta1 lcd endpoint
