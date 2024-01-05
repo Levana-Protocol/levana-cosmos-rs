@@ -4,7 +4,7 @@ use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
 use parking_lot::RwLock;
 
-use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError};
+use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError, CosmosBuilder};
 
 /// Mechanism used for determining the gas price
 #[derive(Clone, Debug)]
@@ -39,7 +39,7 @@ pub(crate) struct CurrentGasPrice {
 }
 
 impl GasPriceMethod {
-    pub(crate) fn current(&self) -> CurrentGasPrice {
+    pub(crate) fn current(&self, builder: &CosmosBuilder) -> CurrentGasPrice {
         match &self.inner {
             GasPriceMethodInner::Static { low, high } => CurrentGasPrice {
                 low: *low,
@@ -71,12 +71,20 @@ impl GasPriceMethod {
                     // Locking optimization. First take a read lock and, if we
                     // don't need to trigger, no need for a write lock.
                     let orig = *price.read();
-                    if osmosis_too_old(orig.last_triggered, now) {
+                    if osmosis_too_old(
+                        orig.last_triggered,
+                        now,
+                        builder.get_osmosis_gas_price_too_old_seconds(),
+                    ) {
                         // OK, we think we need to trigger. Now take a write
                         // lock and check again to see if another task was
                         // already triggered.
                         let mut guard = price.write();
-                        let should_trigger = osmosis_too_old(guard.last_triggered, now);
+                        let should_trigger = osmosis_too_old(
+                            guard.last_triggered,
+                            now,
+                            builder.get_osmosis_gas_price_too_old_seconds(),
+                        );
                         if should_trigger {
                             guard.last_triggered = now;
                         }
@@ -139,11 +147,9 @@ impl GasPriceMethod {
     }
 }
 
-const OSMOSIS_TOO_OLD_SECONDS: u64 = 60;
-
-fn osmosis_too_old(last_triggered: Instant, now: Instant) -> bool {
+fn osmosis_too_old(last_triggered: Instant, now: Instant, too_old_seconds: u64) -> bool {
     match now.checked_duration_since(last_triggered) {
-        Some(age) => age.as_secs() > OSMOSIS_TOO_OLD_SECONDS,
+        Some(age) => age.as_secs() > too_old_seconds,
         None => {
             tracing::warn!("now.checked_duration_since(last_triggered) returned None");
             false

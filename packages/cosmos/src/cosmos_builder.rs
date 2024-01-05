@@ -41,6 +41,7 @@ pub struct CosmosBuilder {
     dynamic_gas_retries: Option<u32>,
     allowed_error_count: Option<usize>,
     osmosis_gas_params: Option<OsmosisGasParams>,
+    osmosis_gas_price_too_old_seconds: Option<u64>,
 }
 
 impl CosmosBuilder {
@@ -75,6 +76,7 @@ impl CosmosBuilder {
             dynamic_gas_retries: None,
             allowed_error_count: None,
             osmosis_gas_params: None,
+            osmosis_gas_price_too_old_seconds: None,
         }
     }
 
@@ -187,7 +189,7 @@ impl CosmosBuilder {
     pub(crate) fn current_gas_price(&self) -> CurrentGasPrice {
         self.gas_price_method
             .as_ref()
-            .map_or(DEFAULT_GAS_PRICE, GasPriceMethod::current)
+            .map_or(DEFAULT_GAS_PRICE, |method| method.current(self))
     }
 
     /// How many retries at different gas prices should we try before using high
@@ -398,6 +400,18 @@ impl CosmosBuilder {
             high_multiplier: 10.0,
             max_price: 0.01,
         })
+    }
+
+    /// How many seconds old the Osmosis gas price needs to be before we recheck.
+    ///
+    /// Default: 5 seconds
+    pub fn get_osmosis_gas_price_too_old_seconds(&self) -> u64 {
+        self.osmosis_gas_price_too_old_seconds.unwrap_or(5)
+    }
+
+    /// See [Self::get_osmosis_gas_price_too_old_seconds]
+    pub fn set_osmosis_gas_price_too_old_seconds(&mut self, secs: u64) {
+        self.osmosis_gas_price_too_old_seconds = Some(secs);
     }
 }
 
