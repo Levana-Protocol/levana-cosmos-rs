@@ -39,7 +39,7 @@ pub(crate) struct CurrentGasPrice {
 }
 
 impl GasPriceMethod {
-    pub(crate) fn current(&self, builder: &CosmosBuilder) -> CurrentGasPrice {
+    pub(crate) fn current(&self, builder: &CosmosBuilder, max_price: f64) -> CurrentGasPrice {
         match &self.inner {
             GasPriceMethodInner::Static { low, high } => CurrentGasPrice {
                 low: *low,
@@ -53,7 +53,6 @@ impl GasPriceMethod {
                     OsmosisGasParams {
                         low_multiplier,
                         high_multiplier,
-                        max_price,
                     },
             } => {
                 // To avoid a race condition, we lock, check the last triggered
@@ -105,8 +104,8 @@ impl GasPriceMethod {
                 }
                 CurrentGasPrice {
                     base: reported,
-                    low: (reported * low_multiplier).min(*max_price),
-                    high: (reported * high_multiplier).min(*max_price),
+                    low: (reported * low_multiplier).min(max_price),
+                    high: (reported * high_multiplier).min(max_price),
                 }
             }
         }

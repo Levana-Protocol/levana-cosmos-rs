@@ -10,7 +10,6 @@ use crate::{
 pub(crate) struct OsmosisGasParams {
     pub(crate) low_multiplier: f64,
     pub(crate) high_multiplier: f64,
-    pub(crate) max_price: f64,
 }
 
 /// Used to build a [crate::Cosmos].
@@ -42,6 +41,7 @@ pub struct CosmosBuilder {
     allowed_error_count: Option<usize>,
     osmosis_gas_params: Option<OsmosisGasParams>,
     osmosis_gas_price_too_old_seconds: Option<u64>,
+    max_price: Option<f64>,
 }
 
 impl CosmosBuilder {
@@ -77,6 +77,7 @@ impl CosmosBuilder {
             allowed_error_count: None,
             osmosis_gas_params: None,
             osmosis_gas_price_too_old_seconds: None,
+            max_price: None,
         }
     }
 
@@ -186,10 +187,10 @@ impl CosmosBuilder {
         self.gas_price_method = Some(method);
     }
 
-    pub(crate) fn current_gas_price(&self) -> CurrentGasPrice {
+    pub(crate) fn current_gas_price(&self, max_price: f64) -> CurrentGasPrice {
         self.gas_price_method
             .as_ref()
-            .map_or(DEFAULT_GAS_PRICE, |method| method.current(self))
+            .map_or(DEFAULT_GAS_PRICE, |method| method.current(self, max_price))
     }
 
     /// How many retries at different gas prices should we try before using high
@@ -381,25 +382,27 @@ impl CosmosBuilder {
     /// Low and high multiplier indicate how much to multiply the base fee by to get low and high prices, respectively. The max price is a cap on what those results will be.
     ///
     /// Defaults: 1.2, 10.0, and 0.01
-    pub fn set_osmosis_gas_params(
-        &mut self,
-        low_multiplier: f64,
-        high_multiplier: f64,
-        max_price: f64,
-    ) {
+    pub fn set_osmosis_gas_params(&mut self, low_multiplier: f64, high_multiplier: f64) {
         self.osmosis_gas_params = Some(OsmosisGasParams {
             low_multiplier,
             high_multiplier,
-            max_price,
         });
+    }
+
+    /// Sets the maximum gas price to be used on Osmosis mainnet.
+    pub fn set_max_gas_price(&mut self, max_price: f64) {
+        self.max_price = Some(max_price);
     }
 
     pub(crate) fn get_osmosis_gas_params(&self) -> OsmosisGasParams {
         self.osmosis_gas_params.unwrap_or(OsmosisGasParams {
             low_multiplier: 1.2,
             high_multiplier: 10.0,
-            max_price: 0.01,
         })
+    }
+
+    pub(crate) fn get_init_max_gas_price(&self) -> f64 {
+        self.max_price.unwrap_or(0.01)
     }
 
     /// How many seconds old the Osmosis gas price needs to be before we recheck.

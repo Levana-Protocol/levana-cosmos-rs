@@ -63,6 +63,8 @@ pub struct Cosmos {
     block_height_tracking: Arc<Mutex<BlockHeightTracking>>,
     pub(crate) chain_paused_status: ChainPausedStatus,
     gas_multiplier: GasMultiplier,
+    /// Maximum gas price
+    max_price: f64,
 }
 
 pub(crate) struct WeakCosmos {
@@ -71,6 +73,7 @@ pub(crate) struct WeakCosmos {
     block_height_tracking: Weak<Mutex<BlockHeightTracking>>,
     chain_paused_status: ChainPausedStatus,
     gas_multiplier: GasMultiplier,
+    max_price: f64,
 }
 
 /// Type encapsulating both the [TxResponse] as well the actual [Tx]
@@ -91,6 +94,7 @@ impl From<&Cosmos> for WeakCosmos {
             block_height_tracking,
             chain_paused_status,
             gas_multiplier,
+            max_price,
         }: &Cosmos,
     ) -> Self {
         WeakCosmos {
@@ -99,6 +103,7 @@ impl From<&Cosmos> for WeakCosmos {
             block_height_tracking: Arc::downgrade(block_height_tracking),
             chain_paused_status: chain_paused_status.clone(),
             gas_multiplier: gas_multiplier.clone(),
+            max_price: *max_price,
         }
     }
 }
@@ -111,6 +116,7 @@ impl WeakCosmos {
             block_height_tracking,
             chain_paused_status,
             gas_multiplier,
+            max_price,
         } = self;
         block_height_tracking
             .upgrade()
@@ -120,6 +126,7 @@ impl WeakCosmos {
                 block_height_tracking,
                 chain_paused_status: chain_paused_status.clone(),
                 gas_multiplier: gas_multiplier.clone(),
+                max_price: *max_price,
             })
     }
 }
@@ -567,6 +574,7 @@ impl CosmosBuilder {
         let builder = Arc::new(self);
         let chain_paused_status = builder.chain_paused_method.into();
         let gas_multiplier = builder.build_gas_multiplier();
+        let max_price = builder.get_init_max_gas_price();
         let cosmos = Cosmos {
             pool: Pool::new(builder)?,
             height: None,
@@ -576,6 +584,7 @@ impl CosmosBuilder {
             })),
             chain_paused_status,
             gas_multiplier,
+            max_price,
         };
         cosmos.launch_chain_paused_tracker();
         Ok(cosmos)
@@ -586,6 +595,14 @@ impl Cosmos {
     /// Return a modified version of this [Cosmos] that queries at the given height.
     pub fn at_height(mut self, height: Option<u64>) -> Self {
         self.height = height;
+        self
+    }
+
+    /// Return a modified version of this [Cosmos] that sets the maximum gas price to this value.
+    ///
+    /// Only has an impact on Osmosis mainnet.
+    pub fn with_max_gas_price(mut self, max_price: f64) -> Self {
+        self.max_price = max_price;
         self
     }
 
@@ -892,7 +909,8 @@ impl Cosmos {
 
     /// attempt_number starts at 0
     fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let CurrentGasPrice { low, high, base: _ } = self.pool.builder.current_gas_price();
+        let CurrentGasPrice { low, high, base: _ } =
+            self.pool.builder.current_gas_price(self.max_price);
         let attempts = self.pool.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
@@ -999,7 +1017,7 @@ impl Cosmos {
     /// On Osmosis mainnet, this will be the base gas fee reported by the chain.
     /// On all other chains, it will be the low price value.
     pub fn get_base_gas_price(&self) -> f64 {
-        self.pool.builder.current_gas_price().base
+        self.pool.builder.current_gas_price(self.max_price).base
     }
 
     /// Get a node health report
