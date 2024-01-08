@@ -415,7 +415,7 @@ impl Cosmos {
             }
             Err(_) => {
                 cosmos_inner.set_broken(|grpc_url| ConnectionError::TimeoutQuery { grpc_url });
-                Err((QueryErrorDetails::QueryTimeout, true))
+                Err((QueryErrorDetails::QueryTimeout(duration), true))
             }
         }
     }
