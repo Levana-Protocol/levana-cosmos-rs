@@ -384,6 +384,7 @@ dependencies = [
  "fs-err",
  "hex",
  "hkd32",
+ "http",
  "once_cell",
  "parking_lot",
  "prost",

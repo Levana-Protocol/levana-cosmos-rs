@@ -6,6 +6,7 @@ use std::{fmt::Display, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
 use chrono::{DateTime, Utc};
+use http::uri::InvalidUri;
 
 use crate::{Address, AddressHrp, CosmosBuilder, TxBuilder};
 
@@ -67,6 +68,11 @@ pub enum BuilderError {
     InvalidGrpcUrl {
         grpc_url: Arc<String>,
         source: Arc<tonic::transport::Error>,
+    },
+    #[error("Invalid Origin URI: {gprc_url}: {source}")]
+    InvalidUri {
+        gprc_url: Arc<String>,
+        source: InvalidUri,
     },
     #[error("Unable to configure TLS for {grpc_url}: {source:?}")]
     TlsConfig {

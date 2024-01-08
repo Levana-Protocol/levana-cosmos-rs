@@ -42,6 +42,7 @@ pub struct CosmosBuilder {
     osmosis_gas_params: Option<OsmosisGasParams>,
     osmosis_gas_price_too_old_seconds: Option<u64>,
     max_price: Option<f64>,
+    rate_limit_per_second: Option<u64>
 }
 
 impl CosmosBuilder {
@@ -78,6 +79,7 @@ impl CosmosBuilder {
             osmosis_gas_params: None,
             osmosis_gas_price_too_old_seconds: None,
             max_price: None,
+            rate_limit_per_second: None,
         }
     }
 
@@ -243,6 +245,16 @@ impl CosmosBuilder {
     /// See [Self::request_count]
     pub fn set_request_count(&mut self, request_count: Option<usize>) {
         self.request_count = request_count;
+    }
+
+    /// See rate limit per second
+    pub fn rate_limit(&self) -> Option<u64> {
+        self.rate_limit_per_second
+    }
+
+    /// See rate limit per second
+    pub fn set_rate_limit(&mut self, limit: u64) {
+        self.rate_limit_per_second = Some(limit);
     }
 
     /// Sets the duration to wait for a connection.
