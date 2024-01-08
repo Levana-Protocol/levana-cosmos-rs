@@ -252,7 +252,7 @@ impl CosmosBuilder {
         self.rate_limit_per_second
     }
 
-    /// See rate limit per second
+    /// Set rate limit per second
     pub fn set_rate_limit(&mut self, limit: u64) {
         self.rate_limit_per_second = Some(limit);
     }
