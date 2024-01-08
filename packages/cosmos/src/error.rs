@@ -321,8 +321,8 @@ impl Display for StringOrBytes {
 pub enum QueryErrorDetails {
     #[error("Unknown gRPC status returned: {0:?}")]
     Unknown(tonic::Status),
-    #[error("Query timed out")]
-    QueryTimeout,
+    #[error("Query timed out after: {0:?}")]
+    QueryTimeout(Duration),
     #[error(transparent)]
     ConnectionError(ConnectionError),
     #[error("Not found returned from chain: {0}")]
@@ -449,7 +449,7 @@ impl QueryErrorDetails {
             // Not sure, so give it a retry
             QueryErrorDetails::Unknown(_) => Unsure,
             // Same here, maybe it was a bad connection.
-            QueryErrorDetails::QueryTimeout => NetworkIssue,
+            QueryErrorDetails::QueryTimeout(_) => NetworkIssue,
             // Also possibly a bad connection
             QueryErrorDetails::ConnectionError(_) => NetworkIssue,
             QueryErrorDetails::NotFound(_) => ConnectionIsFine,
