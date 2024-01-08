@@ -42,7 +42,7 @@ pub struct CosmosBuilder {
     osmosis_gas_params: Option<OsmosisGasParams>,
     osmosis_gas_price_too_old_seconds: Option<u64>,
     max_price: Option<f64>,
-    rate_limit_per_second: Option<u64>
+    rate_limit_per_second: Option<u64>,
 }
 
 impl CosmosBuilder {
