@@ -1,10 +1,15 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    ops::Deref,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use tonic::{
     codegen::InterceptedService,
-    transport::{Channel, ClientTlsConfig, Endpoint},
+    transport::{Channel, ClientTlsConfig, Endpoint, Uri},
 };
 
 use crate::{
@@ -54,6 +59,21 @@ impl CosmosBuilder {
                     grpc_url: grpc_url.clone(),
                     source: source.into(),
                 })?;
+
+        let uri =
+            Uri::try_from(grpc_url.clone().deref()).map_err(|op| BuilderError::InvalidUri {
+                gprc_url: grpc_url.clone(),
+                source: op,
+            })?;
+        // https://github.com/hyperium/tonic/issues/1033#issuecomment-1537239811
+        let grpc_endpoint = grpc_endpoint.origin(uri);
+
+        let grpc_endpoint = if let Some(rate_limit) = self.rate_limit() {
+            grpc_endpoint.rate_limit(rate_limit, Duration::from_secs(rate_limit))
+        } else {
+            grpc_endpoint
+        };
+
         let grpc_endpoint = if grpc_url.starts_with("https://") {
             grpc_endpoint
                 .tls_config(ClientTlsConfig::new())
@@ -64,6 +84,7 @@ impl CosmosBuilder {
         } else {
             grpc_endpoint
         };
+
         let grpc_channel = grpc_endpoint.connect_lazy();
 
         let referer_header = self.referer_header().map(|x| x.to_owned());
