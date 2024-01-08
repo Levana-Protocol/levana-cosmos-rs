@@ -921,7 +921,7 @@ impl Cosmos {
             low + step * attempt_number as f64
         };
 
-        (gas as f64 * gas_price) as u64
+        (gas as f64 * gas_price).ceil() as u64
     }
 
     /// Get information on the given block height.
