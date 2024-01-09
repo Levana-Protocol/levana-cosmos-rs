@@ -793,20 +793,18 @@ impl Cosmos {
         match res {
             Ok(txres) => Self::txres_to_pair(txres.into_inner(), action),
             Err(e) => {
-                if let QueryErrorDetails::NotFound(_) = &e.query {
-                    for node in self.pool.node_chooser.all_nodes() {
-                        if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
-                            if let Ok(txres) = self
-                                .perform_query_inner(
-                                    GetTxRequest {
-                                        hash: txhash.clone(),
-                                    },
-                                    node_guard.get_inner_mut(),
-                                )
-                                .await
-                            {
-                                return Self::txres_to_pair(txres.into_inner(), action);
-                            }
+                for node in self.pool.node_chooser.all_nodes() {
+                    if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
+                        if let Ok(txres) = self
+                            .perform_query_inner(
+                                GetTxRequest {
+                                    hash: txhash.clone(),
+                                },
+                                node_guard.get_inner_mut(),
+                            )
+                            .await
+                        {
+                            return Self::txres_to_pair(txres.into_inner(), action);
                         }
                     }
                 }
@@ -947,24 +945,17 @@ impl Cosmos {
         match res {
             Ok(res) => BlockInfo::new(action, res.block_id, res.block, Some(height)),
             Err(e) => {
-                if let QueryErrorDetails::NotFound(_) = &e.query {
-                    for node in self.pool.node_chooser.all_nodes() {
-                        if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
-                            if let Ok(res) = self
-                                .perform_query_inner(
-                                    GetBlockByHeightRequest { height },
-                                    node_guard.get_inner_mut(),
-                                )
-                                .await
-                            {
-                                let res = res.into_inner();
-                                return BlockInfo::new(
-                                    action,
-                                    res.block_id,
-                                    res.block,
-                                    Some(height),
-                                );
-                            }
+                for node in self.pool.node_chooser.all_nodes() {
+                    if let Ok(mut node_guard) = self.pool.get_with_node(node).await {
+                        if let Ok(res) = self
+                            .perform_query_inner(
+                                GetBlockByHeightRequest { height },
+                                node_guard.get_inner_mut(),
+                            )
+                            .await
+                        {
+                            let res = res.into_inner();
+                            return BlockInfo::new(action, res.block_id, res.block, Some(height));
                         }
                     }
                 }
