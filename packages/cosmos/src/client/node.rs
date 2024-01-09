@@ -46,6 +46,14 @@ struct LastError {
     error_count: usize,
 }
 
+impl LastError {
+    fn is_healthy(&self, allowed_error_count: usize) -> bool {
+        const NODE_ERROR_TIMEOUT: u64 = 30;
+        self.instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT
+            || self.error_count <= allowed_error_count
+    }
+}
+
 impl CosmosBuilder {
     pub(crate) fn make_node(
         &self,
@@ -157,14 +165,9 @@ impl Node {
     }
 
     pub(crate) fn is_healthy(&self, allowed_error_count: usize) -> bool {
-        const NODE_ERROR_TIMEOUT: u64 = 30;
-
         match &*self.node_inner.last_error.read() {
             None => true,
-            Some(last_error) => {
-                last_error.instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT
-                    || last_error.error_count <= allowed_error_count
-            }
+            Some(last_error) => last_error.is_healthy(allowed_error_count),
         }
     }
 
@@ -174,7 +177,9 @@ impl Node {
         SingleNodeHealthReport {
             grpc_url: self.node_inner.grpc_url.clone(),
             is_fallback: self.node_inner.is_fallback,
-            is_healthy: self.is_healthy(allowed_error_count),
+            is_healthy: last_error.as_ref().map_or(true, |last_error| {
+                last_error.is_healthy(allowed_error_count)
+            }),
             error_count: last_error.map_or(0, |last_error| last_error.error_count),
             last_error: last_error.map(|last_error| {
                 let error = match &last_error.action {
