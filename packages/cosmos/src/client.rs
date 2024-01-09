@@ -42,7 +42,7 @@ use crate::{
     gas_price::CurrentGasPrice,
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
-    Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
+    Address, CosmosBuilder, DynamicGasMultiplier, HasAddress, TxBuilder,
 };
 
 use self::{node::Node, node_chooser::QueryResult, pool::Pool, query::GrpcRequest};
@@ -158,140 +158,6 @@ impl<Res> PerformQueryWrapper<Res> {
 }
 
 impl Cosmos {
-    async fn get_and_update_simulation_sequence(
-        &self,
-        address: Address,
-    ) -> Result<BaseAccount, Error> {
-        let mut guard = self.pool.get().await?;
-        let cosmos = guard.get_inner_mut();
-        let sequence = {
-            let guard = cosmos.simulate_sequences().read();
-            let result = guard.get(&address);
-            result.cloned()
-        };
-        let mut base_account = self.get_base_account(address).await?;
-        if let Some(SequenceInformation {
-            sequence,
-            timestamp,
-        }) = sequence
-        {
-            let diff = Instant::now().duration_since(timestamp);
-            if diff.as_secs() <= 30 {
-                let max_sequence = std::cmp::max(sequence, base_account.sequence);
-                if max_sequence != sequence {
-                    let sequence_info = SequenceInformation {
-                        sequence: max_sequence,
-                        timestamp: Instant::now(),
-                    };
-                    {
-                        let mut seq_info = cosmos.simulate_sequences().write();
-                        let seq_info = seq_info
-                            .entry(address)
-                            .or_insert_with(|| sequence_info.clone());
-                        *seq_info = sequence_info;
-                    }
-                }
-                base_account.sequence = max_sequence;
-                return Ok(base_account);
-            }
-        }
-        let mut seq_info = cosmos.simulate_sequences().write();
-        let sequence_info = SequenceInformation {
-            sequence: base_account.sequence,
-            timestamp: Instant::now(),
-        };
-        let seq_info = seq_info
-            .entry(address)
-            .or_insert_with(|| sequence_info.clone());
-        *seq_info = sequence_info;
-        Ok(base_account)
-    }
-
-    async fn update_broadcast_sequence(
-        &self,
-        address: Address,
-        tx: &Tx,
-        hash: &str,
-    ) -> Result<(), Error> {
-        let mut guard = self.pool.get().await?;
-        let cosmos = guard.get_inner_mut();
-        let auth_info = &tx.auth_info;
-        if let Some(auth_info) = auth_info {
-            // This only works since we allow a single signer per
-            // transaction. This needs to be updated to check with
-            // public key when multiple signers exist.
-            let sequence = &auth_info
-                .signer_infos
-                .iter()
-                .map(|item| item.sequence)
-                .max();
-            match sequence {
-                Some(sequence) => {
-                    let mut sequences = cosmos.broadcast_sequences().write();
-                    sequences
-                        .entry(address)
-                        .and_modify(|item| item.sequence = *sequence);
-                }
-                None => {
-                    tracing::warn!("No sequence number found in Tx {hash} from signer_infos");
-                }
-            }
-        } else {
-            tracing::warn!("No sequence number found in Tx {hash} from auth_info");
-        }
-
-        Ok(())
-    }
-
-    async fn get_and_update_broadcast_sequence(
-        &self,
-        address: Address,
-    ) -> Result<BaseAccount, Error> {
-        let mut guard = self.pool.get().await?;
-        let cosmos = guard.get_inner_mut();
-        let sequence = {
-            let guard = cosmos.broadcast_sequences().read();
-            let result = guard.get(&address);
-            result.cloned()
-        };
-        let mut base_account = self.get_base_account(address).await?;
-        if let Some(SequenceInformation {
-            sequence,
-            timestamp,
-        }) = sequence
-        {
-            let diff = Instant::now().duration_since(timestamp);
-            if diff.as_secs() <= 30 {
-                let max_sequence = std::cmp::max(sequence, base_account.sequence);
-                if max_sequence != sequence {
-                    let sequence_info = SequenceInformation {
-                        sequence: max_sequence,
-                        timestamp: Instant::now(),
-                    };
-                    {
-                        let mut seq_info = cosmos.broadcast_sequences().write();
-                        let seq_info = seq_info
-                            .entry(address)
-                            .or_insert_with(|| sequence_info.clone());
-                        *seq_info = sequence_info;
-                    }
-                }
-                base_account.sequence = max_sequence;
-                return Ok(base_account);
-            }
-        }
-        let mut seq_info = cosmos.broadcast_sequences().write();
-        let sequence_info = SequenceInformation {
-            sequence: base_account.sequence,
-            timestamp: Instant::now(),
-        };
-        let seq_info = seq_info
-            .entry(address)
-            .or_insert_with(|| sequence_info.clone());
-        *seq_info = sequence_info;
-        Ok(base_account)
-    }
-
     pub(crate) async fn perform_query<Request: GrpcRequest>(
         &self,
         req: Request,
@@ -311,6 +177,9 @@ impl Cosmos {
                     match self.perform_query_inner(req.clone(), cosmos_inner).await {
                         Ok(x) => {
                             cosmos_inner.log_query_result(QueryResult::Success);
+                            println!("Health report coming");
+                            println!("{:?}", self.pool.node_chooser.health_report());
+                            println!("Health report complete");
                             break Ok(PerformQueryWrapper {
                                 grpc_url: cosmos_inner.grpc_url().clone(),
                                 tonic: x,
@@ -331,6 +200,7 @@ impl Cosmos {
                 }
             };
             if attempt >= self.pool.builder.query_retries() || !should_retry || !can_retry {
+                println!("Breaking with QueryError");
                 break Err(QueryError {
                     action,
                     builder: self.pool.builder.clone(),
@@ -531,12 +401,6 @@ impl Interceptor for CosmosInterceptor {
         }
         Ok(request)
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SequenceInformation {
-    sequence: u64,
-    timestamp: Instant,
 }
 
 impl CosmosBuilder {
@@ -1101,9 +965,7 @@ impl TxBuilder {
     ) -> Result<FullSimulateResponse, crate::Error> {
         let mut sequences = vec![];
         for wallet in wallets {
-            let base_account = cosmos
-                .get_and_update_simulation_sequence(wallet.get_address())
-                .await;
+            let base_account = cosmos.get_base_account(wallet.get_address()).await;
             let sequence = match base_account {
                 Ok(account) => account.sequence,
                 Err(err) => {
@@ -1220,9 +1082,7 @@ impl TxBuilder {
         wallet: &Wallet,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos
-            .get_and_update_broadcast_sequence(wallet.get_address())
-            .await?;
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
         self.sign_and_broadcast_with_inner(
             cosmos,
             wallet,
@@ -1241,10 +1101,8 @@ impl TxBuilder {
         body: TxBody,
         gas_to_request: u64,
     ) -> Result<CosmosTxResponse, crate::Error> {
-        let base_account = cosmos
-            .get_and_update_broadcast_sequence(wallet.get_address())
-            .await?;
-        self.sign_and_broadcast_with_cosmos_tx(
+        let base_account = cosmos.get_base_account(wallet.get_address()).await?;
+        self.sign_and_broadcast_with_inner(
             cosmos,
             wallet,
             &base_account,
@@ -1373,26 +1231,6 @@ impl TxBuilder {
         })
     }
 
-    async fn sign_and_broadcast_with_cosmos_tx(
-        &self,
-        cosmos: &Cosmos,
-        wallet: &Wallet,
-        base_account: &BaseAccount,
-        sequence: u64,
-        body: TxBody,
-        gas_to_request: u64,
-    ) -> Result<CosmosTxResponse, crate::Error> {
-        self.sign_and_broadcast_with_inner(
-            cosmos,
-            wallet,
-            base_account,
-            sequence,
-            body,
-            gas_to_request,
-        )
-        .await
-    }
-
     async fn sign_and_broadcast_with_inner(
         &self,
         cosmos: &Cosmos,
@@ -1484,9 +1322,6 @@ impl TxBuilder {
             };
 
             tracing::debug!("TxResponse: {res:?}");
-            cosmos
-                .update_broadcast_sequence(wallet.get_address(), &tx, &res.txhash)
-                .await?;
 
             Ok(CosmosTxResponse { response: res, tx })
         };

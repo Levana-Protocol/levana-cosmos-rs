@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ops::Deref,
     sync::Arc,
     time::{Duration, Instant},
@@ -14,10 +13,10 @@ use tonic::{
 
 use crate::{
     error::{Action, BuilderError, ConnectionError, LastNodeError, SingleNodeHealthReport},
-    Address, CosmosBuilder,
+    CosmosBuilder,
 };
 
-use super::{node_chooser::QueryResult, CosmosInterceptor, SequenceInformation};
+use super::{node_chooser::QueryResult, CosmosInterceptor};
 
 /// Internal data structure containing gRPC clients.
 #[derive(Clone)]
@@ -30,16 +29,14 @@ struct NodeInner {
     is_fallback: bool,
     last_error: RwLock<Option<LastError>>,
     channel: InterceptedService<Channel, CosmosInterceptor>,
-    simulate_sequences: RwLock<HashMap<Address, SequenceInformation>>,
-    broadcast_sequences: RwLock<HashMap<Address, SequenceInformation>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct LastError {
     error: Arc<String>,
     instant: Instant,
     timestamp: DateTime<Utc>,
-    action: Option<Action>,
+    action: Option<Arc<Action>>,
     /// How many network errors in a row have occurred?
     ///
     /// Gets reset each time there's a successful query, or a query that fails with a non-network reason.
@@ -96,8 +93,6 @@ impl CosmosBuilder {
             node_inner: Arc::new(NodeInner {
                 is_fallback,
                 channel,
-                simulate_sequences: RwLock::new(HashMap::new()),
-                broadcast_sequences: RwLock::new(HashMap::new()),
                 grpc_url: grpc_url.clone(),
                 last_error: RwLock::new(None),
             }),
@@ -112,44 +107,41 @@ impl Node {
         &self.node_inner.grpc_url
     }
 
-    pub(crate) fn simulate_sequences(&self) -> &RwLock<HashMap<Address, SequenceInformation>> {
-        &self.node_inner.simulate_sequences
-    }
-
-    pub(crate) fn broadcast_sequences(&self) -> &RwLock<HashMap<Address, SequenceInformation>> {
-        &self.node_inner.broadcast_sequences
-    }
-
     pub(crate) fn set_broken(&mut self, err: impl FnOnce(Arc<String>) -> ConnectionError) {
         let err = err(self.node_inner.grpc_url.clone());
         self.log_connection_error(err);
     }
 
     pub(super) fn log_connection_error(&self, error: ConnectionError) {
-        *self.node_inner.last_error.write() = Some(LastError {
+        let last_error = Some(LastError {
             error: error.to_string().into(),
             instant: Instant::now(),
             timestamp: Utc::now(),
             action: None,
             error_count: 1,
         });
+        *self.node_inner.last_error.write() = last_error;
     }
 
     pub(super) fn log_query_result(&self, res: QueryResult) {
-        let mut guard = self.node_inner.last_error.write();
         match res {
             QueryResult::Success | QueryResult::OtherError => {
-                if let Some(error) = guard.as_mut() {
+                if let Some(error) = self.node_inner.last_error.write().as_mut() {
                     error.error_count = 0;
                 }
             }
             QueryResult::NetworkError { err, action } => {
+                let error = err.to_string().into();
+                let instant = Instant::now();
+                let timestamp = Utc::now();
+
+                let mut guard = self.node_inner.last_error.write();
                 let old_error_count = guard.as_ref().map_or(0, |x| x.error_count);
                 *guard = Some(LastError {
-                    error: err.to_string().into(),
-                    instant: Instant::now(),
-                    timestamp: Utc::now(),
-                    action: Some(action),
+                    error,
+                    instant,
+                    timestamp,
+                    action: Some(Arc::new(action)),
                     error_count: old_error_count + 1,
                 });
             }
@@ -157,33 +149,45 @@ impl Node {
     }
 
     pub(crate) fn is_healthy(&self, allowed_error_count: usize) -> bool {
-        const NODE_ERROR_TIMEOUT: u64 = 30;
+        let (instant, error_count) = match &*self.node_inner.last_error.read() {
+            None => return true,
+            Some(last_error) => (last_error.instant, last_error.error_count),
+        };
+        self.is_healthy_inner(allowed_error_count, instant, error_count)
+    }
 
-        match &*self.node_inner.last_error.read() {
-            None => true,
-            Some(last_error) => {
-                last_error.instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT
-                    || last_error.error_count <= allowed_error_count
-            }
-        }
+    fn is_healthy_inner(
+        &self,
+        allowed_error_count: usize,
+        instant: Instant,
+        error_count: usize,
+    ) -> bool {
+        const NODE_ERROR_TIMEOUT: u64 = 30;
+        instant.elapsed().as_secs() > NODE_ERROR_TIMEOUT || error_count <= allowed_error_count
     }
 
     pub(crate) fn health_report(&self, allowed_error_count: usize) -> SingleNodeHealthReport {
-        let guard = self.node_inner.last_error.read();
-        let last_error = guard.as_ref();
+        let last_error = self.node_inner.last_error.read().clone();
         SingleNodeHealthReport {
             grpc_url: self.node_inner.grpc_url.clone(),
             is_fallback: self.node_inner.is_fallback,
-            is_healthy: self.is_healthy(allowed_error_count),
-            error_count: last_error.map_or(0, |last_error| last_error.error_count),
+            is_healthy: match &last_error {
+                None => true,
+                Some(last_error) => self.is_healthy_inner(
+                    allowed_error_count,
+                    last_error.instant,
+                    last_error.error_count,
+                ),
+            },
+            error_count: last_error
+                .as_ref()
+                .map_or(0, |last_error| last_error.error_count),
             last_error: last_error.map(|last_error| {
                 let error = match &last_error.action {
-                    Some(action) => Arc::new(format!(
-                        "{} during action {}",
-                        last_error.error.clone(),
-                        action
-                    )),
-                    None => last_error.error.clone(),
+                    Some(action) => {
+                        Arc::new(format!("{} during action {}", last_error.error, action))
+                    }
+                    None => last_error.error,
                 };
                 LastNodeError {
                     timestamp: last_error.timestamp,
