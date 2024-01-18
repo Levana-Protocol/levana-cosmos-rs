@@ -47,7 +47,7 @@ impl Cosmos {
             .map(|res| res.into_inner())?;
 
         // The result is a string representation of the Dec type in Osmosis (well, LegacyDec which is an alias for cosmos-sdk Decimal)
-        // but while the string over LCD has the decimal point in the string, over gRPC it currently does not
+        // but while the string over REST queries to the LCD has the decimal point in the string, over gRPC it currently does not
         // so we have to parse it as an integer and then convert it to a Decimal (18 decimal places)
         // as a safety measure, also handle it if there is a decimal place, just in case that changes
         let eip_base_fee = match eip_base_fee.base_fee.contains('.') {
