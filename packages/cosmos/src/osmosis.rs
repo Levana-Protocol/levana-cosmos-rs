@@ -9,11 +9,13 @@ use crate::{
 };
 
 pub(crate) mod epochs;
+pub(crate) mod txfees;
 
 use chrono::{DateTime, Utc};
 pub use epochs::EpochInfo;
 use parking_lot::RwLock;
 use prost_types::Timestamp;
+pub use txfees::QueryEipBaseFeeResponse;
 
 impl Cosmos {
     /// Get the Osmosis epoch information.
@@ -30,6 +32,29 @@ impl Cosmos {
             epochs: res.into_inner().epochs,
         })
     }
+    /// Get the Osmosis txfees information.
+    ///
+    /// Note that this query will fail if called on chains besides Osmosis Mainnet.
+    pub async fn get_osmosis_txfees_info(&self) -> Result<TxFeesInfo, QueryError> {
+        let eip_base_fee = self
+            .perform_query(
+                txfees::QueryEipBaseFeeRequest {},
+                Action::OsmosisTxFeesInfo,
+                true,
+            )
+            .await
+            .map(|res| res.into_inner())?;
+
+        Ok(TxFeesInfo { eip_base_fee })
+    }
+}
+
+/// Information from the txfees module for an Osmosis chain.
+#[derive(Debug)]
+pub struct TxFeesInfo {
+    /// The EIP-1559 base fee, encoded as a string via the Dec type on Osmosis
+    /// this is currently an unsigned integer with 18 decimal places
+    pub eip_base_fee: QueryEipBaseFeeResponse,
 }
 
 /// Information on epochs from an Osmosis chain.
