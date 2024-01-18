@@ -114,7 +114,7 @@ impl GasPriceMethod {
     pub(crate) async fn new_osmosis_mainnet(builder: &CosmosBuilder) -> Result<Self, BuilderError> {
         let params = builder.get_osmosis_gas_params();
         // Do not kill this process if the query fails. We don't want services
-        // to crash just because Osmosis's LCD stops responding.
+        // to crash just because Osmosis txfees module stops responding.
         let reported = match load_osmosis_gas_base_fee(builder.clone()).await {
             Ok(reported) => reported,
             Err(e) => {
