@@ -55,7 +55,9 @@ impl Cosmos {
                 .base_fee
                 .parse::<Decimal>()
                 .map_err(|err| Error::ChainParse {
-                    source: Box::new(ChainParseError::CosmosStd { source: err }),
+                    source: Box::new(ChainParseError::TxFees {
+                        err: err.to_string(),
+                    }),
                     action: Action::OsmosisTxFeesInfo,
                 })?,
             false => {
@@ -64,12 +66,16 @@ impl Cosmos {
                         .base_fee
                         .parse::<u128>()
                         .map_err(|err| Error::ChainParse {
-                            source: Box::new(ChainParseError::InvalidParseInt { source: err }),
+                            source: Box::new(ChainParseError::TxFees {
+                                err: err.to_string(),
+                            }),
                             action: Action::OsmosisTxFeesInfo,
                         })?;
 
-                Decimal::from_atomics(eip_base_fee, 18).map_err(|_| Error::ChainParse {
-                    source: Box::new(ChainParseError::DecimalRangeExceeded {}),
+                Decimal::from_atomics(eip_base_fee, 18).map_err(|err| Error::ChainParse {
+                    source: Box::new(ChainParseError::TxFees {
+                        err: err.to_string(),
+                    }),
                     action: Action::OsmosisTxFeesInfo,
                 })?
             }
