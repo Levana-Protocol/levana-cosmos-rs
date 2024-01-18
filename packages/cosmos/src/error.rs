@@ -6,6 +6,7 @@ use std::{fmt::Display, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use bip39::Mnemonic;
 use bitcoin::util::bip32::DerivationPath;
 use chrono::{DateTime, Utc};
+use cosmwasm_std::StdError;
 use http::uri::InvalidUri;
 
 use crate::{Address, AddressHrp, CosmosBuilder, TxBuilder};
@@ -94,7 +95,7 @@ pub enum BuilderError {
 }
 
 /// Parse errors while interacting with chain data.
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum ChainParseError {
     #[error("Could not parse timestamp {timestamp:?} from transaction {txhash}: {source:?}")]
     InvalidTimestamp {
@@ -120,6 +121,12 @@ pub enum ChainParseError {
     NoCodeIdFound { txhash: String },
     #[error("No instantiated contract found in transaction {txhash}")]
     NoInstantiatedContractFound { txhash: String },
+    #[error("Invalid ParseInt: {source:?}")]
+    InvalidParseInt { source: std::num::ParseIntError },
+    #[error("Decimal range exceeded")]
+    DecimalRangeExceeded {},
+    #[error("Cosmos StdError: {source:?}")]
+    CosmosStd { source: StdError },
 }
 
 /// An error that occurs while connecting to a Cosmos gRPC endpoint.

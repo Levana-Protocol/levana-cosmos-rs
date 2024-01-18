@@ -381,6 +381,7 @@ dependencies = [
  "chrono",
  "clap",
  "cosmos-sdk-proto",
+ "cosmwasm-std",
  "fs-err",
  "hex",
  "hkd32",

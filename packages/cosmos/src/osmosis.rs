@@ -4,14 +4,15 @@ use std::sync::Arc;
 use crate::{
     client::WeakCosmos,
     cosmos_builder::ChainPausedMethod,
-    error::{Action, QueryError},
-    Cosmos,
+    error::{Action, ChainParseError, QueryError},
+    Cosmos, Error,
 };
 
 pub(crate) mod epochs;
 pub(crate) mod txfees;
 
 use chrono::{DateTime, Utc};
+use cosmwasm_std::Decimal;
 pub use epochs::EpochInfo;
 use parking_lot::RwLock;
 use prost_types::Timestamp;
@@ -35,7 +36,7 @@ impl Cosmos {
     /// Get the Osmosis txfees information.
     ///
     /// Note that this query will fail if called on chains besides Osmosis Mainnet.
-    pub async fn get_osmosis_txfees_info(&self) -> Result<TxFeesInfo, QueryError> {
+    pub async fn get_osmosis_txfees_info(&self) -> Result<TxFeesInfo, Error> {
         let eip_base_fee = self
             .perform_query(
                 txfees::QueryEipBaseFeeRequest {},
@@ -45,6 +46,35 @@ impl Cosmos {
             .await
             .map(|res| res.into_inner())?;
 
+        // The result is a string representation of the Dec type in Osmosis (well, LegacyDec which is an alias for cosmos-sdk Decimal)
+        // but while the string over LCD has the decimal point in the string, over gRPC it currently does not
+        // so we have to parse it as an integer and then convert it to a Decimal (18 decimal places)
+        // as a safety measure, also handle it if there is a decimal place, just in case that changes
+        let eip_base_fee = match eip_base_fee.base_fee.contains('.') {
+            true => eip_base_fee
+                .base_fee
+                .parse::<Decimal>()
+                .map_err(|err| Error::ChainParse {
+                    source: Box::new(ChainParseError::CosmosStd { source: err }),
+                    action: Action::OsmosisTxFeesInfo,
+                })?,
+            false => {
+                let eip_base_fee =
+                    eip_base_fee
+                        .base_fee
+                        .parse::<u128>()
+                        .map_err(|err| Error::ChainParse {
+                            source: Box::new(ChainParseError::InvalidParseInt { source: err }),
+                            action: Action::OsmosisTxFeesInfo,
+                        })?;
+
+                Decimal::from_atomics(eip_base_fee, 18).map_err(|_| Error::ChainParse {
+                    source: Box::new(ChainParseError::DecimalRangeExceeded {}),
+                    action: Action::OsmosisTxFeesInfo,
+                })?
+            }
+        };
+
         Ok(TxFeesInfo { eip_base_fee })
     }
 }
@@ -52,9 +82,8 @@ impl Cosmos {
 /// Information from the txfees module for an Osmosis chain.
 #[derive(Debug)]
 pub struct TxFeesInfo {
-    /// The EIP-1559 base fee, encoded as a string via the Dec type on Osmosis
-    /// this is currently an unsigned integer with 18 decimal places
-    pub eip_base_fee: QueryEipBaseFeeResponse,
+    /// The EIP-1559 base fee
+    pub eip_base_fee: Decimal,
 }
 
 /// Information on epochs from an Osmosis chain.

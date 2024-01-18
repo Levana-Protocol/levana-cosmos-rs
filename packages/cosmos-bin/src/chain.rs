@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use cosmos::{Address, BlockInfo, Cosmos, TxResponseExt};
-use cosmwasm_std::Decimal;
 
 #[derive(clap::Parser)]
 pub(crate) struct Opt {
@@ -247,11 +246,6 @@ async fn epoch(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
 
 async fn txfees(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
     let txfees = cosmos.get_osmosis_txfees_info().await?;
-    // This value is currently encoded as a string with 18 decimal places
-    // and is actually an alias to the cosmos-sdk Decimal type, so we can
-    // keep things consistent by just converting it directly to that type here
-    let eip_base_fee = txfees.eip_base_fee.base_fee.parse::<u128>()?;
-    let eip_base_fee = Decimal::from_atomics(eip_base_fee, 18)?;
-    println!("eip base fee: {}", eip_base_fee);
+    println!("eip base fee: {}", txfees.eip_base_fee);
     Ok(())
 }
