@@ -4,7 +4,9 @@ use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
 use parking_lot::RwLock;
 
-use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError, CosmosBuilder};
+use crate::{
+    cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, CosmosBuilder,
+};
 
 /// Mechanism used for determining the gas price
 #[derive(Clone, Debug)]
@@ -26,7 +28,6 @@ enum GasPriceMethodInner {
     },
     /// Reloads from EIP values regularly, starting with the values below.
     OsmosisMainnet {
-        client: reqwest::Client,
         price: Arc<RwLock<OsmosisGasPrice>>,
         params: OsmosisGasParams,
     },
@@ -47,7 +48,6 @@ impl GasPriceMethod {
                 base: *low,
             },
             GasPriceMethodInner::OsmosisMainnet {
-                client,
                 price,
                 params:
                     OsmosisGasParams {
@@ -93,10 +93,10 @@ impl GasPriceMethod {
                     }
                 };
                 if should_trigger {
-                    let client = client.clone();
+                    let builder = builder.clone();
                     let price = price.clone();
                     tokio::task::spawn(async move {
-                        let reported = load_osmosis_gas_base_fee(&client).await?;
+                        let reported = load_osmosis_gas_base_fee(builder).await?;
                         let mut guard = price.write();
                         guard.reported = reported;
                         Ok::<_, LoadOsmosisGasPriceError>(())
@@ -111,13 +111,11 @@ impl GasPriceMethod {
         }
     }
 
-    pub(crate) async fn new_osmosis_mainnet(
-        client: &reqwest::Client,
-        params: OsmosisGasParams,
-    ) -> Result<Self, BuilderError> {
+    pub(crate) async fn new_osmosis_mainnet(builder: &CosmosBuilder) -> Result<Self, BuilderError> {
+        let params = builder.get_osmosis_gas_params();
         // Do not kill this process if the query fails. We don't want services
         // to crash just because Osmosis's LCD stops responding.
-        let reported = match load_osmosis_gas_base_fee(client).await {
+        let reported = match load_osmosis_gas_base_fee(builder.clone()).await {
             Ok(reported) => reported,
             Err(e) => {
                 tracing::error!(
@@ -132,7 +130,6 @@ impl GasPriceMethod {
         };
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
-                client: client.clone(),
                 price: Arc::new(RwLock::new(price)),
                 params,
             },
@@ -162,22 +159,15 @@ struct OsmosisGasPrice {
     last_triggered: Instant,
 }
 
-/// Loads current eip base fee from a v1beta1 lcd endpoint
+/// Loads current eip base fee from Osmosis txfees module
 pub async fn load_osmosis_gas_base_fee(
-    client: &reqwest::Client,
+    builder: CosmosBuilder,
 ) -> Result<f64, LoadOsmosisGasPriceError> {
-    #[derive(serde::Deserialize)]
-    struct BaseFee {
-        base_fee: String,
-    }
-    let BaseFee { base_fee } = client
-        .get("https://lcd.osmosis.zone/osmosis/txfees/v1beta1/cur_eip_base_fee")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let base_fee: f64 = base_fee.parse()?;
+    // this cosmos instance is only used to load the gas price
+    let cosmos = builder.build_lazy()?;
+
+    let TxFeesInfo { eip_base_fee } = cosmos.get_osmosis_txfees_info().await?;
+    let base_fee: f64 = eip_base_fee.to_string().parse()?;
 
     // There seems to be a bug where this endpoint occassionally returns 0. Just
     // set a minimum.
@@ -190,9 +180,12 @@ pub async fn load_osmosis_gas_base_fee(
 /// Verbose error for the gas price base fee request
 pub enum LoadOsmosisGasPriceError {
     #[error(transparent)]
-    /// Reqwest error
-    Reqwest(#[from] reqwest::Error),
+    /// TxFees error
+    TxFees(#[from] crate::Error),
     #[error(transparent)]
     /// Parse error
     Parse(#[from] ParseFloatError),
+    #[error(transparent)]
+    /// Builder error
+    Builder(#[from] BuilderError),
 }

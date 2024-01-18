@@ -186,10 +186,7 @@ impl CosmosNetwork {
             | CosmosNetwork::InjectiveTestnet
             | CosmosNetwork::InjectiveMainnet => Ok(()),
             CosmosNetwork::OsmosisMainnet => {
-                builder.set_gas_price_method(
-                    GasPriceMethod::new_osmosis_mainnet(client, builder.get_osmosis_gas_params())
-                        .await?,
-                );
+                builder.set_gas_price_method(GasPriceMethod::new_osmosis_mainnet(builder).await?);
                 Ok(())
             }
             CosmosNetwork::SeiMainnet => {
