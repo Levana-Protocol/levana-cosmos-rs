@@ -15,6 +15,21 @@ pub(crate) struct GasPriceMethod {
     inner: GasPriceMethodInner,
 }
 
+impl GasPriceMethod {
+    // see comment on `cosmos` field of `GasPriceMethodInner::OsmosisMainnet`
+    pub(crate) fn set_cosmos(&self, cosmos: Cosmos) {
+        match &self.inner {
+            GasPriceMethodInner::Static { .. } => {}
+            GasPriceMethodInner::OsmosisMainnet {
+                cosmos: cosmos_lock,
+                ..
+            } => {
+                *cosmos_lock.write() = Some(cosmos);
+            }
+        }
+    }
+}
+
 pub(crate) const DEFAULT_GAS_PRICE: CurrentGasPrice = CurrentGasPrice {
     low: 0.02,
     high: 0.03,
@@ -29,11 +44,12 @@ enum GasPriceMethodInner {
     },
     /// Reloads from EIP values regularly, starting with the values below.
     OsmosisMainnet {
-        // This Cosmos instance is only used for querying the gas price.
-        // It is created before the whole builder pipeline has finished,
-        // because the builder itself depends on getting the gas price
-        // (i.e. there is a circular dependency: cosmos -> gas -> builder -> cosmos)
-        cosmos: Cosmos,
+        // This Cosmos instance is optional due to a circular dependency:
+        // builder depends on gas price method -> gas price method depends on cosmos -> cosmos depends on builder
+        // Therefore, we fallback to a default until the cosmos instance has been set
+        // In practice, it's set almost right away via the builder completing
+        // i.e. this is ultimately just a typesafe way to complete the circular dependency
+        cosmos: Arc<RwLock<Option<Cosmos>>>,
         price: Arc<RwLock<OsmosisGasPrice>>,
         params: OsmosisGasParams,
     },
@@ -103,7 +119,13 @@ impl GasPriceMethod {
                     let cosmos = cosmos.clone();
                     let price = price.clone();
                     tokio::task::spawn(async move {
-                        let reported = load_osmosis_gas_base_fee(&cosmos).await?;
+                        // no real need for the extra scope here, lock will be dropped, but better safe than sorry!
+                        let cosmos: Option<Cosmos> =
+                            { cosmos.try_read().as_deref().cloned().flatten() };
+                        let reported = match cosmos {
+                            None => OsmosisGasPrice::DEFAULT_REPORTED,
+                            Some(cosmos) => load_osmosis_gas_base_fee(&cosmos).await?,
+                        };
                         let mut guard = price.write();
                         guard.reported = reported;
                         Ok::<_, LoadOsmosisGasPriceError>(())
@@ -118,28 +140,16 @@ impl GasPriceMethod {
         }
     }
 
-    pub(crate) async fn new_osmosis_mainnet(builder: CosmosBuilder) -> Result<Self, BuilderError> {
-        let params = builder.get_osmosis_gas_params();
-        let cosmos = builder.build_lazy()?;
-        // Do not kill this process if the query fails. We don't want services
-        // to crash just because Osmosis txfees module stops responding.
-        let reported = match load_osmosis_gas_base_fee(&cosmos).await {
-            Ok(reported) => reported,
-            Err(e) => {
-                tracing::error!(
-                    "Unable to load variable Osmosis mainnet gas price, using defaults: {e}"
-                );
-                0.0025
-            }
-        };
-        let price = OsmosisGasPrice {
-            last_triggered: Instant::now(),
-            reported,
-        };
+    pub(crate) async fn new_osmosis_mainnet(
+        params: OsmosisGasParams,
+    ) -> Result<Self, BuilderError> {
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
-                cosmos,
-                price: Arc::new(RwLock::new(price)),
+                cosmos: Arc::new(RwLock::new(None)),
+                price: Arc::new(RwLock::new(OsmosisGasPrice {
+                    reported: OsmosisGasPrice::DEFAULT_REPORTED,
+                    last_triggered: Instant::now(),
+                })),
                 params,
             },
         })
@@ -166,6 +176,10 @@ fn osmosis_too_old(last_triggered: Instant, now: Instant, too_old_seconds: u64) 
 struct OsmosisGasPrice {
     reported: f64,
     last_triggered: Instant,
+}
+
+impl OsmosisGasPrice {
+    pub const DEFAULT_REPORTED: f64 = 0.0025;
 }
 
 /// Loads current eip base fee from Osmosis txfees module

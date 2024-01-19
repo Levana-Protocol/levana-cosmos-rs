@@ -4,6 +4,7 @@ mod pool;
 mod query;
 
 use std::{
+    borrow::Borrow,
     str::FromStr,
     sync::{Arc, Weak},
 };
@@ -587,6 +588,10 @@ impl CosmosBuilder {
             max_price,
         };
         cosmos.launch_chain_paused_tracker();
+
+        if let Some(gas_price_method) = cosmos.pool.borrow().builder.gas_price_method.clone() {
+            gas_price_method.set_cosmos(cosmos.clone())
+        }
         Ok(cosmos)
     }
 }
