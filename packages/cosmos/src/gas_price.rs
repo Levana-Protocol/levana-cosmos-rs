@@ -5,7 +5,8 @@ use std::{num::ParseFloatError, sync::Arc, time::Instant};
 use parking_lot::RwLock;
 
 use crate::{
-    cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, CosmosBuilder,
+    cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, Cosmos,
+    CosmosBuilder,
 };
 
 /// Mechanism used for determining the gas price
@@ -28,6 +29,11 @@ enum GasPriceMethodInner {
     },
     /// Reloads from EIP values regularly, starting with the values below.
     OsmosisMainnet {
+        // This Cosmos instance is only used for querying the gas price.
+        // It is created before the whole builder pipeline has finished,
+        // because the builder itself depends on getting the gas price
+        // (i.e. there is a circular dependency: cosmos -> gas -> builder -> cosmos)
+        cosmos: Cosmos,
         price: Arc<RwLock<OsmosisGasPrice>>,
         params: OsmosisGasParams,
     },
@@ -48,6 +54,7 @@ impl GasPriceMethod {
                 base: *low,
             },
             GasPriceMethodInner::OsmosisMainnet {
+                cosmos,
                 price,
                 params:
                     OsmosisGasParams {
@@ -93,10 +100,10 @@ impl GasPriceMethod {
                     }
                 };
                 if should_trigger {
-                    let builder = builder.clone();
+                    let cosmos = cosmos.clone();
                     let price = price.clone();
                     tokio::task::spawn(async move {
-                        let reported = load_osmosis_gas_base_fee(builder).await?;
+                        let reported = load_osmosis_gas_base_fee(&cosmos).await?;
                         let mut guard = price.write();
                         guard.reported = reported;
                         Ok::<_, LoadOsmosisGasPriceError>(())
@@ -111,11 +118,12 @@ impl GasPriceMethod {
         }
     }
 
-    pub(crate) async fn new_osmosis_mainnet(builder: &CosmosBuilder) -> Result<Self, BuilderError> {
+    pub(crate) async fn new_osmosis_mainnet(builder: CosmosBuilder) -> Result<Self, BuilderError> {
         let params = builder.get_osmosis_gas_params();
+        let cosmos = builder.build_lazy()?;
         // Do not kill this process if the query fails. We don't want services
         // to crash just because Osmosis txfees module stops responding.
-        let reported = match load_osmosis_gas_base_fee(builder.clone()).await {
+        let reported = match load_osmosis_gas_base_fee(&cosmos).await {
             Ok(reported) => reported,
             Err(e) => {
                 tracing::error!(
@@ -130,6 +138,7 @@ impl GasPriceMethod {
         };
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
+                cosmos,
                 price: Arc::new(RwLock::new(price)),
                 params,
             },
@@ -160,12 +169,7 @@ struct OsmosisGasPrice {
 }
 
 /// Loads current eip base fee from Osmosis txfees module
-pub async fn load_osmosis_gas_base_fee(
-    builder: CosmosBuilder,
-) -> Result<f64, LoadOsmosisGasPriceError> {
-    // this cosmos instance is only used to load the gas price
-    let cosmos = builder.build_lazy()?;
-
+pub async fn load_osmosis_gas_base_fee(cosmos: &Cosmos) -> Result<f64, LoadOsmosisGasPriceError> {
     let TxFeesInfo { eip_base_fee } = cosmos.get_osmosis_txfees_info().await?;
     let base_fee: f64 = eip_base_fee.to_string().parse()?;
 
