@@ -23,7 +23,7 @@ pub struct CosmosBuilder {
 
     // Values with defaults
     gas_estimate_multiplier: GasMultiplierConfig,
-    gas_price_method: Option<GasPriceMethod>,
+    pub(crate) gas_price_method: Option<GasPriceMethod>,
     gas_price_retry_attempts: Option<u64>,
     transaction_attempts: Option<usize>,
     referer_header: Option<String>,

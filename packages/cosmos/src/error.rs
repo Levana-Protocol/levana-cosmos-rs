@@ -120,6 +120,9 @@ pub enum ChainParseError {
     NoCodeIdFound { txhash: String },
     #[error("No instantiated contract found in transaction {txhash}")]
     NoInstantiatedContractFound { txhash: String },
+
+    #[error("TxFees {err}")]
+    TxFees { err: String },
 }
 
 /// An error that occurs while connecting to a Cosmos gRPC endpoint.
@@ -263,6 +266,7 @@ pub enum Action {
     WaitForTransaction(String),
     SanityCheck,
     OsmosisEpochsInfo,
+    OsmosisTxFeesInfo,
 }
 
 impl Display for Action {
@@ -290,6 +294,7 @@ impl Display for Action {
             Action::WaitForTransaction(txhash) => write!(f, "wait for transaction {txhash}"),
             Action::SanityCheck => f.write_str("sanity check"),
             Action::OsmosisEpochsInfo => f.write_str("get Osmosis epochs info"),
+            Action::OsmosisTxFeesInfo => f.write_str("get Osmosis txfees info"),
         }
     }
 }

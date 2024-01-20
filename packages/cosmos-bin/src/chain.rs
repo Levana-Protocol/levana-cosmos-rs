@@ -45,6 +45,8 @@ pub(crate) enum Subcommand {
     Latest {},
     /// Print Osmosis-specific epoch information.
     Epoch {},
+    /// Print Osmosis-specific txfees information.
+    TxFees {},
 }
 
 pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
@@ -69,6 +71,7 @@ pub(crate) async fn go(Opt { sub }: Opt, cosmos: Cosmos) -> Result<()> {
         } => block_gas_report(cosmos, start_block, end_block, &dest).await,
         Subcommand::Latest {} => latest(cosmos).await,
         Subcommand::Epoch {} => epoch(cosmos).await,
+        Subcommand::TxFees {} => txfees(cosmos).await,
     }
 }
 
@@ -238,5 +241,11 @@ async fn epoch(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
     println!("{epoch:?}");
     let epoch = epoch.summarize();
     println!("{epoch:?}");
+    Ok(())
+}
+
+async fn txfees(cosmos: Cosmos) -> std::result::Result<(), anyhow::Error> {
+    let txfees = cosmos.get_osmosis_txfees_info().await?;
+    println!("eip base fee: {}", txfees.eip_base_fee);
     Ok(())
 }

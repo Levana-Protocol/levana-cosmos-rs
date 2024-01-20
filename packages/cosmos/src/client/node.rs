@@ -254,4 +254,10 @@ impl Node {
     ) -> crate::osmosis::epochs::query_client::QueryClient<CosmosChannel> {
         crate::osmosis::epochs::query_client::QueryClient::new(self.node_inner.channel.clone())
     }
+
+    pub(crate) fn txfees_query_client(
+        &self,
+    ) -> crate::osmosis::txfees::query_client::QueryClient<CosmosChannel> {
+        crate::osmosis::txfees::query_client::QueryClient::new(self.node_inner.channel.clone())
+    }
 }

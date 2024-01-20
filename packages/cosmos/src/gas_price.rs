@@ -4,12 +4,30 @@ use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
 use parking_lot::RwLock;
 
-use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError, CosmosBuilder};
+use crate::{
+    cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, Cosmos,
+    CosmosBuilder,
+};
 
 /// Mechanism used for determining the gas price
 #[derive(Clone, Debug)]
 pub(crate) struct GasPriceMethod {
     inner: GasPriceMethodInner,
+}
+
+impl GasPriceMethod {
+    // see comment on `cosmos` field of `GasPriceMethodInner::OsmosisMainnet`
+    pub(crate) fn set_cosmos(&self, cosmos: Cosmos) {
+        match &self.inner {
+            GasPriceMethodInner::Static { .. } => {}
+            GasPriceMethodInner::OsmosisMainnet {
+                cosmos: cosmos_lock,
+                ..
+            } => {
+                *cosmos_lock.write() = Some(cosmos);
+            }
+        }
+    }
 }
 
 pub(crate) const DEFAULT_GAS_PRICE: CurrentGasPrice = CurrentGasPrice {
@@ -26,7 +44,12 @@ enum GasPriceMethodInner {
     },
     /// Reloads from EIP values regularly, starting with the values below.
     OsmosisMainnet {
-        client: reqwest::Client,
+        // This Cosmos instance is optional due to a circular dependency:
+        // builder depends on gas price method -> gas price method depends on cosmos -> cosmos depends on builder
+        // Therefore, we fallback to a default until the cosmos instance has been set
+        // In practice, it's set almost right away via the builder completing
+        // i.e. this is ultimately just a typesafe way to complete the circular dependency
+        cosmos: Arc<RwLock<Option<Cosmos>>>,
         price: Arc<RwLock<OsmosisGasPrice>>,
         params: OsmosisGasParams,
     },
@@ -47,7 +70,7 @@ impl GasPriceMethod {
                 base: *low,
             },
             GasPriceMethodInner::OsmosisMainnet {
-                client,
+                cosmos,
                 price,
                 params:
                     OsmosisGasParams {
@@ -93,10 +116,16 @@ impl GasPriceMethod {
                     }
                 };
                 if should_trigger {
-                    let client = client.clone();
+                    let cosmos = cosmos.clone();
                     let price = price.clone();
                     tokio::task::spawn(async move {
-                        let reported = load_osmosis_gas_base_fee(&client).await?;
+                        // no real need for the extra scope here, lock will be dropped, but better safe than sorry!
+                        let cosmos: Option<Cosmos> =
+                            { cosmos.try_read().as_deref().cloned().flatten() };
+                        let reported = match cosmos {
+                            None => OsmosisGasPrice::DEFAULT_REPORTED,
+                            Some(cosmos) => load_osmosis_gas_base_fee(&cosmos).await?,
+                        };
                         let mut guard = price.write();
                         guard.reported = reported;
                         Ok::<_, LoadOsmosisGasPriceError>(())
@@ -112,28 +141,15 @@ impl GasPriceMethod {
     }
 
     pub(crate) async fn new_osmosis_mainnet(
-        client: &reqwest::Client,
         params: OsmosisGasParams,
     ) -> Result<Self, BuilderError> {
-        // Do not kill this process if the query fails. We don't want services
-        // to crash just because Osmosis's LCD stops responding.
-        let reported = match load_osmosis_gas_base_fee(client).await {
-            Ok(reported) => reported,
-            Err(e) => {
-                tracing::error!(
-                    "Unable to load variable Osmosis mainnet gas price, using defaults: {e}"
-                );
-                0.0025
-            }
-        };
-        let price = OsmosisGasPrice {
-            last_triggered: Instant::now(),
-            reported,
-        };
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
-                client: client.clone(),
-                price: Arc::new(RwLock::new(price)),
+                cosmos: Arc::new(RwLock::new(None)),
+                price: Arc::new(RwLock::new(OsmosisGasPrice {
+                    reported: OsmosisGasPrice::DEFAULT_REPORTED,
+                    last_triggered: Instant::now(),
+                })),
                 params,
             },
         })
@@ -162,22 +178,14 @@ struct OsmosisGasPrice {
     last_triggered: Instant,
 }
 
-/// Loads current eip base fee from a v1beta1 lcd endpoint
-pub async fn load_osmosis_gas_base_fee(
-    client: &reqwest::Client,
-) -> Result<f64, LoadOsmosisGasPriceError> {
-    #[derive(serde::Deserialize)]
-    struct BaseFee {
-        base_fee: String,
-    }
-    let BaseFee { base_fee } = client
-        .get("https://lcd.osmosis.zone/osmosis/txfees/v1beta1/cur_eip_base_fee")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let base_fee: f64 = base_fee.parse()?;
+impl OsmosisGasPrice {
+    pub const DEFAULT_REPORTED: f64 = 0.0025;
+}
+
+/// Loads current eip base fee from Osmosis txfees module
+pub async fn load_osmosis_gas_base_fee(cosmos: &Cosmos) -> Result<f64, LoadOsmosisGasPriceError> {
+    let TxFeesInfo { eip_base_fee } = cosmos.get_osmosis_txfees_info().await?;
+    let base_fee: f64 = eip_base_fee.to_string().parse()?;
 
     // There seems to be a bug where this endpoint occassionally returns 0. Just
     // set a minimum.
@@ -190,9 +198,12 @@ pub async fn load_osmosis_gas_base_fee(
 /// Verbose error for the gas price base fee request
 pub enum LoadOsmosisGasPriceError {
     #[error(transparent)]
-    /// Reqwest error
-    Reqwest(#[from] reqwest::Error),
+    /// TxFees error
+    TxFees(#[from] crate::Error),
     #[error(transparent)]
     /// Parse error
     Parse(#[from] ParseFloatError),
+    #[error(transparent)]
+    /// Builder error
+    Builder(#[from] BuilderError),
 }

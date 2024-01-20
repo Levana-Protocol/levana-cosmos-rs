@@ -33,6 +33,7 @@ bip39 = "2"
 thiserror = "1"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 http = "0.2"
+cosmwasm-std = "1"
 
 [features]
 clap = ["dep:clap"]

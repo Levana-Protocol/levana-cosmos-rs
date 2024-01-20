@@ -587,6 +587,10 @@ impl CosmosBuilder {
             max_price,
         };
         cosmos.launch_chain_paused_tracker();
+
+        if let Some(gas_price_method) = &cosmos.pool.builder.gas_price_method {
+            gas_price_method.set_cosmos(cosmos.clone())
+        }
         Ok(cosmos)
     }
 }

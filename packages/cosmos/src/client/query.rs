@@ -24,7 +24,11 @@ use cosmos_sdk_proto::{
 };
 use tonic::async_trait;
 
-use crate::osmosis::epochs::{QueryEpochsInfoRequest, QueryEpochsInfoResponse};
+use crate::osmosis::{
+    epochs::{QueryEpochsInfoRequest, QueryEpochsInfoResponse},
+    txfees::QueryEipBaseFeeRequest,
+    QueryEipBaseFeeResponse,
+};
 
 use super::node::Node;
 
@@ -211,5 +215,16 @@ impl GrpcRequest for QueryEpochsInfoRequest {
         inner: &mut Node,
     ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
         inner.epochs_query_client().epoch_infos(req).await
+    }
+}
+
+#[async_trait]
+impl GrpcRequest for QueryEipBaseFeeRequest {
+    type Response = QueryEipBaseFeeResponse;
+    async fn perform(
+        req: tonic::Request<Self>,
+        inner: &mut Node,
+    ) -> Result<tonic::Response<Self::Response>, tonic::Status> {
+        inner.txfees_query_client().get_eip_base_fee(req).await
     }
 }
