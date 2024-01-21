@@ -645,3 +645,26 @@ impl Display for SingleNodeHealthReport {
         Ok(())
     }
 }
+
+/// Errors that can occur while getting the first block.
+#[derive(thiserror::Error, Debug)]
+pub enum FirstBlockAfterError {
+    #[error(transparent)]
+    CosmosError(#[from] Error),
+    #[error(
+        "No blocks exist before {timestamp}, earliest block is {earliest_height} @ {earliest_timestamp}"
+    )]
+    NoBlocksExistBefore {
+        timestamp: DateTime<Utc>,
+        earliest_height: i64,
+        earliest_timestamp: DateTime<Utc>,
+    },
+    #[error(
+        "No blocks exist after {timestamp}, latest block is {latest_height} @ {latest_timestamp}"
+    )]
+    NoBlocksExistAfter {
+        timestamp: DateTime<Utc>,
+        latest_height: i64,
+        latest_timestamp: DateTime<Utc>,
+    },
+}
