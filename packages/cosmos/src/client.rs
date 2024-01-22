@@ -35,8 +35,8 @@ use tonic::{service::Interceptor, Status};
 use crate::{
     address::HasAddressHrp,
     error::{
-        Action, BuilderError, ConnectionError, CosmosSdkError, NodeHealthReport, QueryError,
-        QueryErrorCategory, QueryErrorDetails,
+        Action, BuilderError, ConnectionError, CosmosSdkError, FirstBlockAfterError,
+        NodeHealthReport, QueryError, QueryErrorCategory, QueryErrorDetails,
     },
     gas_multiplier::{GasMultiplier, GasMultiplierConfig},
     gas_price::CurrentGasPrice,
@@ -1018,6 +1018,57 @@ impl Cosmos {
     /// Get a node health report
     pub fn node_health_report(&self) -> NodeHealthReport {
         self.pool.node_chooser.health_report()
+    }
+
+    /// Get the first block with a timestamp greater than or equal to the given timestamp.
+    ///
+    /// Takes an optional earliest block to start checking from.
+    pub async fn first_block_after(
+        &self,
+        timestamp: DateTime<Utc>,
+        earliest: Option<i64>,
+    ) -> Result<i64, FirstBlockAfterError> {
+        let earliest = match earliest {
+            None => self.get_earliest_block_info().await?,
+            Some(height) => self.get_block_info(height).await?,
+        };
+        let latest = self.get_latest_block_info().await?;
+        if earliest.timestamp > timestamp {
+            return Err(FirstBlockAfterError::NoBlocksExistBefore {
+                timestamp,
+                earliest_height: earliest.height,
+                earliest_timestamp: earliest.timestamp,
+            });
+        }
+        if latest.timestamp < timestamp {
+            return Err(FirstBlockAfterError::NoBlocksExistAfter {
+                timestamp,
+                latest_height: latest.height,
+                latest_timestamp: latest.timestamp,
+            });
+        }
+        let mut low = earliest.height;
+        let mut high = latest.height;
+        tracing::debug!("Earliest height {low} at {}", earliest.timestamp);
+        tracing::debug!("Latest height {high} at {}", latest.timestamp);
+        loop {
+            if low == high || low + 1 == high {
+                break Ok(high);
+            }
+            assert!(low < high);
+            let mid = (high + low) / 2;
+            let info = self.get_block_info(mid).await?;
+            tracing::debug!(
+                "Block #{} occurred at timestamp {}",
+                info.height,
+                info.timestamp
+            );
+            if info.timestamp < timestamp {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
     }
 }
 

@@ -80,46 +80,9 @@ async fn first_block_after(
     timestamp: DateTime<Utc>,
     earliest: Option<i64>,
 ) -> Result<()> {
-    let earliest = match earliest {
-        None => cosmos.get_earliest_block_info().await?,
-        Some(height) => cosmos.get_block_info(height).await?,
-    };
-    let latest = cosmos.get_latest_block_info().await?;
-    anyhow::ensure!(
-        earliest.timestamp < timestamp,
-        "No blocks exist before {timestamp}, earliest is {} @ {}",
-        earliest.height,
-        earliest.timestamp
-    );
-    anyhow::ensure!(
-        latest.timestamp > timestamp,
-        "No blocks exist after {timestamp}, latest block is {}@{}",
-        latest.height,
-        latest.timestamp
-    );
-    let mut low = earliest.height;
-    let mut high = latest.height;
-    tracing::debug!("Earliest height {low} at {}", earliest.timestamp);
-    tracing::debug!("Latest height {high} at {}", latest.timestamp);
-    loop {
-        if low == high || low + 1 == high {
-            println!("{high}");
-            break Ok(());
-        }
-        assert!(low < high);
-        let mid = (high + low) / 2;
-        let info = cosmos.get_block_info(mid).await?;
-        tracing::debug!(
-            "Block #{} occurred at timestamp {}",
-            info.height,
-            info.timestamp
-        );
-        if info.timestamp < timestamp {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
+    let block = cosmos.first_block_after(timestamp, earliest).await?;
+    println!("{block}");
+    Ok(())
 }
 
 async fn account_info(cosmos: Cosmos, address: Address) -> Result<()> {
