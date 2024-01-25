@@ -39,7 +39,7 @@ use crate::{
         NodeHealthReport, QueryError, QueryErrorCategory, QueryErrorDetails,
     },
     gas_multiplier::{GasMultiplier, GasMultiplierConfig},
-    gas_price::CurrentGasPrice,
+    gas_price::{CurrentGasPrice, DEFAULT_GAS_PRICE},
     osmosis::ChainPausedStatus,
     wallet::WalletPublicKey,
     Address, CosmosBuilder, DynamicGasMultiplier, Error, HasAddress, TxBuilder,
@@ -64,7 +64,7 @@ pub struct Cosmos {
     pub(crate) chain_paused_status: ChainPausedStatus,
     gas_multiplier: GasMultiplier,
     /// Maximum gas price
-    max_price: f64,
+    pub(crate) max_price: f64,
 }
 
 pub(crate) struct WeakCosmos {
@@ -588,9 +588,6 @@ impl CosmosBuilder {
         };
         cosmos.launch_chain_paused_tracker();
 
-        if let Some(gas_price_method) = &cosmos.pool.builder.gas_price_method {
-            gas_price_method.set_cosmos(cosmos.clone())
-        }
         Ok(cosmos)
     }
 }
@@ -910,9 +907,8 @@ impl Cosmos {
     }
 
     /// attempt_number starts at 0
-    fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
-        let CurrentGasPrice { low, high, base: _ } =
-            self.pool.builder.current_gas_price(self.max_price);
+    async fn gas_to_coins(&self, gas: u64, attempt_number: u64) -> u64 {
+        let CurrentGasPrice { low, high, base: _ } = self.current_gas_price().await;
         let attempts = self.pool.builder.gas_price_retry_attempts();
 
         let gas_price = if attempt_number >= attempts {
@@ -1011,8 +1007,15 @@ impl Cosmos {
     ///
     /// On Osmosis mainnet, this will be the base gas fee reported by the chain.
     /// On all other chains, it will be the low price value.
-    pub fn get_base_gas_price(&self) -> f64 {
-        self.pool.builder.current_gas_price(self.max_price).base
+    pub async fn get_base_gas_price(&self) -> f64 {
+        self.current_gas_price().await.base
+    }
+
+    async fn current_gas_price(&self) -> CurrentGasPrice {
+        match &self.get_cosmos_builder().gas_price_method {
+            Some(method) => method.current(self).await,
+            None => DEFAULT_GAS_PRICE,
+        }
     }
 
     /// Get a node health report
@@ -1541,6 +1544,7 @@ impl TxBuilder {
         for attempt_number in 0..attempts {
             let amount = cosmos
                 .gas_to_coins(gas_to_request, attempt_number)
+                .await
                 .to_string();
             match retry_with_price(amount).await {
                 Err(crate::Error::TransactionFailed {
@@ -1559,7 +1563,10 @@ impl TxBuilder {
             }
         }
 
-        let amount = cosmos.gas_to_coins(gas_to_request, attempts).to_string();
+        let amount = cosmos
+            .gas_to_coins(gas_to_request, attempts)
+            .await
+            .to_string();
         retry_with_price(amount).await
     }
 
