@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     gas_multiplier::{GasMultiplier, GasMultiplierConfig},
-    gas_price::{CurrentGasPrice, GasPriceMethod, DEFAULT_GAS_PRICE},
+    gas_price::GasPriceMethod,
     AddressHrp, DynamicGasMultiplier,
 };
 
@@ -187,12 +187,6 @@ impl CosmosBuilder {
 
     pub(crate) fn set_gas_price_method(&mut self, method: GasPriceMethod) {
         self.gas_price_method = Some(method);
-    }
-
-    pub(crate) fn current_gas_price(&self, max_price: f64) -> CurrentGasPrice {
-        self.gas_price_method
-            .as_ref()
-            .map_or(DEFAULT_GAS_PRICE, |method| method.current(self, max_price))
     }
 
     /// How many retries at different gas prices should we try before using high

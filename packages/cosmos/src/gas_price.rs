@@ -2,32 +2,12 @@
 
 use std::{num::ParseFloatError, sync::Arc, time::Instant};
 
-use parking_lot::RwLock;
-
-use crate::{
-    cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, Cosmos,
-    CosmosBuilder,
-};
+use crate::{cosmos_builder::OsmosisGasParams, error::BuilderError, osmosis::TxFeesInfo, Cosmos};
 
 /// Mechanism used for determining the gas price
 #[derive(Clone, Debug)]
 pub(crate) struct GasPriceMethod {
     inner: GasPriceMethodInner,
-}
-
-impl GasPriceMethod {
-    // see comment on `cosmos` field of `GasPriceMethodInner::OsmosisMainnet`
-    pub(crate) fn set_cosmos(&self, cosmos: Cosmos) {
-        match &self.inner {
-            GasPriceMethodInner::Static { .. } => {}
-            GasPriceMethodInner::OsmosisMainnet {
-                cosmos: cosmos_lock,
-                ..
-            } => {
-                *cosmos_lock.write() = Some(cosmos);
-            }
-        }
-    }
 }
 
 pub(crate) const DEFAULT_GAS_PRICE: CurrentGasPrice = CurrentGasPrice {
@@ -44,13 +24,7 @@ enum GasPriceMethodInner {
     },
     /// Reloads from EIP values regularly, starting with the values below.
     OsmosisMainnet {
-        // This Cosmos instance is optional due to a circular dependency:
-        // builder depends on gas price method -> gas price method depends on cosmos -> cosmos depends on builder
-        // Therefore, we fallback to a default until the cosmos instance has been set
-        // In practice, it's set almost right away via the builder completing
-        // i.e. this is ultimately just a typesafe way to complete the circular dependency
-        cosmos: Arc<RwLock<Option<Cosmos>>>,
-        price: Arc<RwLock<OsmosisGasPrice>>,
+        price: Arc<tokio::sync::RwLock<OsmosisGasPrice>>,
         params: OsmosisGasParams,
     },
 }
@@ -62,7 +36,7 @@ pub(crate) struct CurrentGasPrice {
 }
 
 impl GasPriceMethod {
-    pub(crate) fn current(&self, builder: &CosmosBuilder, max_price: f64) -> CurrentGasPrice {
+    pub(crate) async fn current(&self, cosmos: &Cosmos) -> CurrentGasPrice {
         match &self.inner {
             GasPriceMethodInner::Static { low, high } => CurrentGasPrice {
                 low: *low,
@@ -70,7 +44,6 @@ impl GasPriceMethod {
                 base: *low,
             },
             GasPriceMethodInner::OsmosisMainnet {
-                cosmos,
                 price,
                 params:
                     OsmosisGasParams {
@@ -78,63 +51,51 @@ impl GasPriceMethod {
                         high_multiplier,
                     },
             } => {
-                // To avoid a race condition, we lock, check the last triggered
-                // time, and then immediately update last_triggered if we're
-                // going to reload. This prevents multiple tasks from being
-                // spawned simultaneously. We don't worry about the case of a
-                // single task running longer than the next one, HTTP timeouts
-                // will prevent that.
-                //
-                // Do this all in its own block to make sure we don't hold the
-                // write guard for too long.
-                let (reported, should_trigger) = {
-                    let now = Instant::now();
+                // We're going to check if we have a recent enough value, so get
+                // the current timestamp for use below.
+                let now = Instant::now();
+                let too_old_seconds = cosmos
+                    .get_cosmos_builder()
+                    .get_osmosis_gas_price_too_old_seconds();
 
-                    // Locking optimization. First take a read lock and, if we
-                    // don't need to trigger, no need for a write lock.
-                    let orig = *price.read();
-                    if osmosis_too_old(
-                        orig.last_triggered,
-                        now,
-                        builder.get_osmosis_gas_price_too_old_seconds(),
-                    ) {
-                        // OK, we think we need to trigger. Now take a write
-                        // lock and check again to see if another task was
-                        // already triggered.
-                        let mut guard = price.write();
-                        let should_trigger = osmosis_too_old(
-                            guard.last_triggered,
-                            now,
-                            builder.get_osmosis_gas_price_too_old_seconds(),
-                        );
-                        if should_trigger {
-                            guard.last_triggered = now;
+                // Locking optimization. First take a read lock and, if we
+                // don't need to reload the price, no need for a write lock.
+                let orig = *price.read().await;
+                let reported = if osmosis_too_old(orig.last_loaded, now, too_old_seconds) {
+                    // OK, we think we need to reload. Now take a write lock.
+                    // We'll end up waiting if another task is already in the process of reloading,
+                    // which is exactly what we want (to avoid two concurrent loads).
+                    let mut guard = price.write().await;
+                    if osmosis_too_old(guard.last_loaded, now, too_old_seconds) {
+                        // No other task updated this, so we'll do it. We're
+                        // still holding the write lock, so all other tasks will wait on us. We rely
+                        // on existing timeouts in the rest of the system to ensure this completes in
+                        // a reasonable amount of time. This is considered acceptable, since any other
+                        // actions we'd want to take would have the same latency from slow gRPC queries.
+                        match load_osmosis_gas_base_fee(cosmos).await {
+                            Ok(reported) => {
+                                guard.reported = reported;
+                                guard.last_loaded = Some(now);
+                                reported
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Unable to load Osmosis gas price (aka base fee): {e:?}"
+                                );
+                                guard.reported
+                            }
                         }
-                        (guard.reported, should_trigger)
                     } else {
-                        (orig.reported, false)
+                        guard.reported
                     }
+                } else {
+                    orig.reported
                 };
-                if should_trigger {
-                    let cosmos = cosmos.clone();
-                    let price = price.clone();
-                    tokio::task::spawn(async move {
-                        // no real need for the extra scope here, lock will be dropped, but better safe than sorry!
-                        let cosmos: Option<Cosmos> =
-                            { cosmos.try_read().as_deref().cloned().flatten() };
-                        let reported = match cosmos {
-                            None => OsmosisGasPrice::DEFAULT_REPORTED,
-                            Some(cosmos) => load_osmosis_gas_base_fee(&cosmos).await?,
-                        };
-                        let mut guard = price.write();
-                        guard.reported = reported;
-                        Ok::<_, LoadOsmosisGasPriceError>(())
-                    });
-                }
+
                 CurrentGasPrice {
                     base: reported,
-                    low: (reported * low_multiplier).min(max_price),
-                    high: (reported * high_multiplier).min(max_price),
+                    low: (reported * low_multiplier).min(cosmos.max_price),
+                    high: (reported * high_multiplier).min(cosmos.max_price),
                 }
             }
         }
@@ -145,10 +106,9 @@ impl GasPriceMethod {
     ) -> Result<Self, BuilderError> {
         Ok(GasPriceMethod {
             inner: GasPriceMethodInner::OsmosisMainnet {
-                cosmos: Arc::new(RwLock::new(None)),
-                price: Arc::new(RwLock::new(OsmosisGasPrice {
+                price: Arc::new(tokio::sync::RwLock::new(OsmosisGasPrice {
                     reported: OsmosisGasPrice::DEFAULT_REPORTED,
-                    last_triggered: Instant::now(),
+                    last_loaded: None,
                 })),
                 params,
             },
@@ -162,8 +122,12 @@ impl GasPriceMethod {
     }
 }
 
-fn osmosis_too_old(last_triggered: Instant, now: Instant, too_old_seconds: u64) -> bool {
-    match now.checked_duration_since(last_triggered) {
+fn osmosis_too_old(last_loaded: Option<Instant>, now: Instant, too_old_seconds: u64) -> bool {
+    let last_loaded = match last_loaded {
+        Some(last_loaded) => last_loaded,
+        None => return true,
+    };
+    match now.checked_duration_since(last_loaded) {
         Some(age) => age.as_secs() > too_old_seconds,
         None => {
             tracing::warn!("now.checked_duration_since(last_triggered) returned None");
@@ -175,28 +139,30 @@ fn osmosis_too_old(last_triggered: Instant, now: Instant, too_old_seconds: u64) 
 #[derive(Debug, Clone, Copy)]
 struct OsmosisGasPrice {
     reported: f64,
-    last_triggered: Instant,
+    last_loaded: Option<Instant>,
 }
 
 impl OsmosisGasPrice {
-    pub const DEFAULT_REPORTED: f64 = 0.0025;
+    pub(crate) const DEFAULT_REPORTED: f64 = 0.0025;
 }
 
 /// Loads current eip base fee from Osmosis txfees module
-pub async fn load_osmosis_gas_base_fee(cosmos: &Cosmos) -> Result<f64, LoadOsmosisGasPriceError> {
+pub(crate) async fn load_osmosis_gas_base_fee(
+    cosmos: &Cosmos,
+) -> Result<f64, LoadOsmosisGasPriceError> {
     let TxFeesInfo { eip_base_fee } = cosmos.get_osmosis_txfees_info().await?;
     let base_fee: f64 = eip_base_fee.to_string().parse()?;
 
     // There seems to be a bug where this endpoint occassionally returns 0. Just
     // set a minimum.
-    let base_fee = base_fee.max(0.0025);
+    let base_fee = base_fee.max(OsmosisGasPrice::DEFAULT_REPORTED);
 
     Ok(base_fee)
 }
 
 #[derive(thiserror::Error, Debug)]
 /// Verbose error for the gas price base fee request
-pub enum LoadOsmosisGasPriceError {
+pub(crate) enum LoadOsmosisGasPriceError {
     #[error(transparent)]
     /// TxFees error
     TxFees(#[from] crate::Error),
