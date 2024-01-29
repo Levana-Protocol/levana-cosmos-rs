@@ -80,7 +80,7 @@ impl GasPriceMethod {
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    "Unable to load Osmosis gas price (aka base fee): {e:?}"
+                                    "Unable to load Osmosis gas price (aka base fee): {e}"
                                 );
                                 guard.reported
                             }
