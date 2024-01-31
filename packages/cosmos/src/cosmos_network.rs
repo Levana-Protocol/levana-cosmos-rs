@@ -30,6 +30,25 @@ pub enum CosmosNetwork {
 }
 
 impl CosmosNetwork {
+    /// Returns ['true'] if the network is mainnet
+    pub fn is_mainnet(&self) -> bool {
+        match self {
+            CosmosNetwork::JunoTestnet
+            | CosmosNetwork::JunoLocal
+            | CosmosNetwork::OsmosisLocal
+            | CosmosNetwork::WasmdLocal
+            | CosmosNetwork::OsmosisTestnet
+            | CosmosNetwork::SeiTestnet
+            | CosmosNetwork::StargazeTestnet
+            | CosmosNetwork::InjectiveTestnet => false,
+            CosmosNetwork::JunoMainnet
+            | CosmosNetwork::OsmosisMainnet
+            | CosmosNetwork::SeiMainnet
+            | CosmosNetwork::StargazeMainnet
+            | CosmosNetwork::InjectiveMainnet => true,
+        }
+    }
+
     /// Convenience method to make a [Self::builder] and then [CosmosBuilder::build] it.
     pub async fn connect(self) -> Result<Cosmos, BuilderError> {
         self.builder().await?.build().await
