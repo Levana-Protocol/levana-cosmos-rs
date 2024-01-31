@@ -147,9 +147,7 @@ impl OsmosisGasPrice {
 }
 
 /// Loads current eip base fee from Osmosis txfees module
-pub(crate) async fn load_osmosis_gas_base_fee(
-    cosmos: &Cosmos,
-) -> Result<f64, LoadOsmosisGasPriceError> {
+pub async fn load_osmosis_gas_base_fee(cosmos: &Cosmos) -> Result<f64, LoadOsmosisGasPriceError> {
     let TxFeesInfo { eip_base_fee } = cosmos.get_osmosis_txfees_info().await?;
     let base_fee: f64 = eip_base_fee.to_string().parse()?;
 
@@ -162,7 +160,7 @@ pub(crate) async fn load_osmosis_gas_base_fee(
 
 #[derive(thiserror::Error, Debug)]
 /// Verbose error for the gas price base fee request
-pub(crate) enum LoadOsmosisGasPriceError {
+pub enum LoadOsmosisGasPriceError {
     #[error(transparent)]
     /// TxFees error
     TxFees(#[from] crate::Error),
