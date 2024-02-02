@@ -20,10 +20,10 @@ use crate::{
 /// This value can be useful for converting addresses between different chains,
 /// or for accepting a command line parameter or config value which is
 /// chain-agnostic.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Ord, PartialOrd)]
 pub struct RawAddress(RawAddressInner);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Ord, PartialOrd)]
 enum RawAddressInner {
     Twenty { raw_address: [u8; 20] },
     ThirtyTwo { raw_address: [u8; 32] },
@@ -141,7 +141,7 @@ impl RawAddress {
 ///
 /// This is composed of a [RawAddress] combined with the human-readable part
 /// (HRP) for the given chain. HRP is part of the bech32 standard.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Address {
     raw_address: RawAddress,
     hrp: AddressHrp,
