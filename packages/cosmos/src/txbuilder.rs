@@ -164,4 +164,9 @@ impl TxMessage {
             self.description,
         )
     }
+
+    /// Set the description, useful if the raw message is very large and makes error messages hard to parse.
+    pub fn set_description(&mut self, desc: impl Into<String>) {
+        self.description = desc.into();
+    }
 }
