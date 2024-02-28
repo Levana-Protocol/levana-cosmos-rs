@@ -20,6 +20,7 @@ pub struct CosmosBuilder {
     chain_id: String,
     gas_coin: String,
     hrp: AddressHrp,
+    is_fast_chain: bool,
 
     // Values with defaults
     gas_estimate_multiplier: GasMultiplierConfig,
@@ -80,6 +81,7 @@ impl CosmosBuilder {
             osmosis_gas_price_too_old_seconds: None,
             max_price: None,
             rate_limit_per_second: None,
+            is_fast_chain: matches!(hrp.as_str(), "sei" | "inj"),
         }
     }
 
@@ -310,12 +312,13 @@ impl CosmosBuilder {
 
     /// How many blocks a response is allowed to lag.
     ///
-    /// Defaults to 10
+    /// Defaults to 10 for most chains, 50 for fast chains (currently: Sei and Injective).
     ///
     /// This is intended to detect when one of the nodes in a load balancer has
     /// stopped syncing while others are making progress.
     pub fn block_lag_allowed(&self) -> u32 {
-        self.block_lag_allowed.unwrap_or(10)
+        self.block_lag_allowed
+            .unwrap_or(if self.is_fast_chain { 50 } else { 10 })
     }
 
     /// See [Self::block_lag_allowed]
