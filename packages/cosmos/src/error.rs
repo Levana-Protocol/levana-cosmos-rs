@@ -609,6 +609,8 @@ pub struct SingleNodeHealthReport {
     pub is_healthy: bool,
     pub last_error: Option<LastNodeError>,
     pub error_count: usize,
+    pub first_request: Option<DateTime<Utc>>,
+    pub total_query_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -641,6 +643,13 @@ impl Display for SingleNodeHealthReport {
                 age,
                 error,
             }) => write!(f, "Last error: {timestamp} ({age:?}): {error}")?,
+        }
+        if let Some(first_request) = self.first_request {
+            write!(
+                f,
+                ". First request: {}. Total queries: {}",
+                first_request, self.total_query_count
+            )?;
         }
         Ok(())
     }

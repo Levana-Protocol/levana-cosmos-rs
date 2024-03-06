@@ -32,6 +32,22 @@ struct NodeInner {
     channel: InterceptedService<Channel, CosmosInterceptor>,
     simulate_sequences: RwLock<HashMap<Address, SequenceInformation>>,
     broadcast_sequences: RwLock<HashMap<Address, SequenceInformation>>,
+    query_count: RwLock<QueryCount>,
+}
+
+#[derive(Default)]
+pub(crate) struct QueryCount {
+    pub(crate) first_request: Option<DateTime<Utc>>,
+    pub(crate) total_query_count: u64,
+}
+
+impl QueryCount {
+    pub(crate) fn incr(&mut self) {
+        if self.first_request.is_none() {
+            self.first_request = Some(Utc::now());
+        }
+        self.total_query_count += 1;
+    }
 }
 
 #[derive(Debug)]
@@ -108,6 +124,7 @@ impl CosmosBuilder {
                 broadcast_sequences: RwLock::new(HashMap::new()),
                 grpc_url: grpc_url.clone(),
                 last_error: RwLock::new(None),
+                query_count: RwLock::new(QueryCount::default()),
             }),
         })
     }
@@ -144,6 +161,7 @@ impl Node {
     }
 
     pub(super) fn log_query_result(&self, res: QueryResult) {
+        self.node_inner.query_count.write().incr();
         let mut guard = self.node_inner.last_error.write();
         match res {
             QueryResult::Success | QueryResult::OtherError => {
@@ -174,6 +192,10 @@ impl Node {
     pub(crate) fn health_report(&self, allowed_error_count: usize) -> SingleNodeHealthReport {
         let guard = self.node_inner.last_error.read();
         let last_error = guard.as_ref();
+        let QueryCount {
+            first_request,
+            total_query_count,
+        } = *self.node_inner.query_count.read();
         SingleNodeHealthReport {
             grpc_url: self.node_inner.grpc_url.clone(),
             is_fallback: self.node_inner.is_fallback,
@@ -196,6 +218,8 @@ impl Node {
                     error,
                 }
             }),
+            first_request,
+            total_query_count,
         }
     }
 
