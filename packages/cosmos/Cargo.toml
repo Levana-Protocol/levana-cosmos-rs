@@ -25,7 +25,7 @@ serde_json = "1"
 chrono = "0.4.31"
 hex = "0.4"
 sha2 = "0.10"
-reqwest = { version = "0.11.14", default-features = false, features = ["json", "gzip", "brotli", "rustls-tls"] }
+reqwest = { version = "0.11.14", default-features = false, features = ["json"] }
 base64 = "0.21"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive", "env"], optional = true }
@@ -37,6 +37,10 @@ cosmwasm-std = "1"
 
 [features]
 clap = ["dep:clap"]
+default = ["rustls-tls", "compression"]
+compression = ["reqwest/gzip", "reqwest/brotli"]
+rustls-tls = ["reqwest/rustls-tls"]
+native-tls = ["reqwest/native-tls"]
 
 [dev-dependencies]
 quickcheck = "1"
