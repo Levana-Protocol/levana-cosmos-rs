@@ -44,6 +44,7 @@ pub struct CosmosBuilder {
     osmosis_gas_price_too_old_seconds: Option<u64>,
     max_price: Option<f64>,
     rate_limit_per_second: Option<u64>,
+    log_requests: Option<bool>,
 }
 
 impl CosmosBuilder {
@@ -82,6 +83,7 @@ impl CosmosBuilder {
             max_price: None,
             rate_limit_per_second: None,
             is_fast_chain: matches!(hrp.as_str(), "sei" | "inj"),
+            log_requests: None,
         }
     }
 
@@ -424,6 +426,18 @@ impl CosmosBuilder {
     /// See [Self::get_osmosis_gas_price_too_old_seconds]
     pub fn set_osmosis_gas_price_too_old_seconds(&mut self, secs: u64) {
         self.osmosis_gas_price_too_old_seconds = Some(secs);
+    }
+
+    /// Should we log Cosmos requests made?
+    ///
+    /// Default: false
+    pub fn get_log_requests(&self) -> bool {
+        self.log_requests.unwrap_or_default()
+    }
+
+    /// See [Self::get_log_requests]
+    pub fn set_log_requests(&mut self, log_requests: bool) {
+        self.log_requests = Some(log_requests);
     }
 }
 
