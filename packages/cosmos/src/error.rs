@@ -645,10 +645,24 @@ impl Display for SingleNodeHealthReport {
             }) => write!(f, "Last error: {timestamp} ({age:?}): {error}")?,
         }
         if let Some(first_request) = self.first_request {
+            let since = (Utc::now() - first_request).num_minutes();
+
+            let rate_per_minute = {
+                let since = u64::try_from(since);
+                match since {
+                    Ok(since) => self.total_query_count.checked_div(since),
+                    Err(_) => None,
+                }
+            };
+            let rate_per_minute = match rate_per_minute {
+                Some(rpm) => rpm.to_string(),
+                None => "0verflow".to_owned(),
+            };
+
             write!(
                 f,
-                ". First request: {}. Total queries: {}",
-                first_request, self.total_query_count
+                ". First request: {} (Since {} minutes). Total queries: {} (RPM: {})",
+                first_request, since, self.total_query_count, rate_per_minute
             )?;
         }
         Ok(())
