@@ -308,6 +308,9 @@ impl Cosmos {
                 ),
                 Ok(mut guard) => {
                     let cosmos_inner = guard.get_inner_mut();
+                    if self.pool.builder.get_log_requests() {
+                        tracing::info!("{action}");
+                    }
                     match self.perform_query_inner(req.clone(), cosmos_inner).await {
                         Ok(x) => {
                             cosmos_inner.log_query_result(QueryResult::Success);
