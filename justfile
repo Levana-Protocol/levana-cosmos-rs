@@ -21,3 +21,7 @@ cargo-fmt-check:
 # cargo test
 cargo-test:
     cargo test --workspace --locked
+
+# Test
+test:
+	cargo run --bin cosmos -- contract-info osmo1ymuvx9nydujjghgxxug28w48ptzcu9ysvnynqdw78qgteafj0syq247w5u --network osmosis-testnet

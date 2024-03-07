@@ -647,17 +647,22 @@ impl Display for SingleNodeHealthReport {
         if let Some(first_request) = self.first_request {
             let since = (Utc::now() - first_request).num_minutes();
 
-            let rate_per_minute = {
-                let since = u64::try_from(since);
-                match since {
-                    Ok(since) => self.total_query_count.checked_div(since),
-                    Err(_) => None,
-                }
-            };
-            let rate_per_minute = match rate_per_minute {
-                Some(rpm) => rpm.to_string(),
-                None => "0verflow".to_owned(),
-            };
+            enum ConversionError {
+                Overflow,
+                DivideByZero,
+            }
+
+            let rate_per_minute = (|| {
+                let since = u64::try_from(since).map_err(|_| ConversionError::Overflow)?;
+                self.total_query_count
+                    .checked_div(since)
+                    .ok_or(ConversionError::DivideByZero)
+                    .map(|item| item.to_string())
+            })()
+            .unwrap_or_else(|err| match err {
+                ConversionError::Overflow => "Overflow when converting since".to_owned(),
+                ConversionError::DivideByZero => "since is 0".to_owned(),
+            });
 
             write!(
                 f,
