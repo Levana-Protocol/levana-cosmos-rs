@@ -16,7 +16,7 @@ use cosmos::{
     clap::CosmosOpt,
     error::WalletError,
     proto::{
-        cosmos::base::abci::v1beta1::TxResponse,
+        cosmos::{bank::v1beta1::MsgSend, base::abci::v1beta1::TxResponse},
         cosmwasm::wasm::v1::{
             ContractCodeHistoryEntry, ContractInfo, MsgExecuteContract,
             QueryContractHistoryResponse,
@@ -427,10 +427,15 @@ impl Subcommand {
             } => {
                 let cosmos = opt.network_opt.build().await?;
                 let address_type = cosmos.get_address_hrp();
-                let txres = tx_opt
-                    .get_wallet(address_type)?
-                    .send_coins(&cosmos, dest, coins.into_iter().map(|x| x.into()).collect())
-                    .await?;
+                let wallet = tx_opt.get_wallet(address_type)?;
+                let mut builder = TxBuilder::default();
+                builder.add_message(MsgSend {
+                    from_address: wallet.get_address_string(),
+                    to_address: dest.get_address_string(),
+                    amount: coins.into_iter().map(|x| x.into()).collect(),
+                });
+                builder.set_optional_memo(tx_opt.memo);
+                let txres = builder.sign_and_broadcast(&cosmos, &wallet).await?;
 
                 println!("{}", txres.txhash);
             }
