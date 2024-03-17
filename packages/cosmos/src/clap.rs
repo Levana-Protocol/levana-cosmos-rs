@@ -1,6 +1,6 @@
 //! Provides helpers for generating Cosmos values from command line parameters.
 
-use crate::{error::BuilderError, Cosmos, CosmosBuilder, CosmosNetwork};
+use crate::{error::BuilderError, AddressHrp, Cosmos, CosmosBuilder, CosmosNetwork};
 
 /// Command line options for connecting to a Cosmos network
 #[derive(clap::Parser, Clone, Debug)]
@@ -28,14 +28,20 @@ pub struct CosmosOpt {
     /// Referer header
     #[clap(long, short, global = true, env = "COSMOS_REFERER_HEADER")]
     referer_header: Option<String>,
+    /// Gas coin (e.g. uosmo)
+    #[clap(long, global = true, env = "COSMOS_GAS_COIN")]
+    gas_coin: Option<String>,
+    /// Human readable part (HRP) of wallet addresses
+    #[clap(long, global = true, env = "COSMOS_HRP")]
+    hrp: Option<AddressHrp>,
 }
 
 /// Errors for working with [CosmosOpt]
 #[derive(thiserror::Error, Debug)]
 #[allow(missing_docs)]
 pub enum CosmosOptError {
-    #[error("No network specified, either provide the COSMOS_NETWORK env var or --network option")]
-    NoNetworkProvided,
+    #[error("No network specified, either provide the COSMOS_NETWORK env var or --network option, or provide the following settings: {missing}")]
+    NoNetworkProvided { missing: String },
     #[error("{source}")]
     CosmosBuilderError { source: BuilderError },
 }
@@ -50,23 +56,62 @@ impl CosmosOpt {
             chain_id,
             gas_multiplier,
             referer_header,
+            gas_coin,
+            hrp,
         } = self;
 
         // Do the error checking here instead of in clap so that the field can
         // be global.
-        let network = network.ok_or(CosmosOptError::NoNetworkProvided)?;
-        let mut builder = network
-            .builder()
-            .await
-            .map_err(|source| CosmosOptError::CosmosBuilderError { source })?;
-        if let Some(grpc) = cosmos_grpc {
-            builder.set_grpc_url(grpc);
-        }
+        let mut builder = match network {
+            Some(network) => {
+                let mut builder = network
+                    .builder()
+                    .await
+                    .map_err(|source| CosmosOptError::CosmosBuilderError { source })?;
+                if let Some(grpc) = cosmos_grpc {
+                    builder.set_grpc_url(grpc);
+                }
+                if let Some(chain_id) = chain_id {
+                    builder.set_chain_id(chain_id);
+                }
+                if let Some(gas_coin) = gas_coin {
+                    builder.set_gas_coin(gas_coin);
+                }
+                if let Some(hrp) = hrp {
+                    builder.set_hrp(hrp)
+                }
+                builder
+            }
+            None => {
+                let mut missing = vec![];
+                if cosmos_grpc.is_none() {
+                    missing.push("COSMOS_GRPC");
+                }
+                if chain_id.is_none() {
+                    missing.push("COSMOS_CHAIN_ID");
+                }
+                if gas_coin.is_none() {
+                    missing.push("COSMOS_GAS_COIN");
+                }
+                if hrp.is_none() {
+                    missing.push("COSMOS_HRP");
+                }
+                match (cosmos_grpc, chain_id, gas_coin, hrp) {
+                    (Some(grpc), Some(chain_id), Some(gas_coin), Some(hrp)) => {
+                        assert!(missing.is_empty());
+                        CosmosBuilder::new(chain_id, gas_coin, hrp, grpc)
+                    }
+                    _ => {
+                        assert!(!missing.is_empty());
+                        return Err(CosmosOptError::NoNetworkProvided {
+                            missing: missing.join(", "),
+                        });
+                    }
+                }
+            }
+        };
         for fallback in cosmos_grpc_fallbacks {
             builder.add_grpc_fallback_url(fallback);
-        }
-        if let Some(chain_id) = chain_id {
-            builder.set_chain_id(chain_id);
         }
 
         if let Some(gas_multiplier) = gas_multiplier {
