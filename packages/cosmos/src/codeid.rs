@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
-    path::{Path, PathBuf}, io::Write,
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 use cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
@@ -48,8 +49,12 @@ impl Cosmos {
     ) -> Result<CodeId, crate::Error> {
         // https://github.com/cosmos/cosmjs/blob/f944892fd337af1ae8b5b269d2b2f68cdf2ad6cb/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L67
         let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::new(9));
-        gzip_encoder.write_all(&wasm_byte_code).map_err(|err|crate::Error::WasmGzipFailed { source: err })?;
-        let wasm_byte_code = gzip_encoder.finish().map_err(|err|crate::Error::WasmGzipFailed { source: err })?;
+        gzip_encoder
+            .write_all(&wasm_byte_code)
+            .map_err(|err| crate::Error::WasmGzipFailed { source: err })?;
+        let wasm_byte_code = gzip_encoder
+            .finish()
+            .map_err(|err| crate::Error::WasmGzipFailed { source: err })?;
 
         let msg = MsgStoreCodeHelper {
             sender: wallet.get_address(),
