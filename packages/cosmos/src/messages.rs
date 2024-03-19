@@ -1,6 +1,6 @@
 //! Message types provided directly by this library (instead of from the protobufs).
 
-use std::{fmt::Display, path::PathBuf, io::Write};
+use std::{fmt::Display, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use cosmos_sdk_proto::{
@@ -14,7 +14,6 @@ use cosmos_sdk_proto::{
         MsgUpdateAdmin,
     },
 };
-use flate2::{Compress, Compression, write::GzEncoder};
 use prost::Message;
 use prost_types::Timestamp;
 
@@ -123,17 +122,11 @@ impl From<MsgStoreCodeHelper> for TxMessage {
             source,
         }: MsgStoreCodeHelper,
     ) -> Self {
-        // https://github.com/cosmos/cosmjs/blob/f944892fd337af1ae8b5b269d2b2f68cdf2ad6cb/packages/cosmwasm-stargate/src/signingcosmwasmclient.ts#L67
-        let mut e = GzEncoder::new(Vec::new(), Compression::new(9));
-        e.write_all(&wasm_byte_code).unwrap();
-        let output = e.finish().unwrap();
-        // let mut output = vec![];
-        // let wasm_byte_code = Compress::new_gzip(Compression::new(9), 15).compress_vec(&wasm_byte_code, &mut output, flate2::FlushCompress::Finish).unwrap();
         TxMessage::new(
             "/cosmwasm.wasm.v1.MsgStoreCode",
             MsgStoreCode {
                 sender: sender.get_address_string(),
-                wasm_byte_code: output,
+                wasm_byte_code,
                 instantiate_permission: None,
             }
             .encode_to_vec(),
