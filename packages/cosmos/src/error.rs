@@ -210,6 +210,8 @@ pub enum Error {
     },
     #[error(transparent)]
     Connection(#[from] ConnectionError),
+    #[error("Error during wasm Gzip compression: {source}")]
+    WasmGzipFailed { source: std::io::Error },
 }
 
 impl Error {
