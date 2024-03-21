@@ -127,7 +127,7 @@ impl CosmosNetwork {
             CosmosNetwork::JunoMainnet => "http://juno-grpc.polkachu.com:12690",
             CosmosNetwork::JunoLocal => "http://localhost:9090",
             // Found at: https://docs.osmosis.zone/networks/
-            CosmosNetwork::OsmosisMainnet => "http://grpc.osmosis.zone:9090",
+            CosmosNetwork::OsmosisMainnet => "https://grpc.osmosis.zone",
             // Others available at: https://docs.osmosis.zone/networks/
             CosmosNetwork::OsmosisTestnet => "https://grpc.osmotest5.osmosis.zone",
             CosmosNetwork::OsmosisLocal => "http://localhost:9090",
