@@ -222,7 +222,7 @@ impl CosmosNetwork {
                 }
 
                 let gas_config = load_json::<SeiGasConfig>(
-                    "https://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json",
+                    "http://raw.githubusercontent.com/sei-protocol/chain-registry/master/gas.json",
                     client,
                 )
                 .await?;
@@ -245,7 +245,7 @@ impl CosmosNetwork {
                 }
 
                 let gas_config = load_json::<SeiGasConfig>(
-                "https://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json",
+                "http://raw.githubusercontent.com/sei-protocol/testnet-registry/master/gas.json",
                     client,
                 )
                 .await?;
